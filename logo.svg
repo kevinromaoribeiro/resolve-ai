@@ -1,0 +1,11 @@
+<svg width="480" height="140" viewBox="0 0 480 140" xmlns="http://www.w3.org/2000/svg">
+  <rect width="480" height="140" rx="20" fill="#0F172A"/>
+  <polygon points="70,18 114,43 114,93 70,118 26,93 26,43" fill="none"
+           stroke="#00A86B" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M48 70 L64 86 L94 52" fill="none" stroke="#00A86B"
+        stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="140" y="82" font-family="Inter,-apple-system,Segoe UI,sans-serif"
+        font-weight="800" font-size="44" letter-spacing="-1" fill="#F8FAFC">RESOLVE<tspan fill="#00A86B"> AI</tspan></text>
+  <text x="142" y="108" font-family="Inter,-apple-system,Segoe UI,sans-serif"
+        font-weight="500" font-size="15" fill="#94A3B8">O concierge operacional da sua vida</text>
+</svg>

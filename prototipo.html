@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RESOLVE AI · Life O.S.</title>
+<style>
+  :root{
+    --slate:#0F172A; --slate2:#1E293B; --slate3:#334155;
+    --emerald:#00A86B; --emerald-dk:#008556;
+    --ink:#F8FAFC; --muted:#94A3B8;
+    --wa-bg:#0B141A; --wa-user:#005C4B; --wa-bot:#202C33; --wa-ink:#E9EDEF;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--slate);color:var(--ink);
+       font-family:-apple-system,'Segoe UI',Inter,Roboto,sans-serif;
+       -webkit-font-smoothing:antialiased;padding-bottom:88px}
+  a{color:var(--emerald)}
+
+  /* ---------- topo / logo ---------- */
+  header{display:flex;align-items:center;gap:10px;padding:18px 20px 8px}
+  .logo-name{font-weight:800;font-size:1.25rem;letter-spacing:-.02em}
+  .logo-name span{color:var(--emerald)}
+
+  /* ---------- navegação inferior (mobile-first) ---------- */
+  nav{position:fixed;bottom:0;left:0;right:0;display:flex;
+      background:#0B1120;border-top:1px solid var(--slate3);z-index:50}
+  nav button{flex:1;background:none;border:none;color:var(--muted);
+      padding:10px 4px 12px;font-size:.68rem;cursor:pointer;
+      display:flex;flex-direction:column;align-items:center;gap:3px}
+  nav button .ico{font-size:1.15rem}
+  nav button.active{color:var(--emerald)}
+
+  section{display:none;padding:8px 20px 32px;max-width:760px;margin:0 auto}
+  section.active{display:block}
+
+  /* ---------- LP ---------- */
+  .hero h1{font-size:1.75rem;line-height:1.18;font-weight:800;margin:14px 0 10px}
+  .hero h1 em{color:var(--emerald);font-style:normal}
+  .hero p{color:var(--muted);font-size:1rem;line-height:1.55}
+  .cta{display:block;width:100%;margin:22px 0 8px;padding:15px;
+       background:var(--emerald);color:#fff;border:none;border-radius:12px;
+       font-size:1.05rem;font-weight:700;cursor:pointer}
+  .cta:active{background:var(--emerald-dk)}
+  .cta-sub{text-align:center;color:var(--muted);font-size:.8rem;margin-bottom:20px}
+
+  .card{background:var(--slate2);border:1px solid var(--slate3);
+        border-radius:16px;padding:16px;margin-bottom:14px}
+  .card h3{font-size:.95rem;margin-bottom:10px}
+  details.card summary{cursor:pointer;font-weight:600;font-size:.95rem;
+        list-style:none;display:flex;justify-content:space-between}
+  details.card summary::after{content:"＋";color:var(--emerald)}
+  details[open].card summary::after{content:"−"}
+  details.card > div{margin-top:12px}
+
+  .feat{display:grid;gap:12px;margin-top:20px}
+  .feat .card b{color:var(--emerald)}
+  .feat .card p{color:var(--muted);font-size:.88rem;margin-top:4px;line-height:1.5}
+
+  /* ---------- chat WhatsApp ---------- */
+  .wa{background:var(--wa-bg);border-radius:14px;padding:12px;
+      display:flex;flex-direction:column;gap:6px}
+  .bub{max-width:86%;padding:8px 12px;border-radius:12px;font-size:.86rem;
+       line-height:1.45;color:var(--wa-ink);white-space:pre-wrap}
+  .bub.u{background:var(--wa-user);align-self:flex-end;border-bottom-right-radius:3px}
+  .bub.b{background:var(--wa-bot);align-self:flex-start;border-bottom-left-radius:3px}
+  .bub i{color:#9fb2bb}
+  .wa-meta{color:#8696A0;font-size:.68rem;text-align:right;margin-top:2px}
+
+  /* ---------- formulários ---------- */
+  label{display:block;color:var(--muted);font-size:.8rem;margin:14px 0 5px}
+  input,select,textarea{width:100%;background:#0B1120;color:var(--ink);
+      border:1px solid var(--slate3);border-radius:10px;padding:12px;
+      font-size:.95rem}
+  input:focus,select:focus{outline:2px solid var(--emerald);border-color:transparent}
+  .ok-box{background:rgba(0,168,107,.12);border:1px solid var(--emerald);
+      border-radius:12px;padding:14px;margin-top:16px;font-size:.9rem;line-height:1.5}
+
+  /* ---------- simulador ---------- */
+  .kinds{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 12px}
+  .kinds button{background:var(--slate2);border:1px solid var(--slate3);
+      color:var(--muted);border-radius:999px;padding:7px 12px;font-size:.78rem;
+      cursor:pointer}
+  .kinds button.on{background:var(--emerald);color:#fff;border-color:var(--emerald)}
+  #chatlog{min-height:220px;max-height:46vh;overflow-y:auto}
+  .sendrow{display:flex;gap:8px;margin-top:10px}
+  .sendrow input{flex:1}
+  .sendrow button{background:var(--emerald);border:none;color:#fff;
+      border-radius:10px;padding:0 18px;font-size:1.1rem;cursor:pointer}
+  .hint{color:var(--muted);font-size:.75rem;margin:6px 0 0;line-height:1.4}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .chips button{background:none;border:1px dashed var(--slate3);color:var(--muted);
+      border-radius:999px;padding:5px 10px;font-size:.72rem;cursor:pointer}
+
+  /* ---------- dashboard ---------- */
+  .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}
+  .kpi{background:var(--slate2);border:1px solid var(--slate3);
+       border-radius:14px;padding:12px 10px;text-align:center}
+  .kpi .l{color:var(--muted);font-size:.62rem;text-transform:uppercase;
+          letter-spacing:.06em}
+  .kpi .v{color:var(--emerald);font-size:1.15rem;font-weight:800;margin-top:4px}
+  .donut-wrap{display:flex;align-items:center;gap:16px;margin:8px 0 4px}
+  .donut{width:120px;height:120px;border-radius:50%;flex-shrink:0;
+         display:flex;align-items:center;justify-content:center}
+  .donut .hole{width:66px;height:66px;border-radius:50%;background:var(--slate2)}
+  .leg{font-size:.78rem;color:var(--muted);line-height:1.7}
+  .leg i{display:inline-block;width:10px;height:10px;border-radius:3px;
+         margin-right:6px;vertical-align:-1px}
+  table{width:100%;border-collapse:collapse;font-size:.78rem;margin-top:10px}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--slate3)}
+  th{color:var(--muted);font-weight:600;text-transform:uppercase;font-size:.62rem;
+     letter-spacing:.05em}
+  .tag{padding:2px 8px;border-radius:999px;font-size:.66rem}
+  .tag.p{background:rgba(251,191,36,.15);color:#FBBF24}
+  .tag.c{background:rgba(0,168,107,.18);color:var(--emerald)}
+
+  .proactive-btn{width:100%;margin-top:14px;padding:13px;border-radius:12px;
+      background:none;border:1px solid var(--emerald);color:var(--emerald);
+      font-weight:600;font-size:.9rem;cursor:pointer}
+
+  h2.sec{font-size:1.25rem;margin:12px 0 4px}
+  p.sub{color:var(--muted);font-size:.85rem;margin-bottom:14px;line-height:1.5}
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="38" height="38" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-label="Logo Resolve AI">
+    <polygon points="50,4 90,27 90,73 50,96 10,73 10,27" fill="none"
+             stroke="#00A86B" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M30 52 L45 67 L72 36" fill="none" stroke="#00A86B"
+          stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <div class="logo-name">RESOLVE<span> AI</span></div>
+</header>
+
+<!-- ================= LP DE VENDAS ================= -->
+<section id="lp" class="active">
+  <div class="hero">
+    <h1>Pare de gerenciar sua vida na memória.<br><em>Mande no Zap, o Resolve AI executa.</em></h1>
+    <p>O primeiro mordomo artificial que lê seus áudios, audita suas contas, antecipa manutenções e repõe seus mantimentos com 1 clique.</p>
+  </div>
+  <button class="cta" onclick="go('onb')">Testar grátis por 7 dias</button>
+  <div class="cta-sub">Sem cartão. Sem app novo. Depois, R$ 19,90/mês — cancele quando quiser.</div>
+
+  <h2 class="sec">Veja o mordomo em ação</h2>
+
+  <details class="card" open>
+    <summary>🚗 Carro — foto da etiqueta de óleo</summary>
+    <div class="wa">
+      <div class="bub u">📷 <i>[Foto da etiqueta: próxima troca 78.500 km ou 10/11]</i></div>
+      <div class="bub b">Etiqueta lida, Kevin. Seu Onix está com ~74.200 km. Pela sua média de 900 km/mês, a troca cai em <b>meados de novembro</b>. Lembrete agendado para 03/11 com folga de segurança. ✅</div>
+      <div class="wa-meta">WhatsApp · simulação</div>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>🐱 Pet — áudio "comprei areia"</summary>
+    <div class="wa">
+      <div class="bub u">🎤 <i>"Ééé... comprei areia pro gato hoje, aquela de 4kg mesmo"</i></div>
+      <div class="bub b">Anotado! Areia 4kg dura ~18 dias no seu consumo. Te aviso dia 22 com o link da reposição no melhor preço — é só clicar. 🛒</div>
+      <div class="bub b"><i>(3 dias antes de acabar)</i>
+⏰ Areia do gato acabando! Resolver em 1 clique:
+petz.com.br/areia-4kg?ref=resolveai</div>
+      <div class="wa-meta">WhatsApp · simulação</div>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>💡 Conta de luz — print do boleto</summary>
+    <div class="wa">
+      <div class="bub u">📷 <i>[Print de boleto Enel — R$ 187,40 — vence 20/07]</i></div>
+      <div class="bub b">Identifiquei a conta de luz: <b>R$ 187,40</b>, vencimento <b>20/07</b>. Como procedo?
+
+1️⃣ Salvar como <b>Despesa Paga</b>
+2️⃣ Agendar <b>Lembrete</b> para 19/07</div>
+      <div class="wa-meta">WhatsApp · simulação</div>
+    </div>
+  </details>
+
+  <div class="feat">
+    <div class="card"><b>🧠 Gestão proativa</b><p>Vencimentos, manutenções e burocracias antecipadas antes de virarem problema — sem você pedir.</p></div>
+    <div class="card"><b>🎯 Zero fricção</b><p>Áudio, foto ou texto. Sem app novo, sem formulário. É o seu WhatsApp de sempre.</p></div>
+    <div class="card"><b>🛒 Resolução em 1 clique</b><p>Reposição de ração, filtro e óleo com link direto no melhor preço, na hora certa.</p></div>
+  </div>
+
+  <button class="cta" onclick="go('onb')">Começar meus 7 dias grátis</button>
+</section>
+
+<!-- ================= ONBOARDING ================= -->
+<section id="onb">
+  <h2 class="sec">Comece em 30 segundos</h2>
+  <p class="sub">🎁 <b style="color:var(--emerald)">7 dias grátis, sem cartão.</b> Só o essencial agora — o resto o Resolve AI aprende conversando com você.</p>
+
+  <div class="card">
+    <label>Como você quer ser chamado? *</label>
+    <input id="f-nome" placeholder="Kevin">
+    <label>Seu WhatsApp *</label>
+    <input id="f-tel" placeholder="+55 11 99999-0000" inputmode="tel">
+    <div style="display:flex;gap:10px">
+      <div style="flex:1"><label>Idade <span style="opacity:.6">(opcional)</span></label>
+        <input id="f-idade" type="number" placeholder="34" inputmode="numeric"></div>
+      <div style="flex:2"><label>Profissão <span style="opacity:.6">(opcional)</span></label>
+        <input id="f-prof" placeholder="coordenador de e-commerce"></div>
+    </div>
+
+    <label style="margin-top:18px">Para que você quer me usar? <span style="opacity:.6">(toque em quantos quiser)</span></label>
+    <div class="kinds" id="usecases" style="margin-top:6px">
+      <button data-u="contas">💡 Contas de casa</button>
+      <button data-u="mercado">🛒 Compras de mercado</button>
+      <button data-u="carro">🚗 Manutenções do carro</button>
+      <button data-u="saude">🩺 Consultas e exames</button>
+      <button data-u="datas">🎂 Aniversários e datas</button>
+      <button data-u="encomendas">📦 Encomendas e prazos</button>
+      <button data-u="pet">🐾 Cuidados com pet</button>
+      <button data-u="burocracia">📄 Documentos e burocracias</button>
+    </div>
+
+    <details style="margin-top:14px">
+      <summary style="cursor:pointer;color:var(--muted);font-size:.85rem">➕ Quer me contar mais? Fica ainda mais personalizado <span style="opacity:.6">(ou pule)</span></summary>
+      <label>Se tiver carro: modelo e ano</label>
+      <input id="f-carro" placeholder="Onix 1.0 2022">
+      <label>Se tiver pet: espécie, nome e ração</label>
+      <input id="f-pet" placeholder="Gato, Thor, ração Premier">
+      <label>Melhor dia para o seu resumo semanal</label>
+      <select id="f-dia">
+        <option>Segunda-feira</option><option>Terça-feira</option>
+        <option>Quarta-feira</option><option selected>Quinta-feira</option>
+        <option>Sexta-feira</option><option>Sábado</option><option>Domingo</option>
+      </select>
+    </details>
+
+    <button class="cta" style="margin-top:20px" onclick="saveProfile()">Começar meus 7 dias grátis 🚀</button>
+    <div id="onb-ok"></div>
+  </div>
+</section>
+
+<!-- ================= SIMULADOR ================= -->
+<section id="sim">
+  <h2 class="sec">Simulador de WhatsApp</h2>
+  <p class="sub">Teste o motor de ingestão. Escolha o formato de entrada e mande a mensagem — o bot classifica, extrai valor/data e salva (veja no Dashboard).</p>
+
+  <div class="kinds" id="kinds">
+    <button data-k="texto" class="on">💬 Texto</button>
+    <button data-k="audio">🎤 Áudio</button>
+    <button data-k="img_txt">📷 Imagem + instrução</button>
+    <button data-k="img_sil">📷 Imagem silenciosa</button>
+    <button data-k="video">🎬 Vídeo</button>
+  </div>
+  <div class="hint" id="kind-hint">Ex.: "lembra da revisão da garantia dia 10/11" ou "paguei 250 no mercado"</div>
+  <div id="instr-wrap" style="display:none">
+    <label>Instrução que acompanha a imagem:</label>
+    <input id="f-instr" placeholder="Ex.: 'já paguei, arquiva' ou 'agenda lembrete'">
+  </div>
+
+  <div class="wa" style="margin-top:12px">
+    <div id="chatlog"></div>
+    <div class="wa-meta">WhatsApp · Modo Simulação Inteligente (Mock AI)</div>
+  </div>
+  <div class="sendrow">
+    <input id="f-msg" placeholder="Digite a mensagem..." autocomplete="off">
+    <button onclick="send()" aria-label="Enviar">➤</button>
+  </div>
+  <div class="chips">
+    <button onclick="fill('lembra da revisão da garantia dia 10/11')">lembrete c/ data</button>
+    <button onclick="fill('paguei 250 no mercado hoje')">despesa</button>
+    <button onclick="fill('ééé então, comprei ração premier, foi 89 reais né')">áudio pet</button>
+    <button onclick="fill('Boleto Enel R$ 187,40 vencimento 20/07')">boleto (print)</button>
+  </div>
+</section>
+
+<!-- ================= DASHBOARD ================= -->
+<section id="dash">
+  <h2 class="sec">Dashboard Financeiro & Operacional</h2>
+  <p class="sub">Gerado em tempo real a partir do que você cadastrou no Simulador.</p>
+
+  <div class="kpis">
+    <div class="kpi"><div class="l">Gasto no mês</div><div class="v" id="k-gasto">R$ 0,00</div></div>
+    <div class="kpi"><div class="l">Lembretes ativos</div><div class="v" id="k-lemb">0</div></div>
+    <div class="kpi"><div class="l">Economia estimada</div><div class="v" id="k-eco">R$ 0,00</div></div>
+  </div>
+
+  <div class="card">
+    <h3>Despesas por categoria</h3>
+    <div class="donut-wrap">
+      <div class="donut" id="donut"><div class="hole"></div></div>
+      <div class="leg" id="legend">Sem despesas ainda.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Auditoria de itens</h3>
+    <div id="tbl">Nenhum item cadastrado. Use o Simulador.</div>
+  </div>
+
+  <button class="proactive-btn" onclick="runScheduler()">⚡ Executar Motor Proativo (simular dia seguinte)</button>
+  <div id="sched-out"></div>
+</section>
+
+<nav>
+  <button class="active" data-s="lp"><span class="ico">🏠</span>Início</button>
+  <button data-s="onb"><span class="ico">📝</span>Onboarding</button>
+  <button data-s="sim"><span class="ico">💬</span>Simulador</button>
+  <button data-s="dash"><span class="ico">📊</span>Dashboard</button>
+</nav>
+
+<script>
+/* ================= ESTADO (memória da sessão) ================= */
+const state = { user:{nome:'Kevin'}, items:[], pending:null, kind:'texto' };
+
+/* ================= NAVEGAÇÃO ================= */
+function go(id){
+  document.querySelectorAll('section').forEach(s=>s.classList.toggle('active',s.id===id));
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active',b.dataset.s===id));
+  if(id==='dash') renderDash();
+  window.scrollTo(0,0);
+}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>go(b.dataset.s));
+
+/* ================= ONBOARDING ================= */
+document.querySelectorAll('#usecases button').forEach(b=>b.onclick=()=>b.classList.toggle('on'));
+const EXAMPLES={
+ contas:'📷 <i>print do boleto de luz</i> → eu leio valor e vencimento e te lembro um dia antes',
+ mercado:'🎤 <i>"comprei arroz, óleo e café hoje"</i> → registro e aviso quando for hora de repor',
+ carro:'💬 <i>"troquei o óleo hoje, 74.200 km"</i> → calculo e aviso da próxima troca',
+ saude:'💬 <i>"consulta cardiologista dia 15/08 às 14h"</i> → lembrete um dia antes e no dia',
+ datas:'💬 <i>"aniversário da minha mãe é 03/09"</i> → nunca mais passa em branco',
+ encomendas:'💬 <i>"encomenda chega até sexta"</i> → eu cobro o prazo por você',
+ pet:'🎤 <i>"comprei ração premier hoje"</i> → aviso quando estiver acabando, com reposição em 1 clique',
+ burocracia:'💬 <i>"IPVA vence dia 15/01"</i> → lembrete com antecedência, sem multa'};
+function saveProfile(){
+  const nome=document.getElementById('f-nome').value.trim();
+  const tel=document.getElementById('f-tel').value.trim();
+  const box=document.getElementById('onb-ok');
+  if(!nome||!tel){box.innerHTML='<div class="ok-box" style="border-color:#F87171;background:rgba(248,113,113,.1)">Só preciso do seu nome e WhatsApp para começar.</div>';return;}
+  const uses=[...document.querySelectorAll('#usecases button.on')].map(b=>b.dataset.u);
+  state.user={nome,tel,
+    idade:document.getElementById('f-idade').value,
+    prof:document.getElementById('f-prof').value.trim(),
+    interesses:uses,
+    dia:document.getElementById('f-dia').value,
+    carro:document.getElementById('f-carro').value.trim(),
+    pet:document.getElementById('f-pet').value.trim()};
+  const chosen=(uses.length?uses:['contas','mercado']).slice(0,4);
+  box.innerHTML=`<div class="ok-box">✅ Pronto, <b>${nome.split(' ')[0]}</b>! Seus <b>7 dias grátis</b> começaram agora.<br><br>
+    <b>Experimente mandar:</b><br>${chosen.map(u=>'• '+EXAMPLES[u]).join('<br>')}<br><br>
+    <b>Teste já no <a href="#" onclick="go('sim');return false;">Simulador →</a></b></div>`;
+}
+
+/* ================= MOTOR MOCK (porta do ai_engine.py) ================= */
+const AFF='resolveai-20';
+const REPL={'ração':'racao','racao':'racao','areia':'areia+gato','óleo':'oleo+motor','oleo':'oleo+motor','filtro':'filtro','refil':'refil+filtro','fralda':'fralda','café':'cafe','cafe':'cafe','gás':'botijao+gas','gas':'botijao+gas'};
+const CATS={'Pet':['ração','racao','areia','petz','veterin','vacina','gato','cachorro','pet','antipulgas'],
+ 'Veículo':['óleo','oleo','carro','km','revis','pneu','ipva','licenciamento','mecânic','mecanic','gasolina','combust','alinhamento'],
+ 'Contas':['luz','energia','água','agua','internet','boleto','fatura','conta','aluguel','condomín','condomin','cartão','cartao','iptu','telefone','celular','enel','sabesp'],
+ 'Alimentação':['mercado','supermercado','feira','comida','almoço','almoco','jantar','ifood','padaria','café','cafe','restaurante','pizza','lanche'],
+ 'Lazer':['cinema','show','viagem','streaming','netflix','spotify','jogo','playstation','xbox','bar','parque']};
+
+function extractMoney(t){
+  const pats=[/r\$\s*([\d.]+,\d{2})/i,/r\$\s*(\d+(?:[.,]\d{1,2})?)/i,
+    /(\d+(?:[.,]\d{1,2})?)\s*(?:reais|conto|pila)/i,
+    /(?:paguei|gastei|custou|foi|deu)\s+(\d+(?:[.,]\d{1,2})?)\b/i];
+  for(const p of pats){const m=t.match(p);if(m){let r=m[1];
+    if(r.includes(',')&&r.includes('.'))r=r.replace(/\./g,'').replace(',','.');
+    else if(r.includes(','))r=r.replace(',','.');
+    const v=parseFloat(r);if(!isNaN(v))return Math.round(v*100)/100;}}
+  return null;
+}
+function extractDate(t){
+  const now=new Date();const low=t.toLowerCase();
+  let m=low.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if(m){let d=+m[1],mo=+m[2]-1,y=m[3]?(m[3].length===2?2000+ +m[3]:+m[3]):now.getFullYear();
+    let dt=new Date(y,mo,d);
+    if(!m[3]&&dt<now)dt=new Date(y+1,mo,d);
+    if(dt.getDate()===d)return dt;}
+  const MESES={janeiro:0,fevereiro:1,'março':2,marco:2,abril:3,maio:4,junho:5,julho:6,agosto:7,setembro:8,outubro:9,novembro:10,dezembro:11};
+  m=low.match(/dia\s+(\d{1,2})(?:\s+de\s+([a-zç]+))?/);
+  if(m){let d=+m[1],mo=m[2]&&MESES[m[2]]!==undefined?MESES[m[2]]:now.getMonth();
+    let dt=new Date(now.getFullYear(),mo,d);
+    if(dt<now)dt=m[2]?new Date(now.getFullYear()+1,mo,d):new Date(now.getFullYear(),mo+1,d);
+    return dt;}
+  if(/amanhã|amanha/.test(low))return addDays(now,1);
+  m=low.match(/(?:em|daqui a?)\s+(\d+)\s+dias?/);if(m)return addDays(now,+m[1]);
+  m=low.match(/(?:em|daqui a?)\s+(\d+)\s+semanas?/);if(m)return addDays(now,7*+m[1]);
+  if(/semana que vem|pr[oó]xima semana/.test(low))return addDays(now,7);
+  if(/m[eê]s que vem/.test(low))return addDays(now,30);
+  return null;
+}
+function addDays(d,n){const r=new Date(d);r.setDate(r.getDate()+n);return r;}
+function fmtBR(d){return d?`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`:'sem data';}
+function fmtR$(v){return v==null?null:'R$ '+v.toFixed(2).replace('.',',');}
+function catOf(t){const low=t.toLowerCase();let best='Outros',bs=0;
+  for(const[c,kws]of Object.entries(CATS)){const s=kws.filter(k=>low.includes(k)).length;
+    if(s>bs){bs=s;best=c;}}return bs>0?best:'Outros';}
+function affOf(t){const low=t.toLowerCase();
+  for(const[k,q]of Object.entries(REPL))if(low.includes(k))
+    return`https://www.mercadolivre.com.br/jm/search?as_word=${q}&tag=${AFF}`;
+  return null;}
+function cleanDesc(t){
+  return t.replace(/^(?:me\s+)?(?:lembra(?:r)?\s+(?:de\s+|da\s+|do\s+)?|lembrete\s+(?:de\s+|da\s+|do\s+)?|agenda(?:r)?\s+|anota(?:r)?\s+(?:que\s+)?)/i,'')
+   .replace(/\s*(?:no\s+|em\s+|para\s+o?\s*)?(?:dia\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|dia\s+\d{1,2}(?:\s+de\s+[a-zç]+)?|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|amanhã|amanha|semana\s+que\s+vem|m[eê]s\s+que\s+vem|(?:em|daqui\s+a?)\s+\d+\s+(?:dias?|semanas?))\s*/gi,' ')
+   .replace(/\s{2,}/g,' ').trim().replace(/[,.]$/,'')||t.trim();
+}
+function cleanAudio(t){
+  return t.replace(/\b(ééé+|eee+|hmm+|hum+|né|tipo assim|então,?|entao,?|aí,?|bom,?|olha só|deixa eu ver)\b/gi,'')
+          .replace(/\s{2,}/g,' ').trim();
+}
+function buildItem(t){
+  const valor=extractMoney(t),venc=extractDate(t),cat=catOf(t),low=t.toLowerCase();
+  const paid=/\b(paguei|pago|comprei|gastei)\b/.test(low);
+  const remind=/lembra|lembrete|agend|venc|não esquecer|nao esquecer|marcar|avis/.test(low);
+  let tipo=(remind||(venc&&!paid))?'lembrete':(paid||valor!=null)?'despesa':'lembrete';
+  return{tipo,categoria:cat,descricao:cleanDesc(t).slice(0,60),
+    valor:valor,venc:venc,status:(tipo==='despesa'&&paid)?'concluido':'pendente',
+    aff:affOf(t),criado:new Date()};
+}
+const first=()=>state.user.nome.split(' ')[0];
+
+function engine(kind,txt,instr){
+  if(kind==='video')return{reply:'Para garantir precisão e velocidade máxima, processamos apenas fotos, áudios e textos rápidos. Envie um print ou áudio resumindo o vídeo que eu executo na hora.',items:[]};
+  if(kind==='decisao'){
+    const it={...state.pending};const c=txt.trim().toLowerCase();
+    if(c.startsWith('1')||c.includes('pag')){it.tipo='despesa';it.status='concluido';
+      return{reply:'Feito. Arquivado como Despesa Paga. ✅',items:[it],clear:true};}
+    if(c.startsWith('2')||c.includes('agend')||c.includes('lembr')){
+      it.tipo='lembrete';it.status='pendente';
+      if(it.venc)it.venc=addDays(it.venc,-1);
+      return{reply:`Agendado. Lembrete de cobrança em ${fmtBR(it.venc)}. ⏰`,items:[it],clear:true};}
+    return{reply:'Não entendi. Responda 1 (despesa paga) ou 2 (agendar lembrete).',items:[],keep:true};
+  }
+  if(kind==='img_sil'){
+    const it=buildItem(txt);state.pending=it;
+    return{reply:`Identifiquei um documento financeiro no valor de ${fmtR$(it.valor)||'valor não identificado'} com vencimento em ${fmtBR(it.venc)}. Como procedo?
+
+1️⃣ Salvar como Despesa Paga
+2️⃣ Agendar Lembrete para um dia antes
+
+(💡 Dica: na próxima, mande a foto junto com um áudio de 2 segundos dizendo "pago" ou "agendar" que eu resolvo direto.)`,items:[],pending:true};
+  }
+  let content=txt,suffix='';
+  if(kind==='audio'){content=cleanAudio(txt);}
+  if(kind==='img_txt'){content=txt+'. '+(instr||'');}
+  const it=buildItem(content);
+  if(kind==='img_txt'&&instr){
+    const li=instr.toLowerCase();
+    if(/pag|arquiv/.test(li)){it.tipo='despesa';it.status='concluido';}
+    else if(/agend|lembr|avis/.test(li)){it.tipo='lembrete';it.status='pendente';}
+  }
+  if(kind==='audio')suffix=`\n\n(Áudio processado e categorizado em ${it.tipo==='despesa'?'Despesas':'Lembretes'}/${it.categoria}.)`;
+  let reply;
+  if(it.tipo==='lembrete')
+    reply=`Anotado, ${first()}. Lembrete de ${it.descricao.toLowerCase()} programado para ${fmtBR(it.venc)}.`;
+  else
+    reply=`Registrado, ${first()}. Despesa de ${fmtR$(it.valor)||'valor não informado'} em ${it.categoria}.`;
+  if(kind==='img_txt')reply=`Documento lido, ${first()}. `+ (it.tipo==='despesa'
+    ?`${fmtR$(it.valor)||'Sem valor'} arquivado como despesa paga em ${it.categoria}.`
+    :`Lembrete agendado para ${fmtBR(it.venc)}.`);
+  return{reply:reply+suffix,items:[it]};
+}
+
+/* ================= UI DO SIMULADOR ================= */
+const HINTS={texto:'Ex.: "lembra da revisão da garantia dia 10/11" ou "paguei 250 no mercado"',
+ audio:'Digite a transcrição informal, com cacoetes mesmo. Ex.: "ééé então, comprei ração hoje, 89 reais"',
+ img_txt:'Digite o que o OCR leria na imagem. Ex.: "Boleto Enel R$ 187,40 vencimento 20/07" + instrução acima',
+ img_sil:'Digite o conteúdo da imagem SEM instrução. O bot devolve o menu de decisão (Regra de Ouro).',
+ video:'Qualquer mensagem — o bot responde a limitação educada do MVP.'};
+document.querySelectorAll('#kinds button').forEach(b=>b.onclick=()=>{
+  state.kind=b.dataset.k;
+  document.querySelectorAll('#kinds button').forEach(x=>x.classList.toggle('on',x===b));
+  document.getElementById('kind-hint').textContent=HINTS[b.dataset.k];
+  document.getElementById('instr-wrap').style.display=b.dataset.k==='img_txt'?'block':'none';
+});
+function fill(t){document.getElementById('f-msg').value=t;document.getElementById('f-msg').focus();}
+function bubble(cls,txt){
+  const d=document.createElement('div');d.className='bub '+cls;d.textContent=txt;
+  document.getElementById('chatlog').appendChild(d);
+  d.scrollIntoView({behavior:'smooth',block:'end'});
+}
+function send(){
+  const inp=document.getElementById('f-msg');const txt=inp.value.trim();if(!txt)return;
+  const label={texto:'💬',audio:'🎤',img_txt:'📷+💬',img_sil:'📷',video:'🎬'}[state.kind];
+  bubble('u',`${label} ${txt}`);inp.value='';
+  const kind=state.pending?'decisao':state.kind;
+  const instr=document.getElementById('f-instr').value.trim();
+  const r=engine(kind,txt,instr);
+  (r.items||[]).forEach(i=>state.items.push(i));
+  if(r.clear)state.pending=null;
+  if(!r.pending&&!r.keep&&kind!=='decisao')state.pending=r.pending?state.pending:(kind==='img_sil'?state.pending:null);
+  setTimeout(()=>bubble('b',r.reply),350);
+}
+document.getElementById('f-msg').addEventListener('keydown',e=>{if(e.key==='Enter')send();});
+
+/* ================= DASHBOARD ================= */
+const COLORS=['#00A86B','#38BDF8','#FBBF24','#F472B6','#A78BFA','#94A3B8'];
+function renderDash(){
+  const desp=state.items.filter(i=>i.tipo==='despesa'&&i.valor!=null);
+  const gasto=desp.reduce((s,i)=>s+i.valor,0);
+  const lemb=state.items.filter(i=>i.tipo==='lembrete'&&i.status==='pendente').length;
+  const eco=state.items.filter(i=>i.categoria==='Contas'&&i.valor).reduce((s,i)=>s+i.valor,0)*0.03;
+  document.getElementById('k-gasto').textContent=fmtR$(gasto)||'R$ 0,00';
+  document.getElementById('k-lemb').textContent=lemb;
+  document.getElementById('k-eco').textContent=fmtR$(eco)||'R$ 0,00';
+
+  const byCat={};desp.forEach(i=>byCat[i.categoria]=(byCat[i.categoria]||0)+i.valor);
+  const cats=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+  const donut=document.getElementById('donut'),leg=document.getElementById('legend');
+  if(cats.length){
+    let acc=0;const stops=cats.map(([c,v],i)=>{
+      const p1=acc/gasto*100;acc+=v;const p2=acc/gasto*100;
+      return`${COLORS[i%COLORS.length]} ${p1}% ${p2}%`;}).join(',');
+    donut.style.background=`conic-gradient(${stops})`;
+    leg.innerHTML=cats.map(([c,v],i)=>
+      `<div><i style="background:${COLORS[i%COLORS.length]}"></i>${c} — ${fmtR$(v)}</div>`).join('');
+  }else{donut.style.background='var(--slate3)';leg.textContent='Sem despesas ainda.';}
+
+  const tbl=document.getElementById('tbl');
+  if(state.items.length){
+    tbl.innerHTML='<table><tr><th>Tipo</th><th>Descrição</th><th>Valor</th><th>Venc.</th><th>Status</th></tr>'+
+      state.items.map(i=>`<tr><td>${i.tipo}</td><td>${i.descricao}</td><td>${fmtR$(i.valor)||'—'}</td><td>${i.venc?fmtBR(i.venc):'—'}</td><td><span class="tag ${i.status==='pendente'?'p':'c'}">${i.status}</span></td></tr>`).join('')+'</table>';
+  }else tbl.textContent='Nenhum item cadastrado. Use o Simulador.';
+}
+function runScheduler(){
+  const out=document.getElementById('sched-out');const msgs=[];
+  const tomorrow=addDays(new Date(),1);const limit=addDays(tomorrow,3);
+  state.items.filter(i=>i.status==='pendente'&&i.venc&&i.venc>=tomorrow&&i.venc<=limit)
+   .forEach(i=>{
+     if(i.aff)msgs.push(`🛒 <b>1-Click Buy</b> → ${first()}: seu item <b>${i.descricao}</b> está programado para ${fmtBR(i.venc)}.<br>Resolver em 1 clique: <span style="word-break:break-all">${i.aff}</span>`);
+     else msgs.push(`⏰ <b>Vencimento</b> → ${first()}: <b>${i.descricao}</b>${i.valor?' de '+fmtR$(i.valor):''} vence em ${fmtBR(i.venc)}. Marco como pago ou adio?`);
+   });
+  msgs.push(`🔄 <b>Anti-churn (simulação D+10)</b> → "Opa, ${first()}! Vi que sua semana foi corrida. Que tal esvaziar a cabeça agora? Manda por áudio em 10 segundos ou tira print de alguma encomenda ou da km do carro. Eu organizo tudo."`);
+  out.innerHTML=msgs.map(m=>`<div class="card" style="margin-top:10px;font-size:.84rem;line-height:1.5">${m}</div>`).join('');
+}
+
+/* mensagem inicial do bot */
+bubble('b','Oi! Sou o Resolve AI. 🟢 Manda um texto, "áudio" ou "print" (escolha o formato acima) que eu organizo pra você.');
+</script>
+</body>
+</html>
