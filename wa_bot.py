@@ -422,7 +422,7 @@ def dispatch_proactive() -> int:
     """Roda o motor proativo e envia os disparos reais. Retorna nº enviados."""
     result = scheduler.run_proactive_engine()
     sent = 0
-    for d in result["due_dispatches"] + result["churn_dispatches"] + result.get("trial_dispatches", []):
+    for d in result["due_dispatches"] + result["churn_dispatches"] + result.get("trial_dispatches", []) + result.get("guided_dispatches", []):
         number = re.sub(r"\D", "", d["telefone"])
         if number and send_whatsapp(number, d["message"]):
             sent += 1

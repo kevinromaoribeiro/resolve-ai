@@ -79,7 +79,8 @@ def init_db() -> None:
         for col, ddl in [("idade", "INTEGER"), ("profissao", "TEXT"),
                          ("interesses", "TEXT"),
                          ("status", "TEXT DEFAULT 'trial'"),
-                         ("onboarding_step", "TEXT")]:
+                         ("onboarding_step", "TEXT"),
+                         ("trial_nudges_sent", "TEXT DEFAULT ''")]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
 
@@ -140,7 +141,7 @@ def update_user_fields(user_id: int, **fields) -> None:
     """Atualiza campos arbitrários do usuário (whitelist de colunas)."""
     allowed = {"nome", "idade", "profissao", "interesses", "carro_modelo",
                "carro_km", "pet_info", "dia_resumo", "status",
-               "onboarding_step"}
+               "onboarding_step", "trial_nudges_sent"}
     cols = {k: v for k, v in fields.items() if k in allowed}
     if not cols:
         return
@@ -148,6 +149,33 @@ def update_user_fields(user_id: int, **fields) -> None:
     with get_conn() as conn:
         conn.execute(f"UPDATE users SET {sets} WHERE id=?",
                      (*cols.values(), user_id))
+
+
+def trial_day_number(user: dict) -> int:
+    """Em que dia do trial o usuário está (0 = dia da entrada, 1 = dia seguinte...)."""
+    created = datetime.strptime(user["data_criacao"], "%Y-%m-%d %H:%M:%S")
+    return (datetime.now() - created).days
+
+
+def nudge_already_sent(user: dict, nudge_id: str) -> bool:
+    sent = (user.get("trial_nudges_sent") or "").split(",")
+    return nudge_id in sent
+
+
+def mark_nudge_sent(user_id: int, nudge_id: str) -> None:
+    user = get_user(user_id)
+    sent = [s for s in (user.get("trial_nudges_sent") or "").split(",") if s]
+    if nudge_id not in sent:
+        sent.append(nudge_id)
+    update_user_fields(user_id, trial_nudges_sent=",".join(sent))
+
+
+def active_trial_users(trial_days: int = 7) -> list[dict]:
+    """Usuários em trial, já com onboarding concluído, dentro do prazo."""
+    return [u for u in list_users()
+            if (u.get("status") or "trial") == "trial"
+            and not u.get("onboarding_step")
+            and trial_days_left(u, trial_days) > 0]
 
 
 def set_status(user_id: int, status: str) -> None:

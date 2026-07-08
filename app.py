@@ -154,9 +154,10 @@ with st.sidebar:
         result = st.session_state["scheduler_result"]
         st.caption(f"Executado em: {result['executed_at']} · "
                    f"{result['total']} disparo(s)")
-        for d in result["due_dispatches"] + result["churn_dispatches"] + result.get("trial_dispatches", []):
+        for d in result["due_dispatches"] + result["churn_dispatches"] + result.get("trial_dispatches", []) + result.get("guided_dispatches", []):
             icon = {"1-click-buy": "🛒", "vencimento": "⏰",
-                    "anti-churn": "🔄", "trial-ending": "⏳"}[d["kind"]]
+                    "anti-churn": "🔄", "trial-ending": "⏳",
+                    "trial-guiado": "🌱"}.get(d["kind"], "📩")
             with st.expander(f"{icon} {d['kind']} → {d['user_nome']}"):
                 st.markdown(d["message"])
         if result["total"] == 0:
