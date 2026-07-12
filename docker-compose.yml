@@ -4,7 +4,7 @@
 # Comando:  docker compose up -d
 services:
   evolution:
-    image: evoapicloud/evolution-api:v2.2.0
+    image: evoapicloud/evolution-api:v2.3.7
     container_name: resolveai-evolution
     restart: unless-stopped
     ports:
@@ -17,6 +17,8 @@ services:
       - DATABASE_CONNECTION_URI=postgresql://evo:evo@postgres:5432/evolution
       - CACHE_REDIS_ENABLED=false
       - CACHE_LOCAL_ENABLED=true
+      - QRCODE_LIMIT=30
+      - QRCODE_COLOR=#00A86B
       - WEBHOOK_GLOBAL_ENABLED=true
       - WEBHOOK_GLOBAL_URL=http://bot:8000/webhook
       - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
