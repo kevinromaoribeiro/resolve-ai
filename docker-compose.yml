@@ -4,7 +4,7 @@
 # Comando:  docker compose up -d
 services:
   evolution:
-    image: atendai/evolution-api:v2.2.0
+    image: evoapicloud/evolution-api:v2.2.0
     container_name: resolveai-evolution
     restart: unless-stopped
     ports:
