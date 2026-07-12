@@ -11,7 +11,7 @@ services:
       - "8080:8080"
     environment:
       - AUTHENTICATION_API_KEY=${EVOLUTION_APIKEY:-troque-esta-chave}
-      - SERVER_URL=http://localhost:8080
+      - SERVER_URL=${SERVER_URL:-http://localhost:8080}
       - DATABASE_ENABLED=true
       - DATABASE_PROVIDER=postgresql
       - DATABASE_CONNECTION_URI=postgresql://evo:evo@postgres:5432/evolution
@@ -44,9 +44,19 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-    env_file: .env
     environment:
       - EVOLUTION_URL=http://evolution:8080
+      - EVOLUTION_APIKEY=${EVOLUTION_APIKEY}
+      - EVOLUTION_INSTANCE=${EVOLUTION_INSTANCE}
+      - SERVER_URL=${SERVER_URL}
+      - ADMIN_PHONE=${ADMIN_PHONE}
+      - TRIAL_DAYS=${TRIAL_DAYS:-7}
+      - AUDIO_MAX_SECONDS=${AUDIO_MAX_SECONDS:-120}
+      - TERMS_URL=${TERMS_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PAYMENT_LINK=${PAYMENT_LINK}
+      - PAYMENT_LINK_ANUAL=${PAYMENT_LINK_ANUAL}
+      - DB_PATH=/app/data/resolve_ai.db
     volumes:
       - ./data:/app/data
     command: uvicorn wa_bot:app --host 0.0.0.0 --port 8000
