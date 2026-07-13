@@ -242,21 +242,41 @@ _LOOKS_LIKE_QUESTION = re.compile(
     re.IGNORECASE)
 
 
-_SAUDACOES = {"oi", "ola", "olá", "opa", "eai", "eaí", "e ai", "e aí",
-              "bom dia", "boa tarde", "boa noite", "hey", "hello", "alo",
-              "alô", "oie", "oi tudo bem", "tudo bem", "blz", "beleza"}
+_SAUDACOES = {"oi", "ola", "olá", "opa", "eai", "eaí", "e ai", "e aí", "eii",
+              "ei", "eae", "iai", "aí", "ai", "psiu", "psit", "oie", "oi!",
+              "bom dia", "boa tarde", "boa noite", "hey", "hello", "hi", "alo",
+              "alô", "oi tudo bem", "tudo bem", "blz", "beleza", "salve",
+              "coé", "cue", "fala", "fala ai", "fala aí", "yo", "test",
+              "teste", "testando", "oii", "oiii", "olar", "helloo"}
+
+# palavras que NUNCA são nome (verbos/comandos comuns no início)
+_NAO_NOME_PALAVRAS = {"quero", "preciso", "pode", "queria", "gostaria",
+                      "me", "sim", "não", "nao", "ok", "legal", "bora",
+                      "vamos", "legal", "help", "ajuda", "menu", "start", "começar"}
 
 
 def _is_not_a_name(text: str) -> bool:
-    """True se o texto claramente NÃO é um nome (é pergunta, comando, frase,
-    ou saudação solta)."""
+    """True se o texto claramente NÃO é um nome (saudação, pergunta, comando,
+    frase longa, ou palavra funcional)."""
     t = text.strip()
-    low = t.lower().strip("!?.,")
-    if low in _SAUDACOES:
+    low = t.lower().strip("!?.,;")
+    if low in _SAUDACOES or low in _NAO_NOME_PALAVRAS:
         return True
     if _LOOKS_LIKE_QUESTION.search(t):
         return True
-    if len(t.split()) > 4:          # nome não tem 5+ palavras
+    if "," in t:                   # frase com vírgula não é nome
+        return True
+    palavras = t.split()
+    if len(palavras) > 4:          # nome não tem 5+ palavras
+        return True
+    # primeira palavra é comando/verbo comum? não é nome
+    if palavras and palavras[0].lower().strip("!?.,;") in _NAO_NOME_PALAVRAS:
+        return True
+    # 1 palavra curtinha (<=3 letras) e minúscula: quase sempre interjeição
+    # ("eii", "aí", "yo"). Nomes reais curtos ("Ana", "Bia") vêm com maiúscula.
+    nomes_curtos_ok = {"ana", "bia", "gal", "leo", "rui", "ivo", "noe"}
+    if (len(palavras) == 1 and len(low) <= 3
+            and t.islower() and low not in nomes_curtos_ok):
         return True
     return False
 
@@ -332,16 +352,17 @@ def _classify_message(msg: dict) -> tuple[str, str]:
 
 
 def _fetch_media_base64(payload: dict) -> str:
-    """Busca o base64 da mídia ativamente na Evolution quando o webhook não
-    o inclui (bug conhecido: issues #942/#2278/#2375 — a partir da v2.1.1 a
-    mídia vem só como URL criptografada). Usa /chat/getBase64FromMediaMessage.
-    Retorna base64 puro ou '' se falhar."""
+    """Busca o base64 da mídia ativamente na Evolution. Loga o erro real
+    (visível no log do EasyPanel) em vez de engolir silenciosamente."""
+    import logging
+    log = logging.getLogger("resolveai")
     try:
         import requests
         data = payload.get("data") or {}
         key = data.get("key") or {}
         msg_id = key.get("id")
         if not msg_id:
+            log.warning("[media] sem message.id no payload — não dá pra buscar base64")
             return ""
         url = f"{EVOLUTION_URL}/chat/getBase64FromMediaMessage/{EVOLUTION_INSTANCE}"
         r = requests.post(
@@ -350,9 +371,12 @@ def _fetch_media_base64(payload: dict) -> str:
             json={"message": {"key": {"id": msg_id}}, "convertToMp4": False},
             timeout=25)
         if r.status_code == 200:
-            return (r.json() or {}).get("base64", "") or ""
-    except Exception:
-        pass
+            b64 = (r.json() or {}).get("base64", "") or ""
+            log.info("[media] base64 obtido: %d chars", len(b64))
+            return b64
+        log.warning("[media] Evolution respondeu %s: %s", r.status_code, r.text[:200])
+    except Exception as e:
+        log.warning("[media] erro ao buscar base64: %r", e)
     return ""
 
 
@@ -437,6 +461,9 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     media_b64 = data.get("base64") or msg.get("base64") or ""
     # Bug da Evolution: mídia costuma vir sem base64 no webhook. Busca ativa.
     if not media_b64 and kind in ("audio", "imagem_silenciosa", "imagem_com_texto"):
+        import logging
+        logging.getLogger("resolveai").info(
+            "[media] chegou %s sem base64 no webhook — buscando ativamente", kind)
         media_b64 = _fetch_media_base64(payload)
 
     # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
