@@ -582,6 +582,8 @@ def handle_incoming(payload: dict) -> Optional[dict]:
 
 def send_whatsapp(number: str, text: str) -> bool:
     """POST /message/sendText/{instance} na Evolution API (v2)."""
+    import logging
+    log = logging.getLogger("resolveai")
     try:
         import httpx
         resp = httpx.post(
@@ -591,8 +593,13 @@ def send_whatsapp(number: str, text: str) -> bool:
             json={"number": number, "text": text},
             timeout=15,
         )
-        return resp.status_code in (200, 201)
-    except Exception:
+        if resp.status_code in (200, 201):
+            return True
+        log.warning("[envio] Evolution recusou (%s): %s",
+                    resp.status_code, resp.text[:150])
+        return False
+    except Exception as e:
+        log.warning("[envio] ERRO ao enviar: %r", e)
         return False
 
 
@@ -666,6 +673,8 @@ def maybe_admin_report() -> bool:
 
 def dispatch_proactive() -> int:
     """Roda o motor proativo, envia e REGISTRA cada disparo (dedup)."""
+    import logging
+    log = logging.getLogger("resolveai")
     result = scheduler.run_proactive_engine()
     sent = 0
     all_dispatches = (result.get("alarm_dispatches", [])
@@ -674,14 +683,22 @@ def dispatch_proactive() -> int:
                       + result["churn_dispatches"]
                       + result.get("trial_dispatches", [])
                       + result.get("guided_dispatches", []))
+    n_alarm = len(result.get("alarm_dispatches", []))
+    log.info("[cron] motor rodou: %d alarme(s) de hora, %d total pra enviar",
+             n_alarm, len(all_dispatches))
     for d in all_dispatches[:DISPATCH_MAX_PER_CYCLE]:
         number = re.sub(r"\D", "", d["telefone"])
-        if number and send_whatsapp(number, d["message"]):
+        if not number:
+            log.warning("[cron] disparo sem número: %s", d.get("message", "")[:40])
+            continue
+        ok = send_whatsapp(number, d["message"])
+        log.info("[cron] envio p/ …%s (%s): %s", number[-4:],
+                 d.get("kind", "?"), "OK" if ok else "FALHOU")
+        if ok:
             sent += 1
             try:
-                db.log_dispatch(d["user_id"],
-                                 d.get("kind", "outro"),
-                                 d.get("item_id"))
+                db.log_dispatch(d["user_id"], d.get("kind", "outro"),
+                                d.get("item_id"))
             except Exception:
                 pass  # log falhar não pode derrubar o envio
     return sent
