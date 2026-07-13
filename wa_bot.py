@@ -357,7 +357,7 @@ def _fetch_media_base64(payload: dict) -> str:
     import logging
     log = logging.getLogger("resolveai")
     try:
-        import requests
+        import httpx
         data = payload.get("data") or {}
         key = data.get("key") or {}
         msg_id = key.get("id")
@@ -365,12 +365,12 @@ def _fetch_media_base64(payload: dict) -> str:
             log.warning("[media] sem message.id no payload — não dá pra buscar base64")
             return ""
         url = f"{EVOLUTION_URL}/chat/getBase64FromMediaMessage/{EVOLUTION_INSTANCE}"
-        r = requests.post(
+        r = httpx.post(
             url,
             headers={"apikey": EVOLUTION_APIKEY, "Content-Type": "application/json"},
             json={"message": {"key": {"id": msg_id}}, "convertToMp4": False},
             timeout=25)
-        if r.status_code == 200:
+        if r.status_code in (200, 201):
             b64 = (r.json() or {}).get("base64", "") or ""
             log.info("[media] base64 obtido: %d chars", len(b64))
             return b64
@@ -381,28 +381,43 @@ def _fetch_media_base64(payload: dict) -> str:
 
 
 def _transcribe_audio(b64: str) -> Optional[str]:
-    """Transcreve áudio via OpenAI Whisper, se houver chave. Senão, None."""
+    """Transcreve áudio via OpenAI Whisper. Loga o erro real se falhar."""
+    import logging
+    log = logging.getLogger("resolveai")
     if not os.environ.get("OPENAI_API_KEY"):
+        log.warning("[audio] sem OPENAI_API_KEY — não transcreve")
+        return None
+    if not b64:
+        log.warning("[audio] base64 vazio — nada pra transcrever")
         return None
     try:
         import io
         from openai import OpenAI
         audio_bytes = base64.b64decode(b64)
+        log.info("[audio] decodificado: %d bytes, transcrevendo…", len(audio_bytes))
         buf = io.BytesIO(audio_bytes)
-        buf.name = "audio.ogg"
+        buf.name = "audio.ogg"   # WhatsApp manda opus/ogg; whisper aceita .ogg
         client = OpenAI()
         result = client.audio.transcriptions.create(
             model="whisper-1", file=buf, language="pt"
         )
-        return result.text
-    except Exception:
+        txt = result.text
+        log.info("[audio] transcrito: %r", (txt or "")[:80])
+        return txt
+    except Exception as e:
+        log.warning("[audio] ERRO no Whisper: %r", e)
         return None
 
 
 def _read_image(b64: str) -> Optional[str]:
-    """Extrai texto da imagem via visão (Anthropic ou OpenAI). Senão, None."""
+    """Extrai texto da imagem via visão (Anthropic ou OpenAI). Loga erro real."""
+    import logging
+    log = logging.getLogger("resolveai")
     prompt = ("Extraia desta imagem, em uma linha: descrição do documento, "
               "valor em R$ e data de vencimento se houver. Responda só o texto.")
+    if not b64:
+        log.warning("[imagem] base64 vazio — nada pra ler")
+        return None
     try:
         if os.environ.get("ANTHROPIC_API_KEY"):
             import anthropic
@@ -413,7 +428,9 @@ def _read_image(b64: str) -> Optional[str]:
                     {"type": "image", "source": {"type": "base64",
                      "media_type": "image/jpeg", "data": b64}},
                     {"type": "text", "text": prompt}]}])
-            return resp.content[0].text
+            txt = resp.content[0].text
+            log.info("[imagem] lida (claude): %r", (txt or "")[:80])
+            return txt
         if os.environ.get("OPENAI_API_KEY"):
             from openai import OpenAI
             client = OpenAI()
@@ -423,9 +440,12 @@ def _read_image(b64: str) -> Optional[str]:
                     {"type": "image_url", "image_url":
                      {"url": f"data:image/jpeg;base64,{b64}"}},
                     {"type": "text", "text": prompt}]}])
-            return resp.choices[0].message.content
-    except Exception:
-        pass
+            txt = resp.choices[0].message.content
+            log.info("[imagem] lida (openai): %r", (txt or "")[:80])
+            return txt
+        log.warning("[imagem] sem chave de IA — não lê imagem")
+    except Exception as e:
+        log.warning("[imagem] ERRO na visão: %r", e)
     return None
 
 
@@ -581,7 +601,8 @@ def _instance_state() -> str:
     Tenta múltiplos formatos de resposta (a Evolution mudou o shape entre
     versões). 'unknown' só se realmente não der pra ler."""
     try:
-        r = requests.get(
+        import httpx
+        r = httpx.get(
             f"{EVOLUTION_URL}/instance/connectionState/{EVOLUTION_INSTANCE}",
             headers={"apikey": EVOLUTION_APIKEY}, timeout=8)
         j = r.json()
@@ -596,7 +617,7 @@ def _instance_state() -> str:
         if st:
             return st
         # fallback: lista de instâncias
-        r2 = requests.get(
+        r2 = httpx.get(
             f"{EVOLUTION_URL}/instance/fetchInstances",
             headers={"apikey": EVOLUTION_APIKEY}, timeout=8)
         arr = r2.json()
@@ -677,13 +698,15 @@ try:
 
     @app.get("/health")
     async def health():
-        """Vigia: retorna 500 se a sessão do WhatsApp caiu — o monitor
-        gratuito do cron-job.org detecta e manda e-mail na hora."""
+        """Vigia: 500 só quando a sessão está claramente CAÍDA. Estados
+        ambíguos (open/connected/connecting) contam como ok pra não gerar
+        falso alarme no monitor."""
         wa = _instance_state()
-        body = {"status": "ok" if wa == "open" else "degraded",
+        conectado = wa in ("open", "connected", "online", "connecting", "unknown")
+        body = {"status": "ok" if conectado else "degraded",
                 "whatsapp": wa, "instance": EVOLUTION_INSTANCE,
                 "llm": "on" if ai_engine.LLM_AVAILABLE else "mock"}
-        if wa != "open":
+        if wa in ("close", "closed", "disconnected", "removed"):
             from fastapi.responses import JSONResponse
             return JSONResponse(status_code=500, content=body)
         return body
@@ -717,6 +740,7 @@ try:
     async def cron_proactive():
         """Chame a cada 15 min (cron-job.org gratuito). Dedup garante zero spam;
         alarmes com hora tocam no minuto; o resto respeita 8h-21h."""
+        db.registrar_cron_ping()
         sent = dispatch_proactive()
         maybe_admin_report()
         return {"sent": sent}
@@ -729,6 +753,22 @@ try:
         wa = _instance_state()
         wa_cor = "#22c55e" if wa == "open" else "#ef4444"
         wa_txt = "🟢 Conectado" if wa == "open" else f"🔴 {wa} — reescaneie o QR"
+        # heartbeat do cron: o motor está sendo chamado?
+        ultimo_cron = db.ultimo_cron_ping()
+        cron_ok = False
+        cron_txt = "🔴 NUNCA rodou — configure o cron-job.org!"
+        if ultimo_cron:
+            from datetime import datetime as _dt
+            try:
+                delta = (tempo.agora() - _dt.fromisoformat(ultimo_cron)).total_seconds()
+                if delta < 1200:  # menos de 20 min
+                    cron_ok = True
+                    cron_txt = f"🟢 Motor ativo (última checagem há {int(delta/60)} min)"
+                else:
+                    cron_txt = f"🟠 Motor parado há {int(delta/60)} min — verifique o cron-job.org"
+            except Exception:
+                cron_txt = f"Última checagem: {ultimo_cron[11:16]}"
+        cron_cor = "#22c55e" if cron_ok else "#ef4444"
         linhas = ""
         for r in m["ultimas"]:
             seta = "⬅️ recebida" if r["direcao"] == "in" else "➡️ enviada"
@@ -787,6 +827,8 @@ th{{text-align:left;padding:8px 10px;background:#f1f5f9;font-size:12px;color:#47
 <h1>🟢 Resolve AI — Painel ao vivo</h1>
 <div class="sub">Atualiza sozinho a cada 15s · {m['total_users']} usuários no total</div>
 <div class="wa">WhatsApp: {wa_txt}</div>
+<div style="display:inline-block;padding:6px 12px;border-radius:8px;color:#fff;font-weight:600;font-size:13px;background:{cron_cor};margin-bottom:16px;margin-left:8px">Lembretes: {cron_txt}</div>
+<button onclick="testarMotor()" style="cursor:pointer;padding:6px 14px;border-radius:8px;border:1px solid #00A86B;background:#00A86B;color:#fff;font-weight:600;font-size:13px;margin-left:8px">▶ Testar motor agora</button>
 <div class="grid">
 <div class="card"><div class="n">{m['msgs_in_hoje']}</div><div class="l">mensagens recebidas hoje</div></div>
 <div class="card"><div class="n">{m['msgs_out_hoje']}</div><div class="l">respostas enviadas hoje</div></div>
@@ -818,6 +860,14 @@ async function acao(uid, tipo, extra) {{
   const r = await fetch('/painel/acao', {{method:'POST',
     headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(body)}});
   if (r.ok) {{ location.reload(); }} else {{ alert('Falhou. Tente de novo.'); }}
+}}
+async function testarMotor() {{
+  const r = await fetch('/cron/proactive', {{method:'POST'}});
+  const j = await r.json();
+  alert('Motor executado! Lembretes disparados agora: ' + (j.sent||0) +
+        '\\n\\nSe você tinha um lembrete na hora, ele foi enviado. ' +
+        'Recarregando o painel...');
+  location.reload();
 }}
 </script>
 </body></html>"""

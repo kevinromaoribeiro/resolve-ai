@@ -783,3 +783,29 @@ def admin_set_status(user_id: int, status: str) -> bool:
         return True
     except Exception:
         return False
+
+
+# ── Heartbeat do cron (monitorar se o motor está sendo chamado) ──────────
+def registrar_cron_ping() -> None:
+    """Marca que o /cron/proactive foi chamado agora (heartbeat)."""
+    try:
+        with get_conn() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS settings "
+                         "(k TEXT PRIMARY KEY, v TEXT)")
+            conn.execute("INSERT OR REPLACE INTO settings (k, v) VALUES "
+                         "('last_cron', ?)",
+                         (tempo.agora().isoformat(timespec="seconds"),))
+    except Exception:
+        pass
+
+
+def ultimo_cron_ping() -> Optional[str]:
+    """Retorna o timestamp do último ping do cron, ou None se nunca rodou."""
+    try:
+        with get_conn() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS settings "
+                         "(k TEXT PRIMARY KEY, v TEXT)")
+            r = conn.execute("SELECT v FROM settings WHERE k='last_cron'").fetchone()
+            return r["v"] if r else None
+    except Exception:
+        return None
