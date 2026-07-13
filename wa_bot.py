@@ -30,9 +30,11 @@ from __future__ import annotations
 import base64
 import os
 import re
+from datetime import datetime, date
 from typing import Any, Optional
 
 import db
+import textos
 import ai_engine
 import scheduler
 
@@ -46,6 +48,13 @@ EVOLUTION_INSTANCE = os.environ.get("EVOLUTION_INSTANCE", "resolveai")
 PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://SEU-LINK-DE-PAGAMENTO")
 PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL", "")
 TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "7"))
+# v6: teto de duração de áudio (custo Whisper) e link dos Termos/Privacidade
+AUDIO_MAX_SECONDS = int(os.environ.get("AUDIO_MAX_SECONDS", "120"))
+# v6.5: teto de envios por ciclo do cron (o resto vai no próximo, sem perda)
+DISPATCH_MAX_PER_CYCLE = int(os.environ.get("DISPATCH_MAX_PER_CYCLE", "60"))
+TERMS_URL = os.environ.get(
+    "TERMS_URL",
+    "https://kevinromaoribeiro.github.io/resolveai-site/termos.html")
 # Número do dono (só ele pode ativar assinaturas manualmente no MVP)
 ADMIN_PHONE = re.sub(r"\D", "", os.environ.get("ADMIN_PHONE", ""))
 
@@ -69,23 +78,8 @@ USE_CASES = {
     "7": ("pet", "🐾 Cuidados com pet"),
     "8": ("burocracia", "📄 Documentos e burocracias"),
 }
-USE_CASE_EXAMPLES = {
-    "contas": "📷 manda o *print do boleto* → eu leio valor e vencimento e te lembro um dia antes",
-    "mercado": "🎤 _\"comprei arroz, óleo e café hoje\"_ → registro e aviso quando for hora de repor",
-    "carro": "💬 _\"troquei o óleo hoje, 74.200 km\"_ → calculo e aviso da próxima troca",
-    "saude": "💬 _\"consulta cardiologista dia 15/08 às 14h\"_ → lembrete um dia antes e no dia",
-    "datas": "💬 _\"aniversário da minha mãe é 03/09\"_ → nunca mais passa em branco",
-    "encomendas": "💬 _\"encomenda chega até sexta\"_ → eu cobro o prazo por você",
-    "pet": "🎤 _\"comprei ração premier hoje\"_ → aviso quando estiver acabando, com reposição em 1 clique",
-    "burocracia": "💬 _\"IPVA vence dia 15/01\"_ → lembrete com antecedência, sem multa",
-}
+USE_CASE_EXAMPLES = textos.USE_CASE_EXAMPLES
 
-WELCOME_MSG = (
-    "Oi! Eu sou o *Resolve AI* 🟢 — o assistente que tira da sua cabeça "
-    "contas, lembretes, manutenções e compras.\n\n"
-    f"Você ganhou *{TRIAL_DAYS} dias grátis* para testar, sem cartão.\n\n"
-    "Pra começar: *como você quer ser chamado?*"
-)
 
 
 def _interesses_menu(first_name: str) -> str:
@@ -116,13 +110,10 @@ def _parse_interesses(text: str) -> list[str]:
 
 
 def _onboarding_done_msg(first_name: str, keys: list[str]) -> str:
-    chosen = keys or ["contas", "mercado"]
-    exemplos = "\n".join(f"• {USE_CASE_EXAMPLES[k]}" for k in chosen[:4])
-    return (f"Perfeito, {first_name}! Seus *{TRIAL_DAYS} dias grátis* "
-            f"começaram agora. ✅\n\n"
-            f"*Experimente mandar:*\n{exemplos}\n\n"
-            f"A qualquer momento: *assinar* (planos), *cancelar* ou "
-            f"*apagar meus dados* (saio da sua vida sem deixar rastro).")
+    chosen = keys or ["contas", "mercado", "datas"]
+    exemplos = "\n".join(textos.USE_CASE_EXAMPLES[k] for k in chosen[:4])
+    return (textos.SUGESTOES_ABERTURA.format(nome=first_name, trial_days=TRIAL_DAYS)
+            + exemplos + textos.SUGESTOES_RODAPE)
 
 
 def _payment_msg(first_name: str) -> str:
@@ -193,10 +184,20 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         return (f"Bora, {first_name}! 🚀\n"
                 f"💳 Mensal (R$ 19,90): {PAYMENT_LINK}{anual}\n\n"
                 f"Pagou, me avisa aqui que eu ativo na hora.")
+    if low in ("privacidade", "termos", "lgpd", "meus dados"):
+        return ("🔒 *Privacidade em 4 linhas:*\n"
+                "• Suas mensagens, fotos e áudios são processados por IA "
+                "(OpenAI, servidores no exterior) só para te atender.\n"
+                "• Nunca vendemos nem compartilhamos seus dados.\n"
+                "• Eu *lembro* você de pagar — nunca pago, compro ou "
+                "transfiro nada.\n"
+                "• *apagar meus dados* remove tudo, na hora (LGPD).\n\n"
+                f"Termos completos: {TERMS_URL}")
     if low in ("ajuda", "menu", "comandos"):
         return ("Eu entendo linguagem natural — manda texto, áudio ou foto "
                 "do seu jeito. Comandos úteis:\n"
-                "*assinar* · *cancelar* · *apagar meus dados* · *ajuda*")
+                "*assinar* · *cancelar* · *apagar meus dados* · "
+                "*privacidade* · *ajuda*")
 
     # --- admin: "ativar 5511999990000" -------------------------------------
     if ADMIN_PHONE and phone == ADMIN_PHONE and low.startswith("ativar"):
@@ -210,12 +211,35 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     return None
 
 
+_LOOKS_LIKE_QUESTION = re.compile(
+    r"(\?|^(quem|qual|quais|quando|onde|como|quanto|quantos|quantas|"
+    r"porque|por que|pq)\b|^(me\s+)?(lembr|anota|marca|avisa|agenda))",
+    re.IGNORECASE)
+
+
+def _is_not_a_name(text: str) -> bool:
+    """True se o texto claramente NÃO é um nome (é pergunta, comando, frase)."""
+    t = text.strip()
+    if _LOOKS_LIKE_QUESTION.search(t):
+        return True
+    if len(t.split()) > 4:          # nome não tem 5+ palavras
+        return True
+    return False
+
+
 def _handle_onboarding(user: dict, text: str) -> Optional[str]:
-    """Fluxo conversacional de cadastro. Retorna resposta ou None se concluído."""
+    """Fluxo conversacional de cadastro. Retorna resposta ou None se concluído.
+    IMPORTANTE: não sequestra perguntas/comandos — se o usuário pergunta algo
+    no meio do cadastro, devolve None para o motor responder, sem travar."""
     step = user.get("onboarding_step")
     if not step:
         return None
     if step == "nome":
+        # Se claramente é uma pergunta/comando, não trata como nome:
+        # deixa o motor responder e repete o convite do nome depois.
+        if _is_not_a_name(text):
+            resposta_motor = _answer_and_reprompt_name(user, text)
+            return resposta_motor
         nome = text.strip().split("\n")[0][:60]
         if len(nome) < 2:
             return "Não peguei — como você quer ser chamado?"
@@ -223,12 +247,28 @@ def _handle_onboarding(user: dict, text: str) -> Optional[str]:
                               onboarding_step="interesses")
         return _interesses_menu(nome.split()[0])
     if step == "interesses":
-        keys = [] if text.strip().lower() in ("pular", "depois") \
-            else _parse_interesses(text)
+        low = text.strip().lower()
+        # pergunta no meio? responde e mantém no passo de interesses
+        if _LOOKS_LIKE_QUESTION.search(text) and low not in ("pular", "depois"):
+            eng = ai_engine.converse(user["id"], user["nome"].split()[0],
+                                     "texto", text)
+            base = eng.get("reply", "")
+            return (base + "\n\n_Voltando ao cadastro: me diz os números do "
+                    "que te interessa (ex.: *1 3 7*) ou responda *pular*._")
+        keys = [] if low in ("pular", "depois") else _parse_interesses(text)
         db.update_user_fields(user["id"], interesses=",".join(keys) or None,
                               onboarding_step=None)
         return _onboarding_done_msg(user["nome"].split()[0], keys)
     return None
+
+
+def _answer_and_reprompt_name(user: dict, text: str) -> str:
+    """Responde a pergunta/comando feita durante o passo 'nome' e, em seguida,
+    repete gentilmente o convite pra dizer o nome — sem gravar lixo como nome."""
+    eng = ai_engine.converse(user["id"], "", "texto", text)
+    base = eng.get("reply", "")
+    return (base + "\n\n😊 Ah, e pra eu te chamar direito: "
+            "*como você quer ser chamado?*")
 
 
 def _classify_message(msg: dict) -> tuple[str, str]:
@@ -326,7 +366,7 @@ def handle_incoming(payload: dict) -> Optional[dict]:
 
     # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
     if is_new:
-        return {"number": phone, "text": WELCOME_MSG}
+        return {"number": phone, "text": textos.WELCOME_MSG.format(trial_days=TRIAL_DAYS, terms_url=TERMS_URL)}
 
     # --- 1. comandos globais e onboarding (só em texto) --------------------
     if kind == "texto":
@@ -361,22 +401,20 @@ def handle_incoming(payload: dict) -> Optional[dict]:
 
     # --- roteamento por tipo ----------------------------------------------
     if kind == "audio":
+        # v6: teto de duração — áudio longo custa ~20x um texto no Whisper
+        secs = int((msg.get("audioMessage") or {}).get("seconds") or 0)
+        if secs > AUDIO_MAX_SECONDS:
+            return {"number": phone, "text": textos.AUDIO_LONGO.format(
+                audio_max_min=AUDIO_MAX_SECONDS // 60)}
         transcript = _transcribe_audio(media_b64) if media_b64 else None
         if transcript is None:
-            return {"number": phone, "text":
-                    ("Recebi seu áudio! 🎤 Neste beta a transcrição ainda está "
-                     "sendo ativada — me manda em texto rapidinho que eu "
-                     "resolvo na hora.")}
+            return {"number": phone, "text": textos.AUDIO_INDISPONIVEL}
         kind, content = "audio", transcript
 
     elif kind in ("imagem_silenciosa", "imagem_com_texto"):
         ocr = _read_image(media_b64) if media_b64 else None
         if ocr is None:
-            return {"number": phone, "text":
-                    ("Recebi sua imagem! 📷 Neste beta a leitura automática "
-                     "está sendo ativada — me diz em uma linha o que é "
-                     "(ex.: 'boleto Enel R$ 187,40 vence 20/07') que eu "
-                     "registro agora.")}
+            return {"number": phone, "text": textos.IMAGEM_PEDIR_CONTEXTO}
         instruction = content
         content = ocr
         kind = "imagem_com_texto" if instruction.strip() else "imagem_silenciosa"
@@ -418,14 +456,71 @@ def send_whatsapp(number: str, text: str) -> bool:
         return False
 
 
+def _instance_state() -> str:
+    """Consulta o estado da sessão WhatsApp na Evolution ('open' = conectada).
+    'unknown' se a própria Evolution não responder."""
+    try:
+        r = requests.get(
+            f"{EVOLUTION_URL}/instance/connectionState/{EVOLUTION_INSTANCE}",
+            headers={"apikey": EVOLUTION_APIKEY}, timeout=8)
+        return ((r.json().get("instance") or {}).get("state")
+                or r.json().get("state") or "unknown")
+    except Exception:
+        return "unknown"
+
+
+def maybe_admin_report() -> bool:
+    """Vigia diário (v6.6.1): 1 mensagem/dia pro ADMIN_PHONE com o pulso do
+    sistema. Dispara no primeiro ciclo após as 20h. Dedup via log."""
+    if not ADMIN_PHONE:
+        return False
+    now = datetime.now()
+    if now.hour < 20:
+        return False
+    admin = db.get_user_by_phone(re.sub(r"\D", "", ADMIN_PHONE)) if hasattr(db, "get_user_by_phone") else None
+    admin_id = admin["id"] if admin else 0
+    if db.dispatched_today("admin-report", admin_id):
+        return False
+    hoje = date.today().isoformat()
+    with db.get_conn() as conn:
+        novos = conn.execute("SELECT COUNT(*) FROM users WHERE substr(data_criacao,1,10)=?", (hoje,)).fetchone()[0]
+        trials = conn.execute("SELECT COUNT(*) FROM users WHERE status='trial'").fetchone()[0]
+        ativos = conn.execute("SELECT COUNT(*) FROM users WHERE status='ativo'").fetchone()[0]
+        disparos = conn.execute("SELECT COUNT(*) FROM dispatches WHERE substr(sent_at,1,10)=?", (hoje,)).fetchone()[0]
+        itens_hoje = conn.execute("SELECT COUNT(*) FROM items WHERE substr(data_criacao,1,10)=?", (hoje,)).fetchone()[0]
+    wa = _instance_state()
+    msg = (f"🤖 *Vigia Resolve AI* — {now.strftime('%d/%m %H:%M')}\n"
+           f"WhatsApp: {'🟢 conectado' if wa=='open' else '🔴 '+wa+' — REESCANEIE O QR'}\n"
+           f"Hoje: {novos} novo(s) usuário(s) · {itens_hoje} item(ns) · "
+           f"{disparos} disparo(s)\n"
+           f"Base: {ativos} pagante(s) · {trials} em trial\n"
+           f"MRR: R$ {ativos*19.90:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    if send_whatsapp(re.sub(r"\D", "", ADMIN_PHONE), msg):
+        db.log_dispatch(admin_id, "admin-report")
+        return True
+    return False
+
+
 def dispatch_proactive() -> int:
-    """Roda o motor proativo e envia os disparos reais. Retorna nº enviados."""
+    """Roda o motor proativo, envia e REGISTRA cada disparo (dedup)."""
     result = scheduler.run_proactive_engine()
     sent = 0
-    for d in result["due_dispatches"] + result["churn_dispatches"] + result.get("trial_dispatches", []) + result.get("guided_dispatches", []):
+    all_dispatches = (result.get("alarm_dispatches", [])
+                      + result.get("overdue_dispatches", [])
+                      + result["due_dispatches"]
+                      + result["churn_dispatches"]
+                      + result.get("trial_dispatches", [])
+                      + result.get("guided_dispatches", []))
+    for d in all_dispatches[:DISPATCH_MAX_PER_CYCLE]:
         number = re.sub(r"\D", "", d["telefone"])
         if number and send_whatsapp(number, d["message"]):
             sent += 1
+            try:
+                db.log_dispatch(d["user_id"],
+                                 d.get("kind", "outro"),
+                                 d.get("item_id"))
+            except Exception:
+                pass  # log falhar não pode derrubar o envio
     return sent
 
 
@@ -440,8 +535,16 @@ try:
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "instance": EVOLUTION_INSTANCE,
+        """Vigia: retorna 500 se a sessão do WhatsApp caiu — o monitor
+        gratuito do cron-job.org detecta e manda e-mail na hora."""
+        wa = _instance_state()
+        body = {"status": "ok" if wa == "open" else "degraded",
+                "whatsapp": wa, "instance": EVOLUTION_INSTANCE,
                 "llm": "on" if ai_engine.LLM_AVAILABLE else "mock"}
+        if wa != "open":
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=500, content=body)
+        return body
 
     @app.post("/webhook")
     async def webhook(request: Request):
@@ -456,8 +559,11 @@ try:
 
     @app.post("/cron/proactive")
     async def cron_proactive():
-        """Chame 1x/dia (cron-job.org gratuito) para os disparos proativos."""
-        return {"sent": dispatch_proactive()}
+        """Chame a cada 15 min (cron-job.org gratuito). Dedup garante zero spam;
+        alarmes com hora tocam no minuto; o resto respeita 8h-21h."""
+        sent = dispatch_proactive()
+        maybe_admin_report()
+        return {"sent": sent}
 
 except ImportError:
     app = None  # permite importar handle_incoming em testes sem fastapi
