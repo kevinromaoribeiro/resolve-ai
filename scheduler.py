@@ -16,6 +16,7 @@ fossem mensagens proativas de WhatsApp.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+import tempo
 from typing import Optional
 
 import db
@@ -28,7 +29,7 @@ QUIET_START, QUIET_END = 21, 8   # silêncio 21h–8h (exceto alarme com hora)
 
 
 def _in_quiet_hours(now: Optional[datetime] = None) -> bool:
-    h = (now or datetime.now()).hour
+    h = (now or tempo.agora()).hour
     return h >= QUIET_START or h < QUIET_END
 
 
@@ -203,7 +204,7 @@ def roll_recurring(ref: Optional[date] = None) -> int:
                 h, mi = map(int, hora.split(":"))
                 prox = datetime(base.year, base.month, base.day, h, mi) \
                     + timedelta(hours=step)
-                while prox < datetime.now():
+                while prox < tempo.agora():
                     prox += timedelta(hours=step)
                 rolls.append((item["id"], prox.date().isoformat(),
                               prox.strftime("%H:%M")))
@@ -256,7 +257,7 @@ def check_time_alarms(ref: Optional[datetime] = None) -> list[dict]:
     """Checagem 0 (v6.3): alarmes com hora — itens de HOJE cuja hora_alvo
     chegou. Dispara no minuto (rodando o cron a cada 5-15 min), 1x por item.
     Ignora horário de silêncio: hora explícita é pedido explícito."""
-    now = ref or datetime.now()
+    now = ref or tempo.agora()
     dispatches: list[dict] = []
     for item in db.items_due_at_time(now):
         u = db.get_user(item["user_id"])
@@ -311,7 +312,7 @@ def run_proactive_engine(
     o log de disparos garante que ninguém recebe mensagem repetida.
     Alarmes com hora furam o silêncio; o resto respeita 8h-21h.
     """
-    now = ref_datetime or datetime.now()
+    now = ref_datetime or tempo.agora()
     roll_recurring(ref=ref_date)          # recorrentes rolam ANTES de tudo
     alarms = check_time_alarms(ref=now)
     if _in_quiet_hours(now):
@@ -342,5 +343,5 @@ def run_proactive_engine(
 def simulate_next_day() -> dict:
     """Simula a execução do cronjob no dia seguinte (D+1)."""
     tomorrow = date.today() + timedelta(days=1)
-    tomorrow_dt = datetime.now() + timedelta(days=1)
+    tomorrow_dt = tempo.agora() + timedelta(days=1)
     return run_proactive_engine(ref_date=tomorrow, ref_datetime=tomorrow_dt)

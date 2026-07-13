@@ -49,24 +49,26 @@ INTERESSES_MSG = (
 # EDITE À VONTADE. Cada linha é um exemplo prático que aparece no onboarding
 # conforme os interesses que a pessoa escolheu.
 USE_CASE_EXAMPLES = {
-    "contas": "💡 _\"conta de luz 187 vence dia 20\"_ → eu te aviso 3 dias antes, 1 dia antes e no dia. Multa nunca mais.",
-    "mercado": "🛒 _\"comprei arroz, café e sabão em pó\"_ → eu controlo e aviso quando for hora de repor.",
-    "carro": "🚗 _\"troquei o óleo, 74.200 km\"_ → calculo a próxima troca e te aviso com folga.",
-    "saude": "🩺 _\"consulta com a dermato dia 15/08 às 14h\"_ → te lembro na véspera e no dia. Sem remarcar.",
-    "datas": "🎂 _\"aniversário da minha mãe é 03/09\"_ → nunca mais passa em branco.",
-    "encomendas": "📦 _\"minha encomenda chega até sexta\"_ → eu fico de olho no prazo por você.",
-    "pet": "🐾 _\"vacina da Mel vence dia 30\"_ → te aviso antes, e lembro da ração quando estiver acabando.",
-    "burocracia": "📄 _\"IPVA vence dia 15/01\"_ → lembrete com antecedência, sem susto de multa.",
+    "contas": "💡 *Conta chegando?* Me manda a foto do boleto (ou digita _\"luz 187 vence dia 20\"_). Eu aviso 3 dias antes, 1 dia antes e no dia. Multa nunca mais.",
+    "mercado": "🛒 *Acabou algo em casa?* Fala _\"acabou o café\"_ que eu lembro na próxima compra e aviso quando for hora de repor.",
+    "carro": "🚗 *Cuida do carro?* Manda _\"troquei o óleo, 74.200 km\"_ — eu calculo a próxima troca e te aviso com folga. IPVA e seguro também.",
+    "saude": "🩺 *Tem consulta ou exame?* Fala _\"dermato dia 15/08 às 14h\"_ que eu te lembro na véspera e no dia. Remédio contínuo também.",
+    "datas": "🎂 *Data importante?* Diz _\"aniversário da minha mãe é 03/09\"_ — eu te aviso todo ano, com antecedência pra dar tempo do presente.",
+    "encomendas": "📦 *Esperando encomenda?* Fala _\"chega até sexta\"_ que eu fico de olho no prazo por você.",
+    "pet": "🐾 *Tem pet?* Manda _\"vacina da Mel dia 30\"_ — eu aviso antes, e lembro da ração quando estiver acabando.",
+    "burocracia": "📄 *Prazo ou documento?* Diz _\"IPVA vence 15/01\"_ ou _\"renovar CNH em março\"_ — eu te aviso com folga, sem susto.",
 }
 
-# Frase que abre o bloco de sugestões
+# Abertura das sugestões — CTA forte pra AGIR já (prova de valor no minuto 1)
 SUGESTOES_ABERTURA = (
-    "Perfeito, {nome}! Seus *{trial_days} dias grátis* começaram agora. ✅\n\n"
-    "Bora tirar umas coisas da sua cabeça? *Testa comigo:*\n"
+    "Prazer, {nome}! Seus *{trial_days} dias grátis* começaram. 🎉\n\n"
+    "Vou te mostrar na prática — *escolhe UMA coisa abaixo e me manda "
+    "agora*. Em 10 segundos você sente como é ter alguém cuidando disso "
+    "pra você:\n"
 )
 SUGESTOES_RODAPE = (
-    "\n\nÉ só me mandar do seu jeito — *texto, áudio ou foto*. "
-    "A qualquer momento: *assinar*, *cancelar* ou *apagar meus dados*."
+    "\n\n👆 *Escolhe uma e manda agora* (foto, áudio ou texto — do seu "
+    "jeito). Quanto antes você testar, mais eu tiro da sua cabeça. 🧠"
 )
 
 # ── Recebimento de midia (sem expor bastidor tecnico ao usuario) ──────

@@ -31,6 +31,7 @@ import base64
 import os
 import re
 from datetime import datetime, date
+import tempo
 from typing import Any, Optional
 
 import db
@@ -298,7 +299,8 @@ def _answer_and_reprompt_name(user: dict, text: str) -> str:
 def _classify_message(msg: dict) -> tuple[str, str]:
     """
     Mapeia a mensagem da Evolution para (kind, content) do ai_engine.
-    kinds: texto | audio | imagem_silenciosa | imagem_com_texto | video | desconhecido
+    kinds: texto | audio | imagem_silenciosa | imagem_com_texto | video |
+           figurinha | reacao | desconhecido
     """
     if "conversation" in msg and msg["conversation"]:
         return "texto", msg["conversation"]
@@ -312,6 +314,11 @@ def _classify_message(msg: dict) -> tuple[str, str]:
         return ("imagem_com_texto" if caption.strip() else "imagem_silenciosa"), caption
     if "videoMessage" in msg:
         return "video", ""
+    if "stickerMessage" in msg:
+        return "figurinha", ""
+    if "reactionMessage" in msg:
+        emoji = (msg.get("reactionMessage") or {}).get("text", "") or ""
+        return "reacao", emoji
     return "desconhecido", ""
 
 
@@ -456,9 +463,25 @@ def handle_incoming(payload: dict) -> Optional[dict]:
             PENDING[phone] = result["pending_payload"]
         return {"number": phone, "text": result["reply"]}
 
+    elif kind == "figurinha":
+        # Figurinha: responde leve, sem "formato não suportado"
+        import random
+        return {"number": phone, "text": random.choice([
+            "😄 Boa! Manda o que você quer que eu anote — conta, consulta, "
+            "compra — que eu cuido.",
+            "Haha adorei 😄 Precisa que eu lembre de algo? É só falar.",
+            "🙂 Tô aqui! Me diz o que não quer esquecer que eu registro.",
+        ])}
+
+    elif kind == "reacao":
+        # Reação a uma mensagem (emoji): não precisa responder nada.
+        return None
+
     elif kind == "desconhecido":
+        # Nunca dizer "formato não suportado". Redireciona com leveza.
         return {"number": phone, "text":
-                "Formato não suportado. Me manda texto, áudio ou foto. 🙂"}
+                "Recebi! 🙂 Pra eu te ajudar melhor, me manda em *texto, "
+                "áudio ou foto* — anoto na hora."}
 
     # Texto e áudio passam pela camada de interpretação (intenção + banco)
     result = ai_engine.converse(user["id"], first_name, kind, content)
@@ -505,7 +528,7 @@ def maybe_admin_report() -> bool:
     sistema. Dispara no primeiro ciclo após as 20h. Dedup via log."""
     if not ADMIN_PHONE:
         return False
-    now = datetime.now()
+    now = tempo.agora()
     if now.hour < 20:
         return False
     admin = db.get_user_by_phone(re.sub(r"\D", "", ADMIN_PHONE)) if hasattr(db, "get_user_by_phone") else None

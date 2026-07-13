@@ -27,6 +27,7 @@ import json
 import os
 import re
 from datetime import date, datetime, timedelta
+import tempo
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -303,7 +304,7 @@ def extract_due_time(text: str, ref: Optional[datetime] = None) -> Optional[str]
     """Extrai HORÁRIO-alvo (HH:MM) de expressões relativas/absolutas.
     Só reconhece hora quando há marcador explícito (min/hora/h/às) —
     nunca infere hora a partir de um número solto (evita confundir 'dia 15')."""
-    ref = ref or datetime.now()
+    ref = ref or tempo.agora()
     low = text.lower()
 
     # relativo: "daqui 30 min", "daqui a 30min", "em 45 minutos"
@@ -561,7 +562,7 @@ def handle_text(text: str, user_name: str = "Kevin") -> dict:
             nota_recur = f"\n🔁 _Repito todo mês no dia {int(m.group(1))}._"
         elif mh:   # "de 8 em 8 horas"
             item["recorrencia"] = f"horas:{int(mh.group(1))}"
-            prox = datetime.now() + timedelta(hours=int(mh.group(1)))
+            prox = tempo.agora() + timedelta(hours=int(mh.group(1)))
             item["hora_alvo"] = prox.strftime("%H:%M")
             item["data_vencimento"] = prox.date().isoformat()
             nota_recur = f"\n🔁 _Repito de {mh.group(1)} em {mh.group(1)} horas._"
@@ -571,7 +572,7 @@ def handle_text(text: str, user_name: str = "Kevin") -> dict:
             nota_recur = f"\n🔁 _Repito toda {mw.group(1)}._"
         elif item.get("hora_alvo"):  # "todo dia 21h"
             item["recorrencia"] = "diaria"
-            hoje_ainda = item["hora_alvo"] > datetime.now().strftime("%H:%M")
+            hoje_ainda = item["hora_alvo"] > tempo.agora().strftime("%H:%M")
             item["data_vencimento"] = (date.today() if hoje_ainda
                                        else date.today() + timedelta(days=1)
                                        ).isoformat()
@@ -899,7 +900,7 @@ def _call_llm(user_content: str) -> Optional[dict]:
         from litellm import completion  # import tardio: só se instalado
         system = (LLM_SYSTEM_PROMPT
                   .replace("{today}", date.today().isoformat())
-                  .replace("{now}", datetime.now().strftime("%H:%M")))
+                  .replace("{now}", tempo.agora().strftime("%H:%M")))
         for attempt in range(2):
             resp = completion(
                 model=LLM_MODEL,
@@ -1143,9 +1144,9 @@ def converse(
             if eh_relativo:  # "adiar 1h" / "adiar 30 min" = +tempo, não 01:00
                 n = int(m.group(1))
                 minutos = n if m.group(2).startswith("min") else n * 60
-                base_h = alvo.get("hora_alvo") or datetime.now().strftime("%H:%M")
+                base_h = alvo.get("hora_alvo") or tempo.agora().strftime("%H:%M")
                 h, mi = map(int, base_h.split(":"))
-                novo = (datetime.now().replace(hour=h, minute=mi)
+                novo = (tempo.agora().replace(hour=h, minute=mi)
                         + timedelta(minutes=minutos))
                 db.postpone_item(
                     alvo["id"],
