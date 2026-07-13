@@ -735,3 +735,51 @@ def painel_metricas() -> dict:
             "ORDER BY id DESC LIMIT 30").fetchall()
         m["ultimas"] = [dict(r) for r in rows]
         return m
+
+
+# ── Ações de admin para o painel ─────────────────────────────────────────
+def admin_list_users() -> list[dict]:
+    """Lista todos os usuários com dados úteis pro painel de admin."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT u.id, u.nome, u.telefone, u.status, u.data_criacao,
+                      u.ultima_interacao, u.interesses,
+                      (SELECT COUNT(*) FROM items i WHERE i.user_id=u.id) AS n_itens,
+                      (SELECT COUNT(*) FROM items i WHERE i.user_id=u.id
+                       AND i.status='pendente') AS n_pendentes
+               FROM users u ORDER BY u.data_criacao DESC""").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["dias_trial_restantes"] = trial_days_left(d)
+        out.append(d)
+    return out
+
+
+def admin_extend_trial(user_id: int, dias_extra: int) -> bool:
+    """Estende o trial adiantando a data_criacao (dá mais dias grátis)."""
+    try:
+        with get_conn() as conn:
+            row = conn.execute("SELECT data_criacao FROM users WHERE id=?",
+                               (user_id,)).fetchone()
+            if not row:
+                return False
+            base = datetime.strptime(row["data_criacao"], "%Y-%m-%d %H:%M:%S")
+            nova = base + timedelta(days=dias_extra)
+            conn.execute("UPDATE users SET data_criacao=?, status='trial' WHERE id=?",
+                         (nova.strftime("%Y-%m-%d %H:%M:%S"), user_id))
+        return True
+    except Exception:
+        return False
+
+
+def admin_set_status(user_id: int, status: str) -> bool:
+    """ativo | trial | cancelado | bloqueado."""
+    if status not in ("ativo", "trial", "cancelado", "bloqueado"):
+        return False
+    try:
+        with get_conn() as conn:
+            conn.execute("UPDATE users SET status=? WHERE id=?", (status, user_id))
+        return True
+    except Exception:
+        return False

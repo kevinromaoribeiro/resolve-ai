@@ -454,6 +454,8 @@ def handle_incoming(payload: dict) -> Optional[dict]:
 
     # --- 2. gates de acesso -------------------------------------------------
     status = user.get("status") or "trial"
+    if status == "bloqueado":
+        return None  # usuário bloqueado pelo admin: ignora em silêncio
     if status == "cancelado":
         return {"number": phone, "text":
                 (f"{first_name}, sua assinatura está cancelada. Quer voltar? "
@@ -549,13 +551,35 @@ def send_whatsapp(number: str, text: str) -> bool:
 
 def _instance_state() -> str:
     """Consulta o estado da sessão WhatsApp na Evolution ('open' = conectada).
-    'unknown' se a própria Evolution não responder."""
+    Tenta múltiplos formatos de resposta (a Evolution mudou o shape entre
+    versões). 'unknown' só se realmente não der pra ler."""
     try:
         r = requests.get(
             f"{EVOLUTION_URL}/instance/connectionState/{EVOLUTION_INSTANCE}",
             headers={"apikey": EVOLUTION_APIKEY}, timeout=8)
-        return ((r.json().get("instance") or {}).get("state")
-                or r.json().get("state") or "unknown")
+        j = r.json()
+        # formatos possíveis: {"instance":{"state":"open"}} | {"state":"open"}
+        # | {"instance":{"instanceName":..,"state":"open"}}
+        st = None
+        if isinstance(j, dict):
+            inst = j.get("instance")
+            if isinstance(inst, dict):
+                st = inst.get("state") or inst.get("connectionStatus")
+            st = st or j.get("state") or j.get("connectionStatus")
+        if st:
+            return st
+        # fallback: lista de instâncias
+        r2 = requests.get(
+            f"{EVOLUTION_URL}/instance/fetchInstances",
+            headers={"apikey": EVOLUTION_APIKEY}, timeout=8)
+        arr = r2.json()
+        if isinstance(arr, list):
+            for it in arr:
+                nm = (it.get("instance") or it).get("instanceName") or it.get("name")
+                if nm == EVOLUTION_INSTANCE:
+                    return ((it.get("instance") or it).get("connectionStatus")
+                            or (it.get("instance") or it).get("state") or "unknown")
+        return "unknown"
     except Exception:
         return "unknown"
 
@@ -687,6 +711,34 @@ try:
             prev = (r["preview"] or "").replace("<", "&lt;")[:80]
             linhas += (f'<tr style="background:{cor}"><td>{hora}</td>'
                        f'<td>…{tel}</td><td>{seta}</td><td>{prev}</td></tr>')
+
+        # tabela de usuários com ações de admin
+        linhas_users = ""
+        for u in db.admin_list_users():
+            st = u["status"]
+            uid = u["id"]
+            cor_st = {"ativo": "#22c55e", "trial": "#3b82f6",
+                      "cancelado": "#94a3b8", "bloqueado": "#ef4444"}.get(st, "#64748b")
+            tel4 = (u["telefone"] or "")[-4:]
+            dias = u["dias_trial_restantes"]
+            dias_txt = f"{dias}d" if st == "trial" else "—"
+            nome = (u["nome"] or "").replace("<", "&lt;")[:20]
+            bs = "cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px"
+            btns = (
+                f"<button onclick=\"acao({uid},'estender')\" "
+                f"style='{bs};border:1px solid #cbd5e1;background:#fff'>+dias</button>"
+                f"<button onclick=\"acao({uid},'ativar')\" "
+                f"style='{bs};border:1px solid #86efac;background:#f0fdf4'>ativar</button>")
+            if st == "bloqueado":
+                btns += (f"<button onclick=\"acao({uid},'liberar')\" "
+                         f"style='{bs};border:1px solid #fcd34d;background:#fffbeb'>liberar</button>")
+            else:
+                btns += (f"<button onclick=\"acao({uid},'bloquear')\" "
+                         f"style='{bs};border:1px solid #fca5a5;background:#fef2f2'>bloquear</button>")
+            linhas_users += (
+                f"<tr><td>{nome}</td><td>…{tel4}</td>"
+                f"<td><span style='color:{cor_st};font-weight:600'>{st}</span></td>"
+                f"<td>{dias_txt}</td><td>{u['n_itens']}</td><td>{btns}</td></tr>")
         html = f"""<!doctype html><html lang="pt-BR"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="15">
@@ -722,9 +774,50 @@ th{{text-align:left;padding:8px 10px;background:#f1f5f9;font-size:12px;color:#47
 <table><tr><th>Hora</th><th>Nº</th><th>Direção</th><th>Conteúdo</th></tr>
 {linhas if linhas else '<tr><td colspan=4 style="text-align:center;color:#94a3b8;padding:20px">Nenhuma mensagem ainda. Mande um "oi" pro bot pra testar.</td></tr>'}
 </table>
+
+<h1 style="font-size:15px;margin-top:24px">👥 Usuários</h1>
+<table><tr><th>Nome</th><th>Nº</th><th>Status</th><th>Trial</th><th>Itens</th><th>Ações</th></tr>
+{linhas_users}
+</table>
 <div class="foot">Resolve AI · painel interno · dados ao vivo do servidor de produção</div>
+<script>
+async function acao(uid, tipo, extra) {{
+  let body = {{user_id: uid, acao: tipo}};
+  if (tipo === 'estender') {{
+    let d = prompt('Quantos dias extras de trial?', '7');
+    if (!d) return;
+    body.dias = parseInt(d);
+  }}
+  const r = await fetch('/painel/acao', {{method:'POST',
+    headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(body)}});
+  if (r.ok) {{ location.reload(); }} else {{ alert('Falhou. Tente de novo.'); }}
+}}
+</script>
 </body></html>"""
         return HTMLResponse(html)
+
+    @app.post("/painel/acao")
+    async def painel_acao(request: Request):
+        """Ações de admin do painel: estender trial, bloquear, ativar, etc."""
+        from fastapi.responses import JSONResponse
+        try:
+            body = await request.json()
+            uid = int(body.get("user_id"))
+            acao = body.get("acao")
+            ok = False
+            if acao == "estender":
+                ok = db.admin_extend_trial(uid, int(body.get("dias", 7)))
+            elif acao == "bloquear":
+                ok = db.admin_set_status(uid, "bloqueado")
+            elif acao == "ativar":
+                ok = db.admin_set_status(uid, "ativo")
+            elif acao == "liberar":  # desbloqueia -> volta pra trial
+                ok = db.admin_set_status(uid, "trial")
+            elif acao == "apagar":
+                db.delete_user(uid); ok = True
+            return JSONResponse({"ok": ok})
+        except Exception as e:
+            return JSONResponse({"ok": False, "erro": str(e)}, status_code=400)
 
 except ImportError:
     app = None  # permite importar handle_incoming em testes sem fastapi
