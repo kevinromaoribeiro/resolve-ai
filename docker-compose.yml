@@ -4,7 +4,7 @@
 # Comando:  docker compose up -d
 services:
   evolution:
-    image: atendai/evolution-api:v2.2.0
+    image: evoapicloud/evolution-api:v2.3.7
     container_name: resolveai-evolution
     restart: unless-stopped
     ports:
@@ -17,6 +17,8 @@ services:
       - DATABASE_CONNECTION_URI=postgresql://evo:evo@postgres:5432/evolution
       - CACHE_REDIS_ENABLED=false
       - CACHE_LOCAL_ENABLED=true
+      - QRCODE_LIMIT=30
+      - QRCODE_COLOR=#00A86B
       - WEBHOOK_GLOBAL_ENABLED=true
       - WEBHOOK_GLOBAL_URL=http://bot:8000/webhook
       - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
@@ -44,9 +46,20 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-    env_file: .env
     environment:
       - EVOLUTION_URL=http://evolution:8080
+      - EVOLUTION_APIKEY=${EVOLUTION_APIKEY}
+      - EVOLUTION_INSTANCE=${EVOLUTION_INSTANCE}
+      - SERVER_URL=${SERVER_URL}
+      - ADMIN_PHONE=${ADMIN_PHONE}
+      - MASTER_PHONE=${MASTER_PHONE}
+      - TRIAL_DAYS=${TRIAL_DAYS:-7}
+      - AUDIO_MAX_SECONDS=${AUDIO_MAX_SECONDS:-120}
+      - TERMS_URL=${TERMS_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PAYMENT_LINK=${PAYMENT_LINK}
+      - PAYMENT_LINK_ANUAL=${PAYMENT_LINK_ANUAL}
+      - DB_PATH=/app/data/resolve_ai.db
     volumes:
       - ./data:/app/data
     command: uvicorn wa_bot:app --host 0.0.0.0 --port 8000
