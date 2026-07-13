@@ -18,6 +18,9 @@ services:
       - CACHE_REDIS_ENABLED=false
       - CACHE_LOCAL_ENABLED=true
       - QRCODE_LIMIT=30
+      - DEL_INSTANCE=false
+      - CONFIG_SESSION_PHONE_CLIENT=Resolve AI
+      - CONFIG_SESSION_PHONE_NAME=Chrome
       - QRCODE_COLOR=#00A86B
       - WEBHOOK_GLOBAL_ENABLED=true
       - WEBHOOK_GLOBAL_URL=http://bot:8000/webhook
