@@ -38,6 +38,7 @@ import db
 import textos
 import ai_engine
 import scheduler
+import whapi  # camada Whapi.Cloud (substitui envio/webhook/mídia da Evolution)
 
 db.init_db()
 
@@ -478,13 +479,16 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     user, is_new = _get_or_create_user(phone, push_name)
     first_name = user["nome"].split()[0]
 
-    media_b64 = data.get("base64") or msg.get("base64") or ""
-    # Bug da Evolution: mídia costuma vir sem base64 no webhook. Busca ativa.
-    if not media_b64 and kind in ("audio", "imagem_silenciosa", "imagem_com_texto"):
-        import logging
-        logging.getLogger("resolveai").info(
-            "[media] chegou %s sem base64 no webhook — buscando ativamente", kind)
-        media_b64 = _fetch_media_base64(payload)
+    media_b64 = ""
+    # Whapi manda a mídia como LINK (não base64). Baixa e converte.
+    if kind in ("audio", "imagem_silenciosa", "imagem_com_texto"):
+        link = data.get("_whapi_media_link") or ""
+        if link:
+            media_b64 = whapi.fetch_media_base64(link)
+        else:
+            import logging
+            logging.getLogger("resolveai").info(
+                "[media] %s sem link no payload Whapi", kind)
 
     # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
     if is_new:
@@ -581,32 +585,17 @@ def handle_incoming(payload: dict) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def send_whatsapp(number: str, text: str) -> bool:
-    """POST /message/sendText/{instance} na Evolution API (v2)."""
-    import logging
-    log = logging.getLogger("resolveai")
-    try:
-        import httpx
-        resp = httpx.post(
-            f"{EVOLUTION_URL}/message/sendText/{EVOLUTION_INSTANCE}",
-            headers={"apikey": EVOLUTION_APIKEY,
-                     "Content-Type": "application/json"},
-            json={"number": number, "text": text},
-            timeout=15,
-        )
-        if resp.status_code in (200, 201):
-            return True
-        log.warning("[envio] Evolution recusou (%s): %s",
-                    resp.status_code, resp.text[:150])
-        return False
-    except Exception as e:
-        log.warning("[envio] ERRO ao enviar: %r", e)
-        return False
+    """Envia texto via Whapi.Cloud (antes era Evolution)."""
+    return whapi.send_text(number, text)
 
 
 def _instance_state() -> str:
-    """Consulta o estado da sessão WhatsApp na Evolution ('open' = conectada).
-    Tenta múltiplos formatos de resposta (a Evolution mudou o shape entre
-    versões). 'unknown' só se realmente não der pra ler."""
+    """Consulta o estado da sessão WhatsApp no Whapi ('open' = conectada)."""
+    return whapi.instance_state()
+
+
+def _instance_state_evolution_legado() -> str:
+    """(Legado Evolution — não usado. Mantido para referência.)"""
     try:
         import httpx
         r = httpx.get(
@@ -683,17 +672,15 @@ def watchdog_check() -> dict:
     db.set_setting("wa_falhas_seguidas", str(falhas))
     log.warning("[watchdog] sessão não-saudável (%s), falha seguida #%d", wa, falhas)
 
-    # 2 falhas seguidas (~2 min) = age
+    # 2 falhas seguidas (~2 min): no Whapi não dá pra "reiniciar" a sessão via
+    # API — se caiu, precisa reescanear o QR no painel do Whapi. Só avisa.
     if falhas >= 2:
-        ok = _restart_evolution_instance()
-        resultado["acao"] = "reiniciada" if ok else "falha ao reiniciar"
+        resultado["acao"] = "aviso ao admin"
         db.set_setting("wa_falhas_seguidas", "0")
-        # avisa o admin 1x
         if ADMIN_PHONE:
-            aviso = ("⚠️ *Resolve AI* — a conexão do WhatsApp caiu "
-                     f"(estado: {wa}). Tentei religar automaticamente "
-                     f"({'✅ ok' if ok else '❌ falhou'}). "
-                     "Se não voltar em 2 min, reescaneie o QR em /manager.")
+            aviso = ("⚠️ *Resolve AI* — a conexão do WhatsApp (Whapi) caiu "
+                     f"(estado: {wa}). Reescaneie o QR no painel do Whapi: "
+                     "panel.whapi.cloud")
             try:
                 send_whatsapp(ADMIN_PHONE, aviso)
             except Exception:
@@ -792,10 +779,11 @@ try:
 
     @app.post("/webhook")
     async def webhook(request: Request):
-        payload = await request.json()
-        event = payload.get("event", "")
-        if event not in ("messages.upsert", "MESSAGES_UPSERT"):
-            return {"ignored": event}
+        raw = await request.json()
+        # Traduz o payload do Whapi para o formato que handle_incoming entende.
+        payload = whapi.to_evolution_shape(raw)
+        if not payload:
+            return {"ignored": True}
         # log da mensagem recebida (para o painel)
         try:
             data = payload.get("data") or {}
