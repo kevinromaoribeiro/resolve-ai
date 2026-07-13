@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from datetime import datetime, date, timedelta
+import tempo
 from pathlib import Path
 from typing import Any, Optional
 
@@ -171,7 +172,7 @@ def init_db() -> None:
 
 
 def _now_iso() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return tempo.agora().strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +219,7 @@ def create_user(
 def trial_days_left_raw(user: dict, trial_days: int = 7) -> int:
     """Dias restantes do trial SEM clamp (negativo = expirado há N dias)."""
     created = datetime.strptime(user["data_criacao"], "%Y-%m-%d %H:%M:%S")
-    elapsed = (datetime.now() - created).days
+    elapsed = (tempo.agora() - created).days
     return trial_days - elapsed
 
 
@@ -244,7 +245,7 @@ def update_user_fields(user_id: int, **fields) -> None:
 def trial_day_number(user: dict) -> int:
     """Em que dia do trial o usuário está (0 = dia da entrada, 1 = dia seguinte...)."""
     created = datetime.strptime(user["data_criacao"], "%Y-%m-%d %H:%M:%S")
-    return (datetime.now() - created).days
+    return (tempo.agora() - created).days
 
 
 def nudge_already_sent(user: dict, nudge_id: str) -> bool:
@@ -281,7 +282,7 @@ def delete_user(user_id: int) -> None:
 
 def set_created_days_ago(user_id: int, days: int) -> None:
     """Utilitário de teste: retrocede data_criacao (simula fim de trial)."""
-    when = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    when = (tempo.agora() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     with get_conn() as conn:
         conn.execute("UPDATE users SET data_criacao=? WHERE id=?",
                      (when, user_id))
@@ -318,7 +319,7 @@ def touch_user(user_id: int, when: Optional[str] = None) -> None:
 
 def set_last_interaction_days_ago(user_id: int, days: int) -> None:
     """Utilitário de teste: força ultima_interacao para N dias atrás."""
-    when = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    when = (tempo.agora() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     touch_user(user_id, when)
 
 
@@ -443,7 +444,7 @@ def items_due_within(user_id: int, days: int = 3, ref: Optional[date] = None) ->
 
 def inactive_users(days: int = 10, ref: Optional[datetime] = None) -> list[dict]:
     """Usuários com ultima_interacao há mais de N dias."""
-    ref = ref or datetime.now()
+    ref = ref or tempo.agora()
     cutoff = (ref - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     with get_conn() as conn:
         rows = conn.execute(
@@ -480,7 +481,7 @@ def dispatched_today(kind: str, user_id: int,
 
 def dispatched_within(kind: str, user_id: int, days: int) -> bool:
     """Já houve disparo deste tipo nos últimos N dias (por usuário)?"""
-    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = (tempo.agora() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     with get_conn() as conn:
         return conn.execute(
             "SELECT 1 FROM dispatches WHERE user_id=? AND kind=? "
@@ -497,7 +498,7 @@ def dispatched_ever(kind: str, user_id: int) -> bool:
 
 def items_due_at_time(now: Optional[datetime] = None) -> list[dict]:
     """Itens pendentes de HOJE com hora_alvo <= agora (alarme intraday)."""
-    now = now or datetime.now()
+    now = now or tempo.agora()
     today = now.date().isoformat()
     hhmm = now.strftime("%H:%M")
     with get_conn() as conn:
@@ -702,7 +703,7 @@ def log_message(user_id, telefone, direcao, tipo, preview):
                 "INSERT INTO msg_log (user_id, telefone, direcao, tipo, preview, ts) "
                 "VALUES (?,?,?,?,?,?)",
                 (user_id, telefone, direcao, tipo,
-                 (preview or "")[:120], datetime.now().isoformat(timespec="seconds")))
+                 (preview or "")[:120], tempo.agora().isoformat(timespec="seconds")))
     except Exception:
         pass
 

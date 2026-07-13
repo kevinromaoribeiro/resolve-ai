@@ -242,9 +242,18 @@ _LOOKS_LIKE_QUESTION = re.compile(
     re.IGNORECASE)
 
 
+_SAUDACOES = {"oi", "ola", "olá", "opa", "eai", "eaí", "e ai", "e aí",
+              "bom dia", "boa tarde", "boa noite", "hey", "hello", "alo",
+              "alô", "oie", "oi tudo bem", "tudo bem", "blz", "beleza"}
+
+
 def _is_not_a_name(text: str) -> bool:
-    """True se o texto claramente NÃO é um nome (é pergunta, comando, frase)."""
+    """True se o texto claramente NÃO é um nome (é pergunta, comando, frase,
+    ou saudação solta)."""
     t = text.strip()
+    low = t.lower().strip("!?.,")
+    if low in _SAUDACOES:
+        return True
     if _LOOKS_LIKE_QUESTION.search(t):
         return True
     if len(t.split()) > 4:          # nome não tem 5+ palavras
@@ -320,6 +329,31 @@ def _classify_message(msg: dict) -> tuple[str, str]:
         emoji = (msg.get("reactionMessage") or {}).get("text", "") or ""
         return "reacao", emoji
     return "desconhecido", ""
+
+
+def _fetch_media_base64(payload: dict) -> str:
+    """Busca o base64 da mídia ativamente na Evolution quando o webhook não
+    o inclui (bug conhecido: issues #942/#2278/#2375 — a partir da v2.1.1 a
+    mídia vem só como URL criptografada). Usa /chat/getBase64FromMediaMessage.
+    Retorna base64 puro ou '' se falhar."""
+    try:
+        import requests
+        data = payload.get("data") or {}
+        key = data.get("key") or {}
+        msg_id = key.get("id")
+        if not msg_id:
+            return ""
+        url = f"{EVOLUTION_URL}/chat/getBase64FromMediaMessage/{EVOLUTION_INSTANCE}"
+        r = requests.post(
+            url,
+            headers={"apikey": EVOLUTION_APIKEY, "Content-Type": "application/json"},
+            json={"message": {"key": {"id": msg_id}}, "convertToMp4": False},
+            timeout=25)
+        if r.status_code == 200:
+            return (r.json() or {}).get("base64", "") or ""
+    except Exception:
+        pass
+    return ""
 
 
 def _transcribe_audio(b64: str) -> Optional[str]:
@@ -401,6 +435,9 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     first_name = user["nome"].split()[0]
 
     media_b64 = data.get("base64") or msg.get("base64") or ""
+    # Bug da Evolution: mídia costuma vir sem base64 no webhook. Busca ativa.
+    if not media_b64 and kind in ("audio", "imagem_silenciosa", "imagem_com_texto"):
+        media_b64 = _fetch_media_base64(payload)
 
     # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
     if is_new:
