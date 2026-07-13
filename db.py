@@ -809,3 +809,23 @@ def ultimo_cron_ping() -> Optional[str]:
             return r["v"] if r else None
     except Exception:
         return None
+
+
+# ── Settings genéricos (k/v) — usados pelo watchdog e heartbeat ──────────
+def set_setting(k: str, v: str) -> None:
+    try:
+        with get_conn() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT)")
+            conn.execute("INSERT OR REPLACE INTO settings (k, v) VALUES (?, ?)", (k, v))
+    except Exception:
+        pass
+
+
+def get_setting(k: str) -> Optional[str]:
+    try:
+        with get_conn() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT)")
+            r = conn.execute("SELECT v FROM settings WHERE k=?", (k,)).fetchone()
+            return r["v"] if r else None
+    except Exception:
+        return None

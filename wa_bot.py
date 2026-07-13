@@ -639,6 +639,68 @@ def _instance_state() -> str:
         return "unknown"
 
 
+def _restart_evolution_instance() -> bool:
+    """Tenta reiniciar a instância na Evolution (recupera sessão travada).
+    Tenta /instance/restart; se 404, tenta logout+connect."""
+    import logging, httpx
+    log = logging.getLogger("resolveai")
+    try:
+        r = httpx.put(
+            f"{EVOLUTION_URL}/instance/restart/{EVOLUTION_INSTANCE}",
+            headers={"apikey": EVOLUTION_APIKEY}, timeout=20)
+        if r.status_code in (200, 201):
+            log.info("[watchdog] instância reiniciada via /restart")
+            return True
+        log.warning("[watchdog] /restart respondeu %s, tentando connect", r.status_code)
+    except Exception as e:
+        log.warning("[watchdog] erro no /restart: %r", e)
+    # fallback: forçar reconexão
+    try:
+        httpx.get(f"{EVOLUTION_URL}/instance/connect/{EVOLUTION_INSTANCE}",
+                  headers={"apikey": EVOLUTION_APIKEY}, timeout=20)
+        log.info("[watchdog] /connect chamado (reconexão forçada)")
+        return True
+    except Exception as e:
+        log.warning("[watchdog] erro no /connect: %r", e)
+        return False
+
+
+def watchdog_check() -> dict:
+    """Vigia de auto-recuperação: checa a saúde da sessão e, se estiver
+    caída/travada, reinicia sozinho e avisa o admin. Chamado pelo cron."""
+    import logging
+    log = logging.getLogger("resolveai")
+    wa = _instance_state()
+    saudavel = wa in ("open", "connected", "online", "connecting")
+    resultado = {"estado": wa, "saudavel": saudavel, "acao": "nenhuma"}
+
+    if saudavel:
+        db.set_setting("wa_falhas_seguidas", "0")
+        return resultado
+
+    # sessão suspeita — conta falhas seguidas antes de agir (evita falso positivo)
+    falhas = int(db.get_setting("wa_falhas_seguidas") or "0") + 1
+    db.set_setting("wa_falhas_seguidas", str(falhas))
+    log.warning("[watchdog] sessão não-saudável (%s), falha seguida #%d", wa, falhas)
+
+    # 2 falhas seguidas (~2 min) = age
+    if falhas >= 2:
+        ok = _restart_evolution_instance()
+        resultado["acao"] = "reiniciada" if ok else "falha ao reiniciar"
+        db.set_setting("wa_falhas_seguidas", "0")
+        # avisa o admin 1x
+        if ADMIN_PHONE:
+            aviso = ("⚠️ *Resolve AI* — a conexão do WhatsApp caiu "
+                     f"(estado: {wa}). Tentei religar automaticamente "
+                     f"({'✅ ok' if ok else '❌ falhou'}). "
+                     "Se não voltar em 2 min, reescaneie o QR em /manager.")
+            try:
+                send_whatsapp(ADMIN_PHONE, aviso)
+            except Exception:
+                pass
+    return resultado
+
+
 def maybe_admin_report() -> bool:
     """Vigia diário (v6.6.1): 1 mensagem/dia pro ADMIN_PHONE com o pulso do
     sistema. Dispara no primeiro ciclo após as 20h. Dedup via log."""
@@ -761,6 +823,13 @@ try:
         sent = dispatch_proactive()
         maybe_admin_report()
         return {"sent": sent}
+
+    @app.post("/watchdog")
+    @app.get("/watchdog")
+    async def watchdog():
+        """Vigia de auto-recuperação. Chame a cada 1-2 min no cron-job.org.
+        Se a sessão do WhatsApp travar, reinicia sozinho e avisa o admin."""
+        return watchdog_check()
 
     @app.get("/painel")
     async def painel():
