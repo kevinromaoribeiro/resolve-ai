@@ -132,6 +132,12 @@ def _phone_from_jid(jid: str) -> str:
     return jid.split("@")[0]
 
 
+MASTER_PHONE = re.sub(r"\D", "", os.environ.get("MASTER_PHONE", ""))
+_MASTER_RESET_RE = re.compile(
+    r"^(reset|resetar|zerar|/reset|novo teste|reiniciar teste|sou novo)\b",
+    re.IGNORECASE)
+
+
 def _get_or_create_user(phone: str, push_name: str = "") -> tuple[dict, bool]:
     """Retorna (user, is_new)."""
     for u in db.list_users():
@@ -141,6 +147,24 @@ def _get_or_create_user(phone: str, push_name: str = "") -> tuple[dict, bool]:
                          telefone=phone)
     db.update_user_fields(uid, onboarding_step="nome", status="trial")
     return db.get_user(uid), True
+
+
+def _maybe_master_reset(phone: str, text: str) -> Optional[str]:
+    """Se o NÚMERO MASTER mandar 'reset' (ou similar), apaga os dados dele e
+    recomeça do zero — para testar cada feature como usuário novo.
+    Retorna a mensagem de confirmação, ou None se não for o caso."""
+    if not MASTER_PHONE or phone != MASTER_PHONE:
+        return None
+    if not _MASTER_RESET_RE.match(text.strip()):
+        return None
+    # apaga tudo desse número e recria como novo
+    for u in db.list_users():
+        if re.sub(r"\D", "", u["telefone"]) == phone:
+            db.delete_user(u["id"])
+            break
+    _get_or_create_user(phone, "")
+    return ("🧪 *Modo teste:* seus dados foram zerados. Você é um usuário "
+            "novo agora — pode testar o fluxo desde o início. Manda um *oi*.")
 
 
 def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
@@ -357,11 +381,18 @@ def handle_incoming(payload: dict) -> Optional[dict]:
 
     phone = _phone_from_jid(jid)
     push_name = data.get("pushName", "") or ""
+
+    # --- 0a. NÚMERO MASTER: comando de reset para testar como usuário novo ---
+    msg = data.get("message") or {}
+    kind, content = _classify_message(msg)
+    if kind == "texto":
+        reset_reply = _maybe_master_reset(phone, content)
+        if reset_reply:
+            return {"number": phone, "text": reset_reply}
+
     user, is_new = _get_or_create_user(phone, push_name)
     first_name = user["nome"].split()[0]
 
-    msg = data.get("message") or {}
-    kind, content = _classify_message(msg)
     media_b64 = data.get("base64") or msg.get("base64") or ""
 
     # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
@@ -552,9 +583,23 @@ try:
         event = payload.get("event", "")
         if event not in ("messages.upsert", "MESSAGES_UPSERT"):
             return {"ignored": event}
+        # log da mensagem recebida (para o painel)
+        try:
+            data = payload.get("data") or {}
+            key = data.get("key") or {}
+            num = (key.get("remoteJid") or "").split("@")[0] or None
+            msgobj = data.get("message", {}) if isinstance(data, dict) else {}
+            kind, content = _classify_message(msgobj)
+            db.log_message(None, num, "in", kind, content)
+        except Exception:
+            pass
         reply = handle_incoming(payload)
         if reply:
             send_whatsapp(reply["number"], reply["text"])
+            try:
+                db.log_message(None, reply["number"], "out", "texto", reply["text"])
+            except Exception:
+                pass
         return {"ok": True}
 
     @app.post("/cron/proactive")
@@ -564,6 +609,62 @@ try:
         sent = dispatch_proactive()
         maybe_admin_report()
         return {"sent": sent}
+
+    @app.get("/painel")
+    async def painel():
+        """Dashboard em tempo real — abra http://SEU-IP:8000/painel no navegador."""
+        from fastapi.responses import HTMLResponse
+        m = db.painel_metricas()
+        wa = _instance_state()
+        wa_cor = "#22c55e" if wa == "open" else "#ef4444"
+        wa_txt = "🟢 Conectado" if wa == "open" else f"🔴 {wa} — reescaneie o QR"
+        linhas = ""
+        for r in m["ultimas"]:
+            seta = "⬅️ recebida" if r["direcao"] == "in" else "➡️ enviada"
+            cor = "#e0f2fe" if r["direcao"] == "in" else "#dcfce7"
+            hora = (r["ts"] or "")[11:16]
+            tel = (r["telefone"] or "")[-4:] if r["telefone"] else "----"
+            prev = (r["preview"] or "").replace("<", "&lt;")[:80]
+            linhas += (f'<tr style="background:{cor}"><td>{hora}</td>'
+                       f'<td>…{tel}</td><td>{seta}</td><td>{prev}</td></tr>')
+        html = f"""<!doctype html><html lang="pt-BR"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="15">
+<title>Resolve AI — Painel</title>
+<style>
+body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f8fafc;margin:0;padding:16px;color:#0f172a}}
+h1{{font-size:20px;margin:0 0 4px}}
+.sub{{color:#64748b;font-size:13px;margin-bottom:16px}}
+.wa{{display:inline-block;padding:6px 12px;border-radius:8px;color:#fff;font-weight:600;font-size:13px;background:{wa_cor};margin-bottom:16px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}}
+.card{{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:14px}}
+.card .n{{font-size:26px;font-weight:700;color:#00A86B}}
+.card .l{{font-size:12px;color:#64748b;margin-top:2px}}
+table{{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;font-size:13px}}
+td{{padding:8px 10px;border-bottom:1px solid #f1f5f9}}
+th{{text-align:left;padding:8px 10px;background:#f1f5f9;font-size:12px;color:#475569}}
+.foot{{color:#94a3b8;font-size:11px;margin-top:12px;text-align:center}}
+</style></head><body>
+<h1>🟢 Resolve AI — Painel ao vivo</h1>
+<div class="sub">Atualiza sozinho a cada 15s · {m['total_users']} usuários no total</div>
+<div class="wa">WhatsApp: {wa_txt}</div>
+<div class="grid">
+<div class="card"><div class="n">{m['msgs_in_hoje']}</div><div class="l">mensagens recebidas hoje</div></div>
+<div class="card"><div class="n">{m['msgs_out_hoje']}</div><div class="l">respostas enviadas hoje</div></div>
+<div class="card"><div class="n">{m['users_hoje']}</div><div class="l">novos usuários hoje</div></div>
+<div class="card"><div class="n">{m['itens_hoje']}</div><div class="l">itens criados hoje</div></div>
+<div class="card"><div class="n">{m['disparos_hoje']}</div><div class="l">lembretes disparados hoje</div></div>
+<div class="card"><div class="n">{m['ativos']}</div><div class="l">assinantes ativos</div></div>
+<div class="card"><div class="n">{m['trial']}</div><div class="l">em teste grátis</div></div>
+<div class="card"><div class="n">R$ {m['mrr']:.0f}</div><div class="l">MRR</div></div>
+</div>
+<h1 style="font-size:15px">Últimas mensagens</h1>
+<table><tr><th>Hora</th><th>Nº</th><th>Direção</th><th>Conteúdo</th></tr>
+{linhas if linhas else '<tr><td colspan=4 style="text-align:center;color:#94a3b8;padding:20px">Nenhuma mensagem ainda. Mande um "oi" pro bot pra testar.</td></tr>'}
+</table>
+<div class="foot">Resolve AI · painel interno · dados ao vivo do servidor de produção</div>
+</body></html>"""
+        return HTMLResponse(html)
 
 except ImportError:
     app = None  # permite importar handle_incoming em testes sem fastapi
