@@ -43,7 +43,7 @@ def _fmt_br(iso: Optional[str]) -> str:
 def check_due_items(ref: Optional[date] = None) -> list[dict]:
     """Checagem 1: vencimentos — avisa em D-3, D-1 e no dia, 1x por dia
     por item (dedup via log de disparos)."""
-    ref = ref or date.today()
+    ref = ref or tempo.hoje()
     dispatches: list[dict] = []
     for user in db.list_users():
         if not db.user_can_receive(user):
@@ -170,7 +170,7 @@ CHURN_MAX_ATTEMPTS = 3           # anti-churn desiste após 3 tentativas
 
 def roll_recurring(ref: Optional[date] = None) -> int:
     """Rola itens recorrentes vencidos/concluídos para a próxima ocorrência."""
-    ref = ref or date.today()
+    ref = ref or tempo.hoje()
     rolls: list[tuple] = []
     for item in db.recurring_to_roll(ref):
         rec = item["recorrencia"]
@@ -218,7 +218,7 @@ def roll_recurring(ref: Optional[date] = None) -> int:
 
 def check_overdue(ref: Optional[date] = None) -> list[dict]:
     """Cobrança única D+1 e arquivamento com aviso em D+15 (não-recorrentes)."""
-    ref = ref or date.today()
+    ref = ref or tempo.hoje()
     dispatches: list[dict] = []
     for item in db.overdue_items(days_ago=OVERDUE_NUDGE_DAYS, ref=ref):
         if "(lembrete de demonstração)" in (item.get("descricao") or ""):
@@ -342,6 +342,6 @@ def run_proactive_engine(
 
 def simulate_next_day() -> dict:
     """Simula a execução do cronjob no dia seguinte (D+1)."""
-    tomorrow = date.today() + timedelta(days=1)
+    tomorrow = tempo.hoje() + timedelta(days=1)
     tomorrow_dt = tempo.agora() + timedelta(days=1)
     return run_proactive_engine(ref_date=tomorrow, ref_datetime=tomorrow_dt)

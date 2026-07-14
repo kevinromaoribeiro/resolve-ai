@@ -392,7 +392,7 @@ def update_item_status(item_id: int, status: str) -> None:
 
 def month_spend(user_id: int, ref: Optional[date] = None) -> float:
     """Soma de despesas do mês corrente (por data_criacao)."""
-    ref = ref or date.today()
+    ref = ref or tempo.hoje()
     prefix = ref.strftime("%Y-%m")
     with get_conn() as conn:
         row = conn.execute(
@@ -427,7 +427,7 @@ def spend_by_category(user_id: int) -> dict[str, float]:
 
 def items_due_within(user_id: int, days: int = 3, ref: Optional[date] = None) -> list[dict]:
     """Itens pendentes com vencimento entre hoje e hoje+N dias (inclusive)."""
-    ref = ref or date.today()
+    ref = ref or tempo.hoje()
     start = ref.isoformat()
     end = (ref + timedelta(days=days)).isoformat()
     with get_conn() as conn:
@@ -468,7 +468,7 @@ def log_dispatch(user_id: int, kind: str, item_id: Optional[int] = None) -> None
 def dispatched_today(kind: str, user_id: int,
                      item_id: Optional[int] = None) -> bool:
     """Já houve disparo deste tipo hoje (para este item, se informado)?"""
-    today = date.today().isoformat()
+    today = tempo.hoje().isoformat()
     q = ("SELECT 1 FROM dispatches WHERE user_id=? AND kind=? "
          "AND sent_at >= ? ")
     args: list = [user_id, kind, today]
@@ -525,12 +525,12 @@ def postpone_item(item_id: int, new_date: Optional[str] = None,
         # limpa o log de 'hora' de hoje para permitir novo alarme
         conn.execute(
             "DELETE FROM dispatches WHERE item_id=? AND kind='hora' "
-            "AND sent_at >= ?", (item_id, date.today().isoformat()))
+            "AND sent_at >= ?", (item_id, tempo.hoje().isoformat()))
 
 
 def last_alarmed_item(user_id: int) -> Optional[dict]:
     """Item pendente de hoje com hora_alvo (o alvo natural de um 'adiar')."""
-    today = date.today().isoformat()
+    today = tempo.hoje().isoformat()
     with get_conn() as conn:
         row = conn.execute(
             """SELECT * FROM items WHERE user_id=? AND status='pendente'
@@ -555,7 +555,7 @@ def dispatched_ever_item(kind: str, item_id: int) -> bool:
 
 def overdue_items(days_ago: int, ref: Optional[date] = None) -> list[dict]:
     """Itens pendentes vencidos há exatamente/mais que N dias (sem recorrência)."""
-    ref = ref or date.today()
+    ref = ref or tempo.hoje()
     alvo = (ref - timedelta(days=days_ago)).isoformat()
     with get_conn() as conn:
         rows = conn.execute(
@@ -569,7 +569,7 @@ def overdue_items(days_ago: int, ref: Optional[date] = None) -> list[dict]:
 
 def recurring_to_roll(ref: Optional[date] = None) -> list[dict]:
     """Itens recorrentes cuja ocorrência já passou (concluída ou vencida)."""
-    ref = ref or date.today()
+    ref = ref or tempo.hoje()
     with get_conn() as conn:
         rows = conn.execute(
             """SELECT * FROM items WHERE recorrencia IS NOT NULL
@@ -668,7 +668,7 @@ def winback_candidates(trial_days: int = 7, days_after: int = 3) -> list[dict]:
 def items_due_all(days: int = 3, ref: Optional[date] = None) -> list[dict]:
     """TODOS os itens pendentes vencendo em até N dias, com dados do dono.
     Uma query só — substitui o loop por usuário (performance em escala)."""
-    ref = ref or date.today()
+    ref = ref or tempo.hoje()
     fim = (ref + timedelta(days=days)).isoformat()
     with get_conn() as conn:
         rows = conn.execute(
@@ -683,7 +683,7 @@ def items_due_all(days: int = 3, ref: Optional[date] = None) -> list[dict]:
 def items_overdue(min_days: int, max_days: int,
                   ref: Optional[date] = None) -> list[dict]:
     """Itens pendentes vencidos entre min e max dias atrás (follow-up)."""
-    ref = ref or date.today()
+    ref = ref or tempo.hoje()
     ini = (ref - timedelta(days=max_days)).isoformat()
     fim = (ref - timedelta(days=min_days)).isoformat()
     with get_conn() as conn:
@@ -714,7 +714,7 @@ def painel_metricas() -> dict:
         def one(q, *a):
             r = conn.execute(q, a).fetchone()
             return r[0] if r else 0
-        hoje = date.today().isoformat()
+        hoje = tempo.hoje().isoformat()
         m = {
             "total_users": one("SELECT COUNT(*) FROM users"),
             "ativos": one("SELECT COUNT(*) FROM users WHERE status='ativo'"),
