@@ -506,7 +506,7 @@ def items_due_at_time(now: Optional[datetime] = None) -> list[dict]:
             """SELECT i.*, u.nome AS user_nome, u.telefone
                FROM items i JOIN users u ON u.id = i.user_id
                WHERE i.status='pendente'
-                 AND i.data_vencimento = ?
+                                  AND (i.data_vencimento = ? OR i.data_vencimento IS NULL)
                  AND i.hora_alvo IS NOT NULL
                  AND i.hora_alvo <= ?""", (today, hhmm)).fetchall()
     return [dict(r) for r in rows]
