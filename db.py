@@ -529,13 +529,25 @@ def postpone_item(item_id: int, new_date: Optional[str] = None,
 
 
 def last_alarmed_item(user_id: int) -> Optional[dict]:
-    """Item pendente de hoje com hora_alvo (o alvo natural de um 'adiar')."""
-    today = tempo.hoje().isoformat()
-    with get_conn() as conn:
+  """Ultimo item que o bot ALARMOU e ainda esta pendente - o alvo natural
+  de um 'feito' ou 'adiar' logo apos o alarme tocar.
+  Prioriza o item cujo alarme de hora foi disparado mais recentemente
+  (via log de dispatches); cai para o item de hoje com hora_alvo."""
+  with get_conn() as conn:
+    # 1) item cujo alarme ('hora') foi disparado mais recentemente e segue pendente
+    row = conn.execute(
+      """SELECT i.* FROM items i
+      JOIN dispatches d ON d.item_id = i.id
+      WHERE i.user_id=? AND i.status='pendente' AND d.kind='hora'
+      ORDER BY d.sent_at DESC LIMIT 1""", (user_id,)).fetchone()
+        if row:
+            return dict(row)
+        # 2) fallback: item de hoje (fuso BR) com hora marcada
+        today = tempo.hoje().isoformat()
         row = conn.execute(
-            """SELECT * FROM items WHERE user_id=? AND status='pendente'
-               AND data_vencimento=? AND hora_alvo IS NOT NULL
-               ORDER BY id DESC LIMIT 1""", (user_id, today)).fetchone()
+          """SELECT * FROM items WHERE user_id=? AND status='pendente'
+          AND data_vencimento=? AND hora_alvo IS NOT NULL
+          ORDER BY id DESC LIMIT 1""", (user_id, today)).fetchone()
     return dict(row) if row else None
 
 
