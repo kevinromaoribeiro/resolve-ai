@@ -1103,6 +1103,11 @@ def converse(
                              f"baixa.")
     elif intent == "conclusao":
         match = _match_pending_item(user_id, text)
+       # Fallback: se nao casou pelo texto (ex.: resposta seca "feito" a um
+       # alarme), da baixa no ultimo item que o bot alarmou. Isso conserta a
+       # contradicao de pedir "responda feito" e nao entender o "feito".
+       if not match:
+          match = db.last_alarmed_item(user_id)
         if match:
             db.update_item_status(match["id"], "concluido")
             rest = len(db.list_items(user_id, status="pendente"))
