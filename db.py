@@ -302,6 +302,17 @@ def get_user(user_id: int) -> Optional[dict]:
         return dict(row) if row else None
 
 
+def get_user_by_phone(phone: str) -> Optional[dict]:
+    """Busca usuário pelo telefone (dígitos), usado pelo relatório do admin."""
+    digits = "".join(c for c in (phone or "") if c.isdigit())
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM users").fetchall()
+        for r in rows:
+            if "".join(c for c in (r["telefone"] or "") if c.isdigit()) == digits:
+                return dict(r)
+        return None
+
+
 def list_users() -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
@@ -497,7 +508,9 @@ def dispatched_ever(kind: str, user_id: int) -> bool:
 
 
 def items_due_at_time(now: Optional[datetime] = None) -> list[dict]:
-    """Itens pendentes de HOJE com hora_alvo <= agora (alarme intraday)."""
+    """Itens pendentes de HOJE com hora_alvo <= agora (alarme intraday).
+    Também casa itens sem data_vencimento (NULL) — reminders criados por
+    frase relativa ("daqui 1 min") não têm data, só hora_alvo."""
     now = now or tempo.agora()
     today = now.date().isoformat()
     hhmm = now.strftime("%H:%M")
@@ -506,7 +519,7 @@ def items_due_at_time(now: Optional[datetime] = None) -> list[dict]:
             """SELECT i.*, u.nome AS user_nome, u.telefone
                FROM items i JOIN users u ON u.id = i.user_id
                WHERE i.status='pendente'
-                                  AND (i.data_vencimento = ? OR i.data_vencimento IS NULL)
+                 AND (i.data_vencimento = ? OR i.data_vencimento IS NULL)
                  AND i.hora_alvo IS NOT NULL
                  AND i.hora_alvo <= ?""", (today, hhmm)).fetchall()
     return [dict(r) for r in rows]
@@ -529,25 +542,23 @@ def postpone_item(item_id: int, new_date: Optional[str] = None,
 
 
 def last_alarmed_item(user_id: int) -> Optional[dict]:
-  """Ultimo item que o bot ALARMOU e ainda esta pendente - o alvo natural
-  de um 'feito' ou 'adiar' logo apos o alarme tocar.
-  Prioriza o item cujo alarme de hora foi disparado mais recentemente
-  (via log de dispatches); cai para o item de hoje com hora_alvo."""
-  with get_conn() as conn:
-    # 1) item cujo alarme ('hora') foi disparado mais recentemente e segue pendente
-    row = conn.execute(
-      """SELECT i.* FROM items i
-      JOIN dispatches d ON d.item_id = i.id
-      WHERE i.user_id=? AND i.status='pendente' AND d.kind='hora'
-      ORDER BY d.sent_at DESC LIMIT 1""", (user_id,)).fetchone()
+    """Ultimo item que o bot ALARMOU e ainda esta pendente - o alvo natural
+    de um 'feito' ou 'adiar' logo apos o alarme tocar. Prioriza o item cujo
+    alarme de hora foi disparado mais recentemente (via log de dispatches);
+    cai para o item de hoje com hora_alvo caso nao ache nenhum disparo."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT i.* FROM items i
+               JOIN dispatches d ON d.item_id = i.id
+               WHERE i.user_id=? AND i.status='pendente' AND d.kind='hora'
+               ORDER BY d.sent_at DESC LIMIT 1""", (user_id,)).fetchone()
         if row:
             return dict(row)
-        # 2) fallback: item de hoje (fuso BR) com hora marcada
         today = tempo.hoje().isoformat()
         row = conn.execute(
-          """SELECT * FROM items WHERE user_id=? AND status='pendente'
-          AND data_vencimento=? AND hora_alvo IS NOT NULL
-          ORDER BY id DESC LIMIT 1""", (user_id, today)).fetchone()
+            """SELECT * FROM items WHERE user_id=? AND status='pendente'
+               AND data_vencimento=? AND hora_alvo IS NOT NULL
+               ORDER BY id DESC LIMIT 1""", (user_id, today)).fetchone()
     return dict(row) if row else None
 
 
@@ -622,13 +633,6 @@ def roll_items_batch(rolls: list[tuple]) -> None:
             "('hora','vencimento','vencido')", [(i,) for (i, _, _) in rolls])
 
 
-def dispatched_ever_item(kind: str, item_id: int) -> bool:
-    with get_conn() as conn:
-        return conn.execute(
-            "SELECT 1 FROM dispatches WHERE item_id=? AND kind=? LIMIT 1",
-            (item_id, kind)).fetchone() is not None
-
-
 def recurring_items_past(ref_iso: str) -> list[dict]:
     """Itens recorrentes cuja data já passou (para rolar à próxima ocorrência)."""
     with get_conn() as conn:
@@ -637,16 +641,6 @@ def recurring_items_past(ref_iso: str) -> list[dict]:
                AND data_vencimento IS NOT NULL AND data_vencimento < ?""",
             (ref_iso,)).fetchall()
     return [dict(r) for r in rows]
-
-
-def roll_item(item_id: int, nova_data: str) -> None:
-    """Rola item recorrente: nova data, reabre, limpa dedup de disparos."""
-    with get_conn() as conn:
-        conn.execute("UPDATE items SET data_vencimento=?, status='pendente' "
-                     "WHERE id=?", (nova_data, item_id))
-        conn.execute("DELETE FROM dispatches WHERE item_id=? AND "
-                     "kind IN ('hora','vencimento','1-click-buy','vencido')",
-                     (item_id,))
 
 
 def overdue_items_on(dia_iso: str) -> list[dict]:

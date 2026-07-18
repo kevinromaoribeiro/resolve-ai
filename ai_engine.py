@@ -234,7 +234,7 @@ _WEEKDAYS = {"segunda": 0, "terca": 1, "quarta": 2, "quinta": 3,
 
 def extract_due_date(text: str, ref: Optional[date] = None) -> Optional[str]:
     """Extrai data de vencimento explícita ou implícita. Retorna ISO ou None."""
-    ref = ref or tempo.hoje()
+    ref = ref or date.today()
     low = text.lower()
 
     # dd/mm/yyyy ou dd/mm
@@ -369,7 +369,7 @@ def _fmt_br(iso: Optional[str]) -> str:
 
 
 def _is_today(iso: Optional[str]) -> bool:
-    return bool(iso) and iso == tempo.hoje().isoformat()
+    return bool(iso) and iso == date.today().isoformat()
 
 
 def _reminder_reply(item: dict, user_name: str) -> str:
@@ -470,7 +470,7 @@ def _build_item(text: str) -> dict:
         desc_limpa = re.sub(r"\s{2,}", " ", desc_limpa).strip(" ,.-") or _summarize(text)
     # Se há hora mas o parser de data não marcou nada, o alvo é hoje.
     if hora and not venc:
-        venc = tempo.hoje().isoformat()
+        venc = date.today().isoformat()
     return {
         "tipo": tipo,
         "categoria": categoria,
@@ -502,7 +502,7 @@ _RECUR_NOTE = ("\n_Esse se repete, né? Por enquanto eu anoto a próxima vez e, 
 
 
 def _next_monthday(d: int, ref: Optional[date] = None) -> str:
-    ref = ref or tempo.hoje()
+    ref = ref or date.today()
     try:
         cand = date(ref.year, ref.month, d)
     except ValueError:
@@ -573,8 +573,8 @@ def handle_text(text: str, user_name: str = "Kevin") -> dict:
         elif item.get("hora_alvo"):  # "todo dia 21h"
             item["recorrencia"] = "diaria"
             hoje_ainda = item["hora_alvo"] > tempo.agora().strftime("%H:%M")
-            item["data_vencimento"] = (tempo.hoje() if hoje_ainda
-                                       else tempo.hoje() + timedelta(days=1)
+            item["data_vencimento"] = (date.today() if hoje_ainda
+                                       else date.today() + timedelta(days=1)
                                        ).isoformat()
             nota_recur = f"\n🔁 _Repito todo dia às {item['hora_alvo']}._"
         elif re.search(r"todo\s+m[eê]s|por\s+m[eê]s", low) and item["data_vencimento"]:
@@ -899,7 +899,7 @@ def _call_llm(user_content: str) -> Optional[dict]:
     try:
         from litellm import completion  # import tardio: só se instalado
         system = (LLM_SYSTEM_PROMPT
-                  .replace("{today}", tempo.hoje().isoformat())
+                  .replace("{today}", date.today().isoformat())
                   .replace("{now}", tempo.agora().strftime("%H:%M")))
         for attempt in range(2):
             resp = completion(
@@ -1103,11 +1103,11 @@ def converse(
                              f"baixa.")
     elif intent == "conclusao":
         match = _match_pending_item(user_id, text)
-       # Fallback: se nao casou pelo texto (ex.: resposta seca "feito" a um
-       # alarme), da baixa no ultimo item que o bot alarmou. Isso conserta a
-       # contradicao de pedir "responda feito" e nao entender o "feito".
-       if not match:
-          match = db.last_alarmed_item(user_id)
+        # Fallback: se não casou pelo texto (ex.: resposta seca "feito" a um
+        # alarme), dá baixa no último item que o bot alarmou. Isso conserta a
+        # contradição de pedir "responda feito" e não entender o "feito".
+        if not match:
+            match = db.last_alarmed_item(user_id)
         if match:
             db.update_item_status(match["id"], "concluido")
             rest = len(db.list_items(user_id, status="pendente"))
@@ -1156,7 +1156,7 @@ def converse(
                 db.postpone_item(
                     alvo["id"],
                     new_date=(novo.date().isoformat()
-                              if novo.date() > tempo.hoje() else None),
+                              if novo.date() > date.today() else None),
                     new_time=novo.strftime("%H:%M"))
                 base["reply"] = (f"Adiado: *{alvo['descricao']}* agora toca "
                                  f"às {novo.strftime('%H:%M')}. ⏰")
@@ -1168,7 +1168,7 @@ def converse(
                                  + (f" às {nova_hora}" if nova_hora else "")
                                  + ". 👍")
             else:
-                amanha = (tempo.hoje() + timedelta(days=1)).isoformat()
+                amanha = (date.today() + timedelta(days=1)).isoformat()
                 db.postpone_item(alvo["id"], new_date=amanha)
                 base["reply"] = (f"Adiado: *{alvo['descricao']}* ficou pra "
                                  f"amanhã. 👍")

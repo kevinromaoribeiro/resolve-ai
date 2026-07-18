@@ -56,7 +56,7 @@ AUDIO_MAX_SECONDS = int(os.environ.get("AUDIO_MAX_SECONDS", "120"))
 DISPATCH_MAX_PER_CYCLE = int(os.environ.get("DISPATCH_MAX_PER_CYCLE", "60"))
 TERMS_URL = os.environ.get(
     "TERMS_URL",
-    "https://kevinromaoribeiro.github.io/resolveai-site/termos.html")
+    "https://resolveai.ia.br/termos.html")
 # Número do dono (só ele pode ativar assinaturas manualmente no MVP)
 ADMIN_PHONE = re.sub(r"\D", "", os.environ.get("ADMIN_PHONE", ""))
 
@@ -138,6 +138,31 @@ MASTER_PHONE = re.sub(r"\D", "", os.environ.get("MASTER_PHONE", ""))
 _MASTER_RESET_RE = re.compile(
     r"^(reset|resetar|zerar|/reset|novo teste|reiniciar teste|sou novo)\b",
     re.IGNORECASE)
+
+
+def _parse_landing_payload(text: str) -> Optional[dict]:
+    """Decodifica a mensagem estruturada que a landing page envia via wa.me.
+    Formato: '#RESOLVE|nome|idade|interesse1,interesse2'
+    Retorna {'nome','idade','interesses'} ou None se não for payload da landing.
+    """
+    if not text or not text.strip().startswith("#RESOLVE"):
+        return None
+    try:
+        _, resto = text.split("#RESOLVE", 1)
+        partes = [p.strip() for p in resto.lstrip("|").split("|")]
+        nome = partes[0] if len(partes) > 0 and partes[0] else ""
+        idade_raw = partes[1] if len(partes) > 1 else ""
+        idade = int(re.sub(r"\D", "", idade_raw)) if re.sub(r"\D", "", idade_raw) else None
+        interesses = ""
+        if len(partes) > 2 and partes[2]:
+            # normaliza contra as chaves conhecidas
+            valid = {"contas", "mercado", "carro", "saude", "datas",
+                     "encomendas", "pet", "burocracia"}
+            ints = [i.strip().lower() for i in partes[2].split(",")]
+            interesses = ",".join(i for i in ints if i in valid)
+        return {"nome": nome, "idade": idade, "interesses": interesses}
+    except Exception:
+        return None
 
 
 def _get_or_create_user(phone: str, push_name: str = "") -> tuple[dict, bool]:
@@ -492,6 +517,35 @@ def handle_incoming(payload: dict) -> Optional[dict]:
 
     # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
     if is_new:
+        # Veio da landing page com dados no payload? Cria perfil completo e
+        # pula o onboarding — a pessoa chega CONHECIDA, não jogada no vácuo.
+        landing = _parse_landing_payload(content) if kind == "texto" else None
+        if landing and (landing.get("nome") or landing.get("interesses")):
+            db.update_user_fields(
+                user["id"],
+                nome=landing["nome"] or user["nome"],
+                idade=landing.get("idade"),
+                interesses=landing.get("interesses") or None,
+                onboarding_step="done")
+            fn = (landing["nome"] or "").split()[0] or first_name
+            ints = [i for i in (landing.get("interesses") or "").split(",") if i]
+            # primeira sugestão já personalizada pelo 1º interesse
+            primeira = ""
+            if ints:
+                try:
+                    import trial_guiado
+                    _, cta = trial_guiado._sugestao_para({"interesses": ",".join(ints)})
+                    primeira = f"\n\nPra já começar: {cta}"
+                except Exception:
+                    primeira = ""
+            return {"number": phone, "text":
+                    (f"Oi {fn}! 🟢 Que bom te ver aqui. Eu sou o *Resolve AI* — "
+                     f"vou tirar da sua cabeça contas, lembretes, consultas e "
+                     f"compras.\n\nVocê tem *{TRIAL_DAYS} dias grátis*, sem "
+                     f"cartão. 🔒 Seus dados são só pra te atender — nada é "
+                     f"vendido. Ao continuar você aceita os Termos: {TERMS_URL}"
+                     f"{primeira}")}
+        # Sem payload da landing: fluxo normal de onboarding (pergunta nome etc.)
         return {"number": phone, "text": textos.WELCOME_MSG.format(trial_days=TRIAL_DAYS, terms_url=TERMS_URL)}
 
     # --- 1. comandos globais e onboarding (só em texto) --------------------
