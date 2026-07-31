@@ -38,7 +38,8 @@ import db
 import textos
 import ai_engine
 import scheduler
-import whapi  # camada Whapi.Cloud (substitui envio/webhook/mídia da Evolution)
+import wasender  # camada WasenderAPI (substitui envio/webhook/mídia da Evolution/Whapi)
+import motor_v8  # mordomo híbrido: entende linguagem natural fora do script
 
 db.init_db()
 
@@ -505,15 +506,15 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     first_name = user["nome"].split()[0]
 
     media_b64 = ""
-    # Whapi manda a mídia como LINK (não base64). Baixa e converte.
+    # Wasender manda a mídia como LINK (não base64). Baixa e converte.
     if kind in ("audio", "imagem_silenciosa", "imagem_com_texto"):
-        link = data.get("_whapi_media_link") or ""
+        link = data.get("_media_link") or ""
         if link:
-            media_b64 = whapi.fetch_media_base64(link)
+            media_b64 = wasender.fetch_media_base64(link)
         else:
             import logging
             logging.getLogger("resolveai").info(
-                "[media] %s sem link no payload Whapi", kind)
+                "[media] %s sem link no payload Wasender", kind)
 
     # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
     if is_new:
@@ -627,7 +628,34 @@ def handle_incoming(payload: dict) -> Optional[dict]:
                 "Recebi! 🙂 Pra eu te ajudar melhor, me manda em *texto, "
                 "áudio ou foto* — anoto na hora."}
 
-    # Texto e áudio passam pela camada de interpretação (intenção + banco)
+    # V8: mordomo híbrido tenta primeiro (linguagem natural fora do script).
+    # Se devolver None (intenção clássica confiável), cai no fluxo de sempre.
+    if kind in ("texto", "audio"):
+        try:
+            v8 = motor_v8.route(user["id"], first_name, content, db, ai_engine)
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[v8] erro no motor_v8.route", exc_info=True)
+            v8 = None
+        if v8 is not None:
+            for item in v8.get("items", []):
+                db.add_item(user_id=user["id"], tipo=item.get("tipo", "lembrete"),
+                            categoria=item.get("categoria", "Outros"),
+                            descricao=(item.get("descricao") or "item")[:120],
+                            valor_reais=item.get("valor_reais"),
+                            data_vencimento=item.get("data_vencimento"),
+                            hora_alvo=item.get("hora_alvo"),
+                            recorrencia=item.get("recorrencia"),
+                            status=item.get("status", "pendente"),
+                            link_afiliado=item.get("link_afiliado"))
+            if not v8.get("items"):
+                db.touch_user(user["id"])
+            if v8.get("needs_decision"):
+                PENDING[phone] = v8.get("pending_payload")
+            return {"number": phone, "text": v8["reply"]}
+
+    # Texto e áudio passam pela camada de interpretação clássica (intenção + banco)
     result = ai_engine.converse(user["id"], first_name, kind, content)
     if result["needs_decision"]:
         PENDING[phone] = result["pending_payload"]
@@ -635,17 +663,17 @@ def handle_incoming(payload: dict) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Envio via Evolution API
+# Envio via WasenderAPI
 # ---------------------------------------------------------------------------
 
 def send_whatsapp(number: str, text: str) -> bool:
-    """Envia texto via Whapi.Cloud (antes era Evolution)."""
-    return whapi.send_text(number, text)
+    """Envia texto via WasenderAPI (antes era Whapi/Evolution)."""
+    return wasender.send_text(number, text)
 
 
 def _instance_state() -> str:
-    """Consulta o estado da sessão WhatsApp no Whapi ('open' = conectada)."""
-    return whapi.instance_state()
+    """Consulta o estado da sessão WhatsApp na WasenderAPI ('open' = conectada)."""
+    return wasender.instance_state()
 
 
 def _instance_state_evolution_legado() -> str:
@@ -726,15 +754,15 @@ def watchdog_check() -> dict:
     db.set_setting("wa_falhas_seguidas", str(falhas))
     log.warning("[watchdog] sessão não-saudável (%s), falha seguida #%d", wa, falhas)
 
-    # 2 falhas seguidas (~2 min): no Whapi não dá pra "reiniciar" a sessão via
-    # API — se caiu, precisa reescanear o QR no painel do Whapi. Só avisa.
+    # 2 falhas seguidas (~2 min): na WasenderAPI não dá pra "reiniciar" a
+    # sessão via API — se caiu, precisa reescanear o QR no dashboard. Só avisa.
     if falhas >= 2:
         resultado["acao"] = "aviso ao admin"
         db.set_setting("wa_falhas_seguidas", "0")
         if ADMIN_PHONE:
-            aviso = ("⚠️ *Resolve AI* — a conexão do WhatsApp (Whapi) caiu "
-                     f"(estado: {wa}). Reescaneie o QR no painel do Whapi: "
-                     "panel.whapi.cloud")
+            aviso = ("⚠️ *Resolve AI* — a conexão do WhatsApp (Wasender) caiu "
+                     f"(estado: {wa}). Reescaneie o QR no dashboard: "
+                     "wasenderapi.com")
             try:
                 send_whatsapp(ADMIN_PHONE, aviso)
             except Exception:
@@ -834,8 +862,8 @@ try:
     @app.post("/webhook")
     async def webhook(request: Request):
         raw = await request.json()
-        # Traduz o payload do Whapi para o formato que handle_incoming entende.
-        payload = whapi.to_evolution_shape(raw)
+        # Traduz o payload da WasenderAPI para o formato que handle_incoming entende.
+        payload = wasender.to_evolution_shape(raw)
         if not payload:
             return {"ignored": True}
         # log da mensagem recebida (para o painel)
