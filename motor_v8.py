@@ -69,7 +69,12 @@ Interprete a ÚLTIMA mensagem NO CONTEXTO acima e devolva UM JSON.
 Intenções:
 - "consulta": ele quer SABER algo do que já existe ("o que tenho pra pagar essa semana?", "já paguei a Claro?", "quanto gastei?"). Responda com base nas listas acima. Se não houver nada, diga isso.
 - "registro": guardar algo NOVO e concreto.
-- "complemento": ele está COMPLETANDO/CORRIGINDO algo que já está na lista — típico de mandar em partes ("são 185 reais", "é dia 20", "na verdade é 200"). Use "atualizar" com o id certo. NÃO crie item novo.
+- "complemento": ele está COMPLETANDO/CORRIGINDO **o mesmo item** que já está na lista — típico de mandar em partes ("são 185 reais", "é dia 20", "na verdade é 200"). Use "atualizar" com o id certo. NÃO crie item novo.
+  ATENÇÃO — "atualizar" SÓ vale quando ele fala do MESMO item. Coisa parecida NÃO é a mesma coisa:
+  · "vitamina D" NÃO é "losartana" — são dois remédios, dois lembretes.
+  · "conta de água" NÃO é "conta de luz".
+  · "dentista" NÃO é "médico".
+  Se o nome é diferente do item da lista, é ITEM NOVO, ponto. Encaixar um pedido novo num item existente APAGA o pedido original: ele fica sem o lembrete que pediu e ainda perde o antigo. É o pior erro que você pode cometer — quando estiver na dúvida, CRIE NOVO.
 - "resposta": ele está RESPONDENDO uma pergunta sua. Execute o que ele pediu.
 - "conclusao": ele avisa que já resolveu/pagou. Use "concluir" com o id.
 - "conversa": bate-papo, desabafo, dúvida sobre você. NÃO é para registrar.
@@ -114,7 +119,16 @@ F7. Nunca passe de 6 linhas no total. Se a lista for maior que 5 itens, mostre o
    a) se a duração NÃO estiver nos fatos acima: sua "reply" TEM que terminar perguntando quanto costuma durar ("Anotado. Quanto tempo costuma durar essa quantidade?"). Não responda só "registrei" — sem essa pergunta você nunca vai conseguir avisar ele de recomprar, que é o motivo de existir.
    b) quando ele responder a duração: grave em "memoria" E crie o lembrete de recompra em "item", com "data_vencimento" = HOJE + a duração que ele disse (calcule a data real, formato YYYY-MM-DD) e "recorrencia":"dias:N". Diga a data na resposta.
    c) se a duração JÁ estiver nos fatos: não pergunte nada, só crie o lembrete com a data calculada.
-8. MANUTENÇÃO (óleo, revisão, filtro do carro): mesma lógica do item 7 — pergunte o intervalo uma vez, guarde, e depois use para agendar sozinho.
+8. MANUTENÇÃO DE CARRO (óleo, revisão, filtro, correia): o intervalo tem DOIS gatilhos — quilometragem E tempo — e vale **o que vier primeiro**. Óleo é o caso clássico: "10 mil km ou 6 meses, o que vier primeiro".
+   a) Se você não sabe o intervalo dele, pergunte UMA vez aceitando os dois: "De quanto em quanto tempo você troca? (ex.: 10 mil km ou 6 meses, o que vier primeiro)".
+   b) Se ele der só km e você NÃO souber quanto ele roda por mês, pergunte UMA vez: "Quantos km você roda por mês, mais ou menos?". Guarde em "memoria" como "carro:km_por_mes".
+   c) Com os dois dados, calcule as duas datas e agende na MENOR:
+      · data por km = HOJE + (intervalo_km ÷ km_por_mês) meses
+      · data por tempo = HOJE + os meses que ele falou
+      Ex.: 10.000 km, roda 1.000 km/mês, prazo 6 meses -> por km daria 10 meses, por tempo 6 meses -> vale *6 meses*.
+   d) Guarde em "memoria": "oleo:intervalo_km", "oleo:intervalo_meses", "carro:km_por_mes". Nunca pergunte de novo.
+   e) Na resposta, diga a data E o motivo, curto: "Te aviso em *01/02* — 6 meses vence antes dos 10 mil km."
+   f) Ao avisar, lembre que é estimativa por tempo: se ele rodar mais que o normal, o km chega antes. Vale confirmar a quilometragem na hora do aviso.
 9. RECORRÊNCIA — preencher SEMPRE que ele disser que repete, senão o lembrete toca uma vez só e some:
    - "todo dia", "diariamente", "toda manhã" -> "recorrencia":"diaria"
    - "todo dia 20", "todo mês dia 5" -> "recorrencia":"mensal:20"
@@ -147,6 +161,15 @@ Formato (SOMENTE o JSON):
 
 # Intenções em que a regra clássica é confiável E baratíssima (não gasta LLM).
 _CLASSICO_CONFIAVEL = {"saudacao", "agradecimento", "capacidades"}
+
+
+def _data_passada(data_iso: str) -> bool:
+    try:
+        a, m, d = (int(x) for x in str(data_iso).split("-"))
+        import datetime
+        return datetime.date(a, m, d) < tempo.hoje()
+    except Exception:
+        return False
 
 
 def _br(data_iso: str) -> str:
@@ -231,7 +254,8 @@ def _situacao(situacao: str) -> str:
     return situacao or "assinante ativo"
 
 
-def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="") -> Optional[dict]:
+def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
+         correcao="") -> Optional[dict]:
     try:
         from litellm import completion
     except Exception:
@@ -256,7 +280,8 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="") -> Optiona
                     {"role": "system", "content": system},
                     {"role": "user",
                      "content": f"Última mensagem do usuário: {text!r}"},
-                ] + ([{"role": "user",
+                ] + ([{"role": "user", "content": correcao}] if correcao else [])
+                  + ([{"role": "user",
                        "content": "Responda SOMENTE o JSON pedido."}]
                      if tentativa else []),
             )
@@ -322,6 +347,30 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
         return None
 
     data = _llm(text, user_name, itens, fatos, historico, ai_engine, situacao)
+
+    # O pedido dele NUNCA pode virar alteração de outro pedido. Se o modelo
+    # mandou "atualizar" um item que a mensagem nem cita, devolvemos a
+    # pergunta com a correção explícita — em vez de aceitar e destruir dois
+    # lembretes de uma vez (o novo, que nunca nasce, e o antigo, que muda).
+    if isinstance(data, dict) and isinstance(data.get("atualizar"), dict):
+        alvo_id = data["atualizar"].get("id")
+        alvo = next((i for i in itens if i.get("id") == alvo_id), None)
+        if alvo and not _atualizacao_plausivel(text, alvo, pergunta_aberta):
+            _registrar_falha(
+                f"LLM tentou alterar '{alvo.get('descricao')}' com uma "
+                f"mensagem que fala de outra coisa — reconsultando")
+            corrigido = _llm(
+                text, user_name, itens, fatos, historico, ai_engine, situacao,
+                correcao=(f"CORREÇÃO OBRIGATÓRIA: a mensagem NÃO fala do item "
+                          f"'{alvo.get('descricao')}'. É coisa DIFERENTE. "
+                          f"Proibido usar \"atualizar\" nessa resposta: "
+                          f"devolva o pedido em \"itens\" como item NOVO, "
+                          f"preservando o item existente intacto."))
+            if isinstance(corrigido, dict):
+                corrigido["atualizar"] = None
+                data = corrigido
+            else:
+                data["atualizar"] = None
 
     if data is None:
         # LLM indisponível/falhou. O fluxo clássico quebra a frase por
@@ -446,6 +495,12 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
             novo.setdefault("recorrencia", None)
             novo.setdefault("link_afiliado",
                             ai_engine.affiliate_link_for(novo.get("descricao", "")))
+            # data no passado dispara o alarme na mesma hora e assusta o
+            # usuário ("por que isso tocou agora?"). Melhor sem data.
+            if novo.get("data_vencimento") and _data_passada(novo["data_vencimento"]):
+                _registrar_falha(f"data no passado ({novo['data_vencimento']}) "
+                                 f"em '{novo.get('descricao')}' — descartada")
+                novo["data_vencimento"] = None
             result["items"].append(novo)
 
         n = _resgatar_valores(result["items"], result["reply"])
@@ -657,6 +712,43 @@ def _anuncia_assunto_novo(text: str) -> bool:
     low = " " + (text or "").strip().lower() + " "
     return any(f" {v} " in low or low.startswith(f" {v}")
                for v in _VERBOS_ASSUNTO_NOVO)
+
+
+_STOPWORDS = {
+    "de", "da", "do", "das", "dos", "a", "o", "as", "os", "e", "em", "no",
+    "na", "nos", "nas", "um", "uma", "para", "pra", "por", "com", "que",
+    "me", "meu", "minha", "todo", "toda", "todos", "todas", "dia", "dias",
+    "mes", "mês", "hora", "horas", "as", "às", "conta", "boleto", "fatura",
+    "lembra", "lembre", "lembrar", "tomar", "pagar", "anota", "anote",
+}
+
+
+def _palavras(txt: str) -> set:
+    limpo = re.sub(r"[^\wàáâãéêíóôõúç ]", " ", (txt or "").lower())
+    return {p for p in limpo.split() if len(p) > 2 and p not in _STOPWORDS}
+
+
+def _atualizacao_plausivel(text: str, alvo: dict, pergunta_aberta: bool) -> bool:
+    """O usuário está mesmo falando DESTE item, ou o LLM encaixou no item errado?
+
+    Caso real: com "losartana" salva, o usuário pediu "vitamina D todo dia às
+    9h" e o modelo ATUALIZOU a losartana. A vitamina D nunca existiu e o
+    lembrete original foi alterado — o usuário perde os dois de uma vez.
+
+    Regra: ou é um fragmento curto respondendo a uma pergunta minha
+    ("são 340 reais"), ou a mensagem tem que citar algo do item alvo.
+    """
+    if not alvo:
+        return False
+    palavras_texto = _palavras(text)
+    if pergunta_aberta and len(text.split()) <= 4 and not palavras_texto:
+        return True  # "187", "dia 20" — resposta pura
+    palavras_alvo = _palavras(alvo.get("descricao", ""))
+    if palavras_texto & palavras_alvo:
+        return True  # citou o nome do item: é ele mesmo
+    if pergunta_aberta and len(text.split()) <= 4:
+        return True  # fragmento curto logo após pergunta
+    return False
 
 
 def _multi_item(text: str) -> bool:
