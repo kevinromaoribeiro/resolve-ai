@@ -314,6 +314,38 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
         return None
 
 
+def _preparar_item(novo: dict, ai_engine) -> Optional[dict]:
+    """Normaliza um item vindo do LLM para o formato que o banco aceita.
+
+    Um único lugar faz isso: quando havia duas cópias dessa lógica, uma delas
+    ficou para trás e o item preparado na reconsulta nunca chegava no banco.
+    """
+    if not (isinstance(novo, dict) and novo.get("descricao")):
+        return None
+    # COERÇÃO, não setdefault: o LLM inventa tipo ("medicamento") e o
+    # db.add_item LANÇA ValueError — o item sumia em silêncio.
+    if novo.get("tipo") not in ("lembrete", "despesa", "documento"):
+        novo["tipo"] = ("despesa" if novo.get("valor_reais") is not None
+                        else "lembrete")
+    if novo.get("status") not in ("pendente", "concluido", "aglutinado",
+                                  "vencido"):
+        novo["status"] = "pendente"
+    if not novo.get("categoria"):
+        novo["categoria"] = "Outros"
+    novo.setdefault("hora_alvo", None)
+    novo.setdefault("valor_reais", None)
+    novo.setdefault("data_vencimento", None)
+    novo.setdefault("recorrencia", None)
+    novo.setdefault("link_afiliado",
+                    ai_engine.affiliate_link_for(novo.get("descricao", "")))
+    # data no passado dispara o alarme na hora e assusta o usuário
+    if novo.get("data_vencimento") and _data_passada(novo["data_vencimento"]):
+        _registrar_falha(f"data no passado ({novo['data_vencimento']}) em "
+                         f"'{novo.get('descricao')}' — descartada")
+        novo["data_vencimento"] = None
+    return novo
+
+
 def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
           situacao: str = "") -> Optional[dict]:
     """Ponto de entrada do V8. Ver contrato no topo do arquivo."""
@@ -469,39 +501,12 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
                 result["atualizar"] = {"id": alvo, "campos": campos}
                 item, novos = None, []   # não cria duplicado
 
-    # itens novos — só em registro de verdade e sem atualização no mesmo turno.
-    # É LISTA: "luz 187 dia 12, net 129 dia 15 e seguro 340 dia 20" são 3
-    # itens. Quando isto era campo único, o 3º sumia calado.
     if (intent in ("registro", "resposta") and novos
             and not result.get("atualizar")):
         for novo in novos[:10]:
-            if not (isinstance(novo, dict) and novo.get("descricao")):
-                continue
-            # COERÇÃO, não setdefault. O LLM inventa tipo ("medicamento",
-            # "consulta") e o db.add_item LANÇA ValueError — o item era
-            # perdido em silêncio depois de o bot ter respondido "Anotado".
-            # setdefault não resolvia: a chave existia, só que com lixo.
-            if novo.get("tipo") not in ("lembrete", "despesa", "documento"):
-                novo["tipo"] = ("despesa" if novo.get("valor_reais") is not None
-                                else "lembrete")
-            if novo.get("status") not in ("pendente", "concluido",
-                                          "aglutinado", "vencido"):
-                novo["status"] = "pendente"
-            if not novo.get("categoria"):
-                novo["categoria"] = "Outros"
-            novo.setdefault("hora_alvo", None)
-            novo.setdefault("valor_reais", None)
-            novo.setdefault("data_vencimento", None)
-            novo.setdefault("recorrencia", None)
-            novo.setdefault("link_afiliado",
-                            ai_engine.affiliate_link_for(novo.get("descricao", "")))
-            # data no passado dispara o alarme na mesma hora e assusta o
-            # usuário ("por que isso tocou agora?"). Melhor sem data.
-            if novo.get("data_vencimento") and _data_passada(novo["data_vencimento"]):
-                _registrar_falha(f"data no passado ({novo['data_vencimento']}) "
-                                 f"em '{novo.get('descricao')}' — descartada")
-                novo["data_vencimento"] = None
-            result["items"].append(novo)
+            pronto = _preparar_item(novo, ai_engine)
+            if pronto:
+                result["items"].append(pronto)
 
         n = _resgatar_valores(result["items"], result["reply"])
         if n:
@@ -509,6 +514,39 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
                              f"do campo (estavam so no texto)")
         result["reply"] = _tirar_pergunta_redundante(result["reply"],
                                                      result["items"])
+
+    # INVARIANTE: prometeu guardar -> tem que ter guardado alguma coisa.
+    # O modelo lia no histórico que já havia dito "vou te lembrar da vitamina
+    # D" e concluía que estava feito — respondia bonito e não criava nada.
+    # Uma reconsulta com a correção explícita resolve; se ainda assim não
+    # vier item, a gente avisa em vez de mentir.
+    if (_promete_guardar(result["reply"]) and not result["items"]
+            and not result.get("atualizar") and not result.get("concluir")
+            and intent not in ("consulta", "conversa")):
+        _registrar_falha("prometeu guardar sem criar item — reconsultando")
+        corrigido = _llm(
+            text, user_name, itens, fatos, historico, ai_engine, situacao,
+            correcao=("CORREÇÃO OBRIGATÓRIA: você prometeu guardar mas não "
+                      "devolveu nada em \"itens\". O que está na CONVERSA "
+                      "RECENTE não está salvo — só vale o que estiver na "
+                      "lista de itens em aberto. Devolva o pedido dele em "
+                      "\"itens\" agora, como item NOVO."))
+        if isinstance(corrigido, dict) and isinstance(corrigido.get("itens"), list) \
+                and corrigido["itens"]:
+            for novo in corrigido["itens"][:10]:
+                pronto = _preparar_item(novo, ai_engine)
+                if pronto:
+                    result["items"].append(pronto)
+            if corrigido.get("reply"):
+                result["reply"] = corrigido["reply"]
+            intent = "registro"
+        else:
+            _registrar_falha("reconsulta tambem nao devolveu item")
+            result["reply"] = ("Não consegui guardar isso direito aqui. 😕\n\n"
+                               "Me manda de novo em uma frase, tipo "
+                               "_\"vitamina D todo dia às 9h\"_?")
+            return result
+
 
     return result
 
@@ -749,6 +787,25 @@ def _atualizacao_plausivel(text: str, alvo: dict, pergunta_aberta: bool) -> bool
     if pergunta_aberta and len(text.split()) <= 4:
         return True  # fragmento curto logo após pergunta
     return False
+
+
+_PROMESSAS = (
+    "anotado", "anotei", "guardei", "vou te lembrar", "vou lembrar",
+    "te aviso", "te lembro", "deixei agendado", "agendado", "registrei",
+    "está guardado", "esta guardado", "pode deixar comigo", "tá anotado",
+    "ta anotado", "marcado para", "vou avisar",
+)
+
+
+def _promete_guardar(reply: str) -> bool:
+    """A resposta PROMETE que algo ficou guardado?
+
+    Invariante do produto: prometer sem gravar é a única falha que destrói a
+    confiança de vez — o usuário para de conferir justamente porque confiou.
+    Se prometeu e não persistiu nada, é mentira e tem que ser corrigido.
+    """
+    low = (reply or "").lower()
+    return any(p in low for p in _PROMESSAS)
 
 
 def _multi_item(text: str) -> bool:
