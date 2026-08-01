@@ -178,6 +178,25 @@ def _tem_pergunta_aberta(msgs: list) -> bool:
     return False
 
 
+ULTIMA_FALHA: str = ""
+
+
+def _registrar_falha(motivo: str) -> None:
+    """Guarda o último motivo de o mordomo ter desistido.
+
+    Sem isto, quando o v8 devolve None a mensagem cai no fluxo antigo e o
+    usuário vê uma resposta pior — sem nenhum rastro do porquê. Exposto em
+    /health para diagnóstico em 1 request.
+    """
+    global ULTIMA_FALHA
+    ULTIMA_FALHA = motivo[:600]
+    try:
+        import logging
+        logging.getLogger("resolveai").warning("[v8] %s", ULTIMA_FALHA)
+    except Exception:
+        pass
+
+
 def _situacao(situacao: str) -> str:
     """Texto curto sobre a conta, pra o mordomo calibrar a sugestão.
     Em trial ele deve propor um uso que dá retorno DENTRO dos dias que faltam."""
@@ -216,13 +235,20 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="") -> Optiona
             bruto = resp.choices[0].message.content
             bruto = re.sub(r"```(?:json)?|```", "", bruto).strip()
             try:
-                data = json.loads(bruto)
-            except json.JSONDecodeError:
+                # strict=False aceita quebra de linha literal dentro das
+                # strings. O prompt agora manda formatar a resposta com \n;
+                # quando o modelo escreve a quebra crua, o parser estrito
+                # estoura e o mordomo cai calado no regex antigo.
+                data = json.loads(bruto, strict=False)
+            except json.JSONDecodeError as e:
+                _registrar_falha(f"json invalido ({e}) :: {bruto[:400]}")
                 continue
             if data.get("reply") and data.get("intent"):
                 return data
+            _registrar_falha(f"json sem reply/intent :: {bruto[:400]}")
         return None
-    except Exception:
+    except Exception as e:
+        _registrar_falha(f"excecao no LLM: {e!r}")
         return None
 
 

@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v9.4-multi-item-2026-08-01"
+BUILD = "v9.5-diag-2026-08-01"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -987,7 +987,8 @@ try:
                 # pé. Já perdemos tempo adivinhando isso.
                 "build": BUILD,
                 "memoria": hasattr(db, "lembrar_fato"),
-                "contexto": hasattr(db, "conversa_recente")}
+                "contexto": hasattr(db, "conversa_recente"),
+                "v8_ultima_falha": getattr(motor_v8, "ULTIMA_FALHA", "")}
         if wa in ("close", "closed", "disconnected", "removed"):
             from fastapi.responses import JSONResponse
             return JSONResponse(status_code=500, content=body)
