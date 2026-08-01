@@ -108,7 +108,9 @@ F6. Emoji: no máximo 1, e só quando couber. Zero emoji é melhor que dois.
 === VÁRIAS COISAS NUMA MENSAGEM SÓ ===
 15. "itens" é uma LISTA. Se ele mandar 3 contas na mesma frase, devolva as 3 — separadas por vírgula, por "e", por linha, do jeito que ele escrever. Perder um item é o pior erro possível: ele confiou em você e vai descobrir no vencimento.
 16. Em "descricao" ponha só o nome da coisa, limpo: "luz", "net", "seguro do carro". Nunca inclua o comando dele ("anota aí", "me lembra de") nem valor/data dentro da descrição.
-17. "dia 12" sem mês = o próximo dia 12 a partir de hoje.
+17. "dia 12" sem mês = o próximo dia 12 a partir de hoje. Em "data_vencimento" sempre YYYY-MM-DD; no texto da resposta sempre dd/mm. Nunca escreva "vence dia 12" para o usuário — escreva "vence *12/08*".
+18. TUDO que você escrever na resposta TEM que estar nos campos do JSON. Se você escreveu "R$ 187,00", então "valor_reais": 187.0 naquele item. Escrever o valor só no texto e deixar o campo null é perder a informação: o painel, os avisos e a soma de gastos ficam vazios.
+19. NUNCA pergunte algo que você acabou de responder. Se você listou os valores, não pergunte "qual o valor?". Antes de mandar, releia sua própria "reply": a pergunta do final só entra se ela pedir algo que REALMENTE falta.
 
 Formato (SOMENTE o JSON):
 {{"intent":"consulta|registro|complemento|resposta|conclusao|conversa",
@@ -387,6 +389,11 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
                             ai_engine.affiliate_link_for(novo.get("descricao", "")))
             result["items"].append(novo)
 
+        n = _resgatar_valores(result["items"], result["reply"])
+        if n:
+            _registrar_falha(f"resgatei {n} valor(es) que o LLM deixou de fora "
+                             f"do campo (estavam so no texto)")
+
     return result
 
 
@@ -407,6 +414,41 @@ def _e_pergunta(text: str) -> bool:
         return True
     return any(low.startswith(p) or f" {p} " in f" {low} "
                for p in _INTERROGATIVAS)
+
+
+def _resgatar_valores(itens: list, reply: str) -> int:
+    """Recupera valores que o LLM escreveu na resposta mas esqueceu no campo.
+
+    Aconteceu de verdade: a resposta listava "Luz — R$ 187,00" e o item ia
+    pro banco com valor_reais=None. O usuário lê certo e o dado nasce errado.
+    Aqui, para cada item sem valor, procuramos na linha da resposta que cita
+    a descrição dele um "R$ X" e usamos esse número. Só age quando é
+    inequívoco (uma linha, um valor).
+    """
+    if not reply:
+        return 0
+    linhas = [l for l in reply.split("\n") if "R$" in l]
+    resgatados = 0
+    for it in itens:
+        if it.get("valor_reais") is not None:
+            continue
+        desc = (it.get("descricao") or "").strip().lower()
+        if not desc:
+            continue
+        for linha in linhas:
+            if desc not in linha.lower():
+                continue
+            achados = re.findall(r"R\$\s*([\d.]+,\d{2}|[\d.]+)", linha)
+            if len(achados) != 1:
+                continue
+            bruto = achados[0].replace(".", "").replace(",", ".")
+            try:
+                it["valor_reais"] = float(bruto)
+                resgatados += 1
+            except ValueError:
+                pass
+            break
+    return resgatados
 
 
 def _multi_item(text: str) -> bool:
