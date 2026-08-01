@@ -517,35 +517,40 @@ def handle_incoming(payload: dict) -> Optional[dict]:
                 "[media] %s sem link no payload Wasender", kind)
 
     # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
+    # Veio da landing page com dados no payload? Cria perfil completo e
+    # pula o onboarding — a pessoa chega CONHECIDA, não jogada no vácuo.
+    # Vale para usuário novo E para quem ainda está no meio do cadastro
+    # (ex.: logo após um RESET, que recria o registro no passo "nome").
+    # Sem isso o payload seria gravado como se fosse o nome da pessoa.
+    landing = _parse_landing_payload(content) if kind == "texto" else None
+    if landing and (landing.get("nome") or landing.get("interesses")) and (
+            is_new or user.get("onboarding_step") in ("nome", "interesses")):
+        db.update_user_fields(
+            user["id"],
+            nome=landing["nome"] or user["nome"],
+            idade=landing.get("idade"),
+            interesses=landing.get("interesses") or None,
+            onboarding_step="done")
+        fn = (landing["nome"] or "").split()[0] or first_name
+        ints = [i for i in (landing.get("interesses") or "").split(",") if i]
+        # primeira sugestão já personalizada pelo 1º interesse
+        primeira = ""
+        if ints:
+            try:
+                import trial_guiado
+                _, cta = trial_guiado._sugestao_para({"interesses": ",".join(ints)})
+                primeira = f"\n\nPra já começar: {cta}"
+            except Exception:
+                primeira = ""
+        return {"number": phone, "text":
+                (f"Oi {fn}! 🟢 Que bom te ver aqui. Eu sou o *Resolve AI* — "
+                 f"vou tirar da sua cabeça contas, lembretes, consultas e "
+                 f"compras.\n\nVocê tem *{TRIAL_DAYS} dias grátis*, sem "
+                 f"cartão. 🔒 Seus dados são só pra te atender — nada é "
+                 f"vendido. Ao continuar você aceita os Termos: {TERMS_URL}"
+                 f"{primeira}")}
+
     if is_new:
-        # Veio da landing page com dados no payload? Cria perfil completo e
-        # pula o onboarding — a pessoa chega CONHECIDA, não jogada no vácuo.
-        landing = _parse_landing_payload(content) if kind == "texto" else None
-        if landing and (landing.get("nome") or landing.get("interesses")):
-            db.update_user_fields(
-                user["id"],
-                nome=landing["nome"] or user["nome"],
-                idade=landing.get("idade"),
-                interesses=landing.get("interesses") or None,
-                onboarding_step="done")
-            fn = (landing["nome"] or "").split()[0] or first_name
-            ints = [i for i in (landing.get("interesses") or "").split(",") if i]
-            # primeira sugestão já personalizada pelo 1º interesse
-            primeira = ""
-            if ints:
-                try:
-                    import trial_guiado
-                    _, cta = trial_guiado._sugestao_para({"interesses": ",".join(ints)})
-                    primeira = f"\n\nPra já começar: {cta}"
-                except Exception:
-                    primeira = ""
-            return {"number": phone, "text":
-                    (f"Oi {fn}! 🟢 Que bom te ver aqui. Eu sou o *Resolve AI* — "
-                     f"vou tirar da sua cabeça contas, lembretes, consultas e "
-                     f"compras.\n\nVocê tem *{TRIAL_DAYS} dias grátis*, sem "
-                     f"cartão. 🔒 Seus dados são só pra te atender — nada é "
-                     f"vendido. Ao continuar você aceita os Termos: {TERMS_URL}"
-                     f"{primeira}")}
         # Sem payload da landing: fluxo normal de onboarding (pergunta nome etc.)
         return {"number": phone, "text": textos.WELCOME_MSG.format(trial_days=TRIAL_DAYS, terms_url=TERMS_URL)}
 
