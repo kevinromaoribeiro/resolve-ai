@@ -291,8 +291,14 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
     # reais", "dia 20") e o LLM devolveu item NOVO em vez de completar o que
     # já existe. Fragmento curto depois de pergunta é resposta, não assunto
     # novo — então convertemos em atualização do item mais recente.
+    # EXCEÇÃO: se o LLM devolveu "memoria", ele está no fluxo de aprender
+    # (perguntei quanto dura -> ele respondeu -> agora crio o lembrete de
+    # recompra). Aí o item NOVO é legítimo e a rede não pode sequestrá-lo.
+    # Sem esta exceção, "uns 2 meses" (resposta sobre água sanitária) foi
+    # colada no item da ração — erro real observado em produção.
     if (pergunta_aberta and isinstance(item, dict) and itens
             and not result.get("atualizar") and not result.get("concluir")
+            and not result.get("memoria")
             and len(text.split()) <= 6):
         campos = {k: item.get(k) for k in
                   ("valor_reais", "data_vencimento", "hora_alvo", "recorrencia")
