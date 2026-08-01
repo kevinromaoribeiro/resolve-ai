@@ -50,8 +50,8 @@ Situação da conta dele: {situacao}
 {itens}
 
 Esta lista acima é a ÚNICA verdade sobre o que ele tem anotado. Ela vem do
-banco de dados agora. A CONVERSA RECENTE mais abaixo serve só para você
-entender o CONTEXTO do que ele está falando — ela NÃO é lista de itens.
+banco de dados agora, neste segundo. Tudo que vier depois neste prompt é só
+CONTEXTO de conversa — não é lista de itens.
 Uma conta que aparece na conversa mas NÃO está na lista acima foi apagada ou
 já foi concluída: ela NÃO EXISTE MAIS. Nunca a mencione como se estivesse em
 aberto. Se a lista acima estiver vazia, ele não tem nada anotado — diga isso
@@ -60,8 +60,18 @@ com todas as letras, mesmo que a conversa fale de contas.
 === O QUE VOCÊ JÁ APRENDEU SOBRE ELE (não pergunte de novo) ===
 {fatos}
 
-=== CONVERSA RECENTE (mais antiga primeiro) ===
+=== O QUE ELE FALOU ANTES (só contexto, mais antigo primeiro) ===
 {historico}
+
+=== A ÚLTIMA COISA QUE VOCÊ RESPONDEU ===
+{ultima_sua}
+
+⚠️ Isto acima é só a SUA fala anterior, e serve para UMA coisa: saber se você
+deixou uma pergunta em aberto. NÃO é prova de que algo foi salvo. Você pode
+ter dito "anotado" e o registro ter falhado. A ÚNICA prova do que existe é a
+lista de itens em aberto lá em cima. Se você disse que anotou algo e esse
+algo NÃO está naquela lista, então NÃO está salvo — registre agora, não
+responda que já está feito.
 
 === SUA TAREFA ===
 Interprete a ÚLTIMA mensagem NO CONTEXTO acima e devolva UM JSON.
@@ -210,14 +220,30 @@ def _fmt_fatos(fatos: list) -> str:
 
 
 def _fmt_historico(msgs: list) -> str:
-    if not msgs:
-        return "(sem conversa anterior)"
+    """SÓ o que o USUÁRIO falou.
+
+    Antes as respostas do próprio bot entravam aqui, e ele passou a tratar a
+    própria fala como estado: lia "já anotei a vitamina D" que ele mesmo
+    tinha dito e concluía que estava salvo — mesmo com o banco vazio. Foi a
+    causa raiz das contas fantasma, do nome errado na lista e do item que
+    nunca era criado. A fala do assistente agora sai daqui; só a ÚLTIMA vai,
+    separada, e apenas para saber se há pergunta em aberto.
+    """
+    ditas = [m for m in msgs if m.get("direcao") == "in"]
+    if not ditas:
+        return "(ele ainda não falou nada nesta conversa)"
     linhas = []
-    for m in msgs:
-        quem = "usuário" if m.get("direcao") == "in" else "você (assistente)"
+    for m in ditas[-8:]:
         txt = (m.get("preview") or "").strip() or f"[{m.get('tipo') or 'mídia'}]"
-        linhas.append(f"{quem}: {txt}")
+        linhas.append(f"- {txt}")
     return "\n".join(linhas)
+
+
+def _ultima_fala_bot(msgs: list) -> str:
+    for m in reversed(msgs):
+        if m.get("direcao") == "out":
+            return (m.get("preview") or "").strip()
+    return ""
 
 
 def _tem_pergunta_aberta(msgs: list) -> bool:
@@ -268,6 +294,8 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
                   .replace("{itens}", _fmt_itens(itens))
                   .replace("{fatos}", _fmt_fatos(fatos))
                   .replace("{historico}", _fmt_historico(historico))
+                  .replace("{ultima_sua}",
+                           _ultima_fala_bot(historico) or "(você ainda não respondeu nada)")
                   .replace("{situacao}", _situacao(situacao)))
         for tentativa in range(2):
             resp = completion(
