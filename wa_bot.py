@@ -46,7 +46,16 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v9.1-antecipa-2026-08-01"
+BUILD = "v9.2-formato-d1-2026-08-01"
+
+# AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
+# O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
+# pelo mesmo boleto. Isso não é ajudar, é encher o saco, e é assim que o
+# usuário silencia o bot. Fica só o D-1.
+# (O alarme de hora marcada continua: aquilo o usuário pediu explicitamente,
+# não é aviso automático de vencimento.)
+scheduler.DUE_ALERT_DAYS = {1}
+scheduler.DUE_WINDOW_DAYS = 1
 
 EVOLUTION_URL = os.environ.get("EVOLUTION_URL", "http://localhost:8080").rstrip("/")
 EVOLUTION_APIKEY = os.environ.get("EVOLUTION_APIKEY", "")
@@ -1220,6 +1229,12 @@ async function testarMotor() {{
                 ok = db.admin_set_status(uid, "trial")
             elif acao == "apagar":
                 db.delete_user(uid); ok = True
+            elif acao == "listar_itens":
+                return JSONResponse({"ok": True,
+                                     "itens": db.itens_abertos(uid, limite=100)})
+            elif acao == "apagar_item":
+                # remove item específico (lixo de teste, duplicata).
+                ok = db.apagar_item(int(body.get("item_id")), uid)
             return JSONResponse({"ok": ok})
         except Exception as e:
             return JSONResponse({"ok": False, "erro": str(e)}, status_code=400)

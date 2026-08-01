@@ -1000,3 +1000,18 @@ def buscar_conversa(telefone: str, termo: str, limite: int = 6) -> list[dict]:
         return [dict(r) for r in reversed(rows)]
     except Exception:
         return []
+
+
+def apagar_item(item_id: int, user_id: int) -> bool:
+    """Apaga UM item, exigindo o user_id como trava.
+
+    O user_id não é redundante: sem ele, um id errado apagaria item de outro
+    usuário. Com ele, o pior caso é não apagar nada.
+    """
+    try:
+        with get_conn() as conn:
+            cur = conn.execute("DELETE FROM items WHERE id = ? AND user_id = ?",
+                               (int(item_id), int(user_id)))
+            return cur.rowcount > 0
+    except Exception:
+        return False
