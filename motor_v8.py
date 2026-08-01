@@ -402,6 +402,8 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
         if n:
             _registrar_falha(f"resgatei {n} valor(es) que o LLM deixou de fora "
                              f"do campo (estavam so no texto)")
+        result["reply"] = _tirar_pergunta_redundante(result["reply"],
+                                                     result["items"])
 
     return result
 
@@ -458,6 +460,39 @@ def _resgatar_valores(itens: list, reply: str) -> int:
                 pass
             break
     return resgatados
+
+
+def _tirar_pergunta_redundante(reply: str, itens: list) -> str:
+    """Remove a pergunta final quando ela pede algo que já está guardado.
+
+    O bot escrevia a lista com os valores e emendava "Qual o valor de cada
+    um?". Pra quem lê, é sinal de que ele não entendeu — mata a confiança
+    mais rápido do que um erro de verdade.
+    """
+    if not reply or not itens:
+        return reply
+    linhas = reply.rstrip().split("\n")
+    ultima = linhas[-1].strip().lower()
+    if not ultima.endswith("?"):
+        return reply
+    # Só mexe em pergunta que PEDE dado ("qual o valor?", "quando vence?").
+    # Oferta ("quer que eu te avise um dia antes?") é útil e fica.
+    pedido = any(ultima.startswith(p) for p in
+                 ("qual", "quais", "quanto", "quando", "me diz", "me informa",
+                  "poderia me", "pode me dizer", "voce sabe", "você sabe"))
+    if not pedido:
+        return reply
+    pede_valor = "valor" in ultima or "quanto" in ultima
+    pede_data = ("data" in ultima or "vencimento" in ultima
+                 or "quando" in ultima)
+    tem_valores = all(i.get("valor_reais") is not None for i in itens)
+    tem_datas = all(i.get("data_vencimento") for i in itens)
+    redundante = ((pede_valor and tem_valores and not pede_data)
+                  or (pede_data and tem_datas and not pede_valor)
+                  or (pede_valor and pede_data and tem_valores and tem_datas))
+    if not redundante:
+        return reply
+    return "\n".join(linhas[:-1]).rstrip() or reply
 
 
 def _multi_item(text: str) -> bool:
