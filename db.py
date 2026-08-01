@@ -891,8 +891,10 @@ def itens_abertos(user_id: int, limite: int = 20) -> list[dict]:
     try:
         with get_conn() as conn:
             rows = conn.execute(
+                # recorrencia entra no SELECT: sem ela o mordomo não sabe que
+                # o remédio é diário e trata como lembrete de uma vez só.
                 "SELECT id, tipo, categoria, descricao, valor_reais, "
-                "       data_vencimento, hora_alvo, status "
+                "       data_vencimento, hora_alvo, recorrencia, status "
                 "FROM items WHERE user_id=? AND status IN ('pendente','vencido') "
                 "ORDER BY COALESCE(data_vencimento, data_criacao) LIMIT ?",
                 (user_id, int(limite))).fetchall()

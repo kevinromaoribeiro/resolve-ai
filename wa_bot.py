@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v10.3-assunto-novo-2026-08-01"
+BUILD = "v10.4-nao-perde-item-2026-08-01"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -797,6 +797,7 @@ def _aplicar_v8(user_id: int, v8: dict) -> None:
         except Exception:
             log_.warning("[v8] falha ao concluir item", exc_info=True)
 
+    falhou_gravar = []
     for item in v8.get("items", []):
         try:
             db.add_item(user_id=user_id, tipo=item.get("tipo", "lembrete"),
@@ -808,8 +809,22 @@ def _aplicar_v8(user_id: int, v8: dict) -> None:
                         recorrencia=item.get("recorrencia"),
                         status=item.get("status", "pendente"),
                         link_afiliado=item.get("link_afiliado"))
-        except Exception:
+        except Exception as e:
             log_.warning("[v8] falha ao criar item", exc_info=True)
+            falhou_gravar.append(f"{item.get('descricao')}: {e!r}")
+
+    # NUNCA dizer "anotado" sobre algo que não foi gravado. Aconteceu de
+    # verdade: o bot respondeu "Vou te lembrar da vitamina D todo dia às
+    # 09:00" e o item nem existia — o add_item recusou o tipo inventado e o
+    # except engoliu. Falha de gravação vira aviso honesto ao usuário.
+    if falhou_gravar:
+        try:
+            motor_v8.ULTIMA_FALHA = ("NAO GRAVOU: " + " | ".join(falhou_gravar))[:600]
+        except Exception:
+            pass
+        v8["reply"] = ("Opa — não consegui guardar isso aqui do meu lado. 😕\n\n"
+                       "Me manda de novo, por favor? Prefiro te avisar do que "
+                       "deixar você achando que está anotado.")
 
     for fato in (v8.get("memoria") or []):
         try:

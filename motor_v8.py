@@ -172,6 +172,8 @@ def _fmt_itens(itens: list) -> str:
             partes.append(f"vence {_br(it['data_vencimento'])}")
         if it.get("hora_alvo"):
             partes.append(f"às {it['hora_alvo']}")
+        if it.get("recorrencia"):
+            partes.append(f"repete {it['recorrencia']}")
         if it.get("status"):
             partes.append(str(it["status"]))
         linhas.append(" | ".join(partes))
@@ -426,9 +428,18 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
         for novo in novos[:10]:
             if not (isinstance(novo, dict) and novo.get("descricao")):
                 continue
-            novo.setdefault("tipo", "lembrete")
-            novo.setdefault("categoria", "Outros")
-            novo.setdefault("status", "pendente")
+            # COERÇÃO, não setdefault. O LLM inventa tipo ("medicamento",
+            # "consulta") e o db.add_item LANÇA ValueError — o item era
+            # perdido em silêncio depois de o bot ter respondido "Anotado".
+            # setdefault não resolvia: a chave existia, só que com lixo.
+            if novo.get("tipo") not in ("lembrete", "despesa", "documento"):
+                novo["tipo"] = ("despesa" if novo.get("valor_reais") is not None
+                                else "lembrete")
+            if novo.get("status") not in ("pendente", "concluido",
+                                          "aglutinado", "vencido"):
+                novo["status"] = "pendente"
+            if not novo.get("categoria"):
+                novo["categoria"] = "Outros"
             novo.setdefault("hora_alvo", None)
             novo.setdefault("valor_reais", None)
             novo.setdefault("data_vencimento", None)
