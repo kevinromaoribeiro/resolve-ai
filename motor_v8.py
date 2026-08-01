@@ -348,6 +348,9 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
                              "historico) — resposta trocada pelo real")
             result["reply"] = substituto
             return result
+        # valores conferem, mas o NOME pode ter vindo do histórico:
+        # a lista é sempre reconstruída a partir do banco.
+        result["reply"] = _reescrever_consulta(result["reply"], itens)
 
     # fatos aprendidos (perguntar só uma vez)
     memoria = data.get("memoria")
@@ -525,13 +528,56 @@ def _consulta_confere(reply: str, itens: list) -> Optional[str]:
             + "\n".join(f"• {_item_linha(i)}" for i in itens[:5]))
 
 
+def _moeda(v) -> str:
+    """1350.0 -> 'R$ 1.350,00'. Sem o ponto de milhar, valor alto vira
+    'R$ 1350,00' e fica ruim de bater o olho."""
+    try:
+        return "R$ " + f"{float(v):,.2f}".replace(",", "@").replace(".", ",").replace("@", ".")
+    except (TypeError, ValueError):
+        return ""
+
+
 def _item_linha(it: dict) -> str:
     partes = [f"*{(it.get('descricao') or 'item').strip()}*"]
     if it.get("valor_reais") is not None:
-        partes.append("— *" + ("R$ %.2f" % it["valor_reais"]).replace(".", ",") + "*")
+        partes.append("— *" + _moeda(it["valor_reais"]) + "*")
     if it.get("data_vencimento"):
         partes.append("· *" + _br(it["data_vencimento"]) + "*")
     return " ".join(partes)
+
+
+def _reescrever_consulta(reply: str, itens: list) -> str:
+    """Em consulta, a LISTA sai do banco — nunca do texto do LLM.
+
+    Bug real: o item era "fatura do cartão" e a resposta saiu "Luz — R$
+    1350,00", com o nome puxado de uma conversa antiga. Valor certo, nome
+    errado, e o usuário paga a conta errada. Aqui a gente mantém a fala do
+    mordomo (abertura e fecho) mas troca os bullets pelos itens reais.
+    """
+    if not itens:
+        return reply
+    linhas = [l for l in (reply or "").split("\n")]
+    def e_bullet(l):
+        return l.strip().startswith(("•", "·", "-", "*ph")) or bool(
+            re.match(r"^\s*\d+[.)]\s", l))
+    if not any(e_bullet(l) for l in linhas):
+        return reply  # não é resposta em lista: deixa como está
+    antes = [l for l in linhas[:next(i for i, l in enumerate(linhas) if e_bullet(l))]
+             if l.strip()]
+    depois = [l for l in linhas[max(i for i, l in enumerate(linhas) if e_bullet(l)) + 1:]
+              if l.strip()]
+    bloco = [f"• {_item_linha(i)}" for i in itens[:5]]
+    if len(itens) > 5:
+        bloco.append(f"• _e mais {len(itens) - 5}_")
+    partes = []
+    if antes:
+        partes.append(antes[0])
+        partes.append("")
+    partes.extend(bloco)
+    if depois:
+        partes.append("")
+        partes.append(depois[-1])
+    return "\n".join(partes)
 
 
 def _tirar_pergunta_redundante(reply: str, itens: list) -> str:
@@ -543,10 +589,15 @@ def _tirar_pergunta_redundante(reply: str, itens: list) -> str:
     """
     if not reply or not itens:
         return reply
-    linhas = reply.rstrip().split("\n")
-    ultima = linhas[-1].strip().lower()
-    if not ultima.endswith("?"):
+    # A pergunta pode vir na MESMA linha da confirmação ("Anotado. Qual o
+    # valor?"). Por isso olhamos a última FRASE, não a última linha — foi
+    # assim que "Qual o valor do plano?" passou batido tendo o valor.
+    corpo = reply.rstrip()
+    m = re.search(r"([^.!?\n]*\?)\s*$", corpo)
+    if not m:
         return reply
+    pergunta = m.group(1).strip()
+    ultima = pergunta.lower().lstrip("*_ ")
     # Só mexe em pergunta que PEDE dado ("qual o valor?", "quando vence?").
     # Oferta ("quer que eu te avise um dia antes?") é útil e fica.
     pedido = any(ultima.startswith(p) for p in
@@ -564,7 +615,8 @@ def _tirar_pergunta_redundante(reply: str, itens: list) -> str:
                   or (pede_valor and pede_data and tem_valores and tem_datas))
     if not redundante:
         return reply
-    return "\n".join(linhas[:-1]).rstrip() or reply
+    limpo = corpo[:m.start(1)].rstrip()
+    return limpo or reply
 
 
 def _multi_item(text: str) -> bool:
