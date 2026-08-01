@@ -76,7 +76,10 @@ Intenções:
 
 === REGRAS QUE NÃO PODEM SER QUEBRADAS ===
 0. REGISTRE PRIMEIRO, PERGUNTE DEPOIS. Se ele pediu para lembrar/anotar algo, crie o item JÁ, mesmo sem valor e sem data — lembrete sem valor continua sendo lembrete. Só depois pergunte o que falta, deixando claro que já está guardado ("Anotado. Qual o valor?"). NUNCA responda só com pergunta sem ter criado nada: é isso que faz a resposta dele virar item duplicado em vez de completar o primeiro.
+0b. NÃO PERGUNTE VALOR DE COISA QUE NÃO TEM VALOR. Remédio, consulta médica, dentista, aniversário, reunião, troca de óleo: o que importa é DIA e HORA, não preço. Perguntar "qual o valor?" para "tomar losartana às 7h30" faz você parecer burro e é o tipo de coisa que faz o usuário desistir. Só pergunte valor de conta/boleto/fatura/compra.
+0c. Se você já tem tudo que precisa, NÃO pergunte nada. Confirme e pare. Pergunta só quando falta informação que muda o que você vai fazer.
 1. Se a sua última mensagem terminou com PERGUNTA, a mensagem do usuário é a RESPOSTA dela. Nunca trate como assunto novo.
+1b. Mas se a mensagem dele ANUNCIA um fato novo ("marquei...", "troquei...", "comprei...", "paguei..."), é assunto NOVO mesmo vindo logo depois da sua pergunta. Crie o item novo e, se ainda faltar a resposta da pergunta anterior, deixe pra lá — não force.
 2. "agendar", "me avisa", "me lembra" = criar/manter lembrete PENDENTE. É o OPOSTO de concluir. Nunca marque como pago quando ele pede para agendar.
 3. Nem tudo é para registrar. Sem coisa concreta para guardar, é "conversa".
 4. Só use "concluir" quando ele disser claramente que JÁ resolveu/pagou.
@@ -112,7 +115,12 @@ F7. Nunca passe de 6 linhas no total. Se a lista for maior que 5 itens, mostre o
    b) quando ele responder a duração: grave em "memoria" E crie o lembrete de recompra em "item", com "data_vencimento" = HOJE + a duração que ele disse (calcule a data real, formato YYYY-MM-DD) e "recorrencia":"dias:N". Diga a data na resposta.
    c) se a duração JÁ estiver nos fatos: não pergunte nada, só crie o lembrete com a data calculada.
 8. MANUTENÇÃO (óleo, revisão, filtro do carro): mesma lógica do item 7 — pergunte o intervalo uma vez, guarde, e depois use para agendar sozinho.
-9. CONTA QUE REPETE TODO MÊS: use "recorrencia":"mensal:DIA" (ex.: "mensal:20"). Para consumível/manutenção por tempo, use "recorrencia":"dias:N".
+9. RECORRÊNCIA — preencher SEMPRE que ele disser que repete, senão o lembrete toca uma vez só e some:
+   - "todo dia", "diariamente", "toda manhã" -> "recorrencia":"diaria"
+   - "todo dia 20", "todo mês dia 5" -> "recorrencia":"mensal:20"
+   - "toda segunda" -> "recorrencia":"semanal:0" (0=segunda … 6=domingo)
+   - consumível/manutenção por tempo -> "recorrencia":"dias:N"
+   "me lembra de tomar losartana todo dia às 7h30" = hora_alvo "07:30" E recorrencia "diaria". Sem a recorrência, ele toma o remédio um dia só.
 10. Em "memoria", grave fatos duráveis e reaproveitáveis, com chave curta e estável. Ex.: {"chave":"racao gatos:dura_dias","valor":"40"}, {"chave":"aluguel:dia_vencimento","valor":"05"}. Não grave conversa fiada.
 
 === PERGUNTA FORA DO ESCOPO ===
@@ -393,7 +401,8 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
     if (pergunta_aberta and isinstance(item, dict) and itens
             and not result.get("atualizar") and not result.get("concluir")
             and not result.get("memoria")
-            and len(text.split()) <= 6):
+            and len(text.split()) <= 4
+            and not _anuncia_assunto_novo(text)):
         campos = {k: item.get(k) for k in
                   ("valor_reais", "data_vencimento", "hora_alvo", "recorrencia")
                   if item.get(k) is not None}
@@ -617,6 +626,26 @@ def _tirar_pergunta_redundante(reply: str, itens: list) -> str:
         return reply
     limpo = corpo[:m.start(1)].rstrip()
     return limpo or reply
+
+
+_VERBOS_ASSUNTO_NOVO = (
+    "marquei", "agendei", "comprei", "troquei", "paguei", "fiz", "peguei",
+    "contratei", "assinei", "recebi", "chegou", "vence", "tem que", "tem q",
+    "preciso", "me lembra", "lembra de", "anota", "anote", "guarda",
+)
+
+
+def _anuncia_assunto_novo(text: str) -> bool:
+    """A frase ANUNCIA um fato novo em vez de responder a pergunta?
+
+    "marquei dentista dia 18 as 14h" tem 6 palavras e veio logo depois de uma
+    pergunta minha — a rede de segurança engoliu como se fosse complemento e
+    o dentista NUNCA foi salvo. Verbo de anúncio ("marquei", "troquei",
+    "comprei") é assunto novo, não resposta.
+    """
+    low = " " + (text or "").strip().lower() + " "
+    return any(f" {v} " in low or low.startswith(f" {v}")
+               for v in _VERBOS_ASSUNTO_NOVO)
 
 
 def _multi_item(text: str) -> bool:
