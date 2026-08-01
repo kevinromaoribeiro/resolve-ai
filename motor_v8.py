@@ -72,12 +72,15 @@ Intenções:
 2. "agendar", "me avisa", "me lembra" = criar/manter lembrete PENDENTE. É o OPOSTO de concluir. Nunca marque como pago quando ele pede para agendar.
 3. Nem tudo é para registrar. Sem coisa concreta para guardar, é "conversa".
 4. Só use "concluir" quando ele disser claramente que JÁ resolveu/pagou.
-5. Nunca invente valor ou data. Nunca escreva "sem data" para o usuário.
-6. Tom cordial e curto (1-3 frases), como gente. NUNCA menu numerado ("responda 1 ou 2").
+5. Nunca invente valor ou data. Nunca escreva "sem data", "valor não informado" nem data em formato ISO (2026-08-02) para o usuário — escreva "02/08". Se falta o valor, simplesmente não mencione valor.
+6. Tom cordial e curto (1-3 frases), como gente. NUNCA menu numerado ("responda 1 ou 2"). Ao listar contas, use bullets curtos, não "1. ... 2. ...".
 
 === ANTECIPAR (é isto que te torna útil) ===
-7. CONSUMÍVEL (ração, filtro, remédio, gás, fralda...): se ele comprou algo que acaba e você AINDA NÃO SABE quanto dura, pergunte UMA única vez ("quanto tempo costuma durar?") e guarde em "memoria". Se você JÁ SABE (está nos fatos), não pergunte: calcule a próxima compra em "data_vencimento" e registre o lembrete.
-8. MANUTENÇÃO (óleo, revisão, filtro do carro): mesma lógica — pergunte o intervalo uma vez, guarde, use depois.
+7. CONSUMÍVEL (ração, filtro, remédio, gás, fralda, café...): quando ele disser que COMPROU um item desses, é OBRIGATÓRIO:
+   a) se a duração NÃO estiver nos fatos acima: sua "reply" TEM que terminar perguntando quanto costuma durar ("Anotado. Quanto tempo costuma durar essa quantidade?"). Não responda só "registrei" — sem essa pergunta você nunca vai conseguir avisar ele de recomprar, que é o motivo de existir.
+   b) quando ele responder a duração: grave em "memoria" E crie o lembrete de recompra em "item", com "data_vencimento" = HOJE + a duração que ele disse (calcule a data real, formato YYYY-MM-DD) e "recorrencia":"dias:N". Diga a data na resposta.
+   c) se a duração JÁ estiver nos fatos: não pergunte nada, só crie o lembrete com a data calculada.
+8. MANUTENÇÃO (óleo, revisão, filtro do carro): mesma lógica do item 7 — pergunte o intervalo uma vez, guarde, e depois use para agendar sozinho.
 9. CONTA QUE REPETE TODO MÊS: use "recorrencia":"mensal:DIA" (ex.: "mensal:20"). Para consumível/manutenção por tempo, use "recorrencia":"dias:N".
 10. Em "memoria", grave fatos duráveis e reaproveitáveis, com chave curta e estável. Ex.: {{"chave":"racao gatos:dura_dias","valor":"40"}}, {{"chave":"aluguel:dia_vencimento","valor":"05"}}. Não grave conversa fiada.
 
@@ -100,18 +103,27 @@ Formato (SOMENTE o JSON):
 _CLASSICO_CONFIAVEL = {"saudacao", "agradecimento", "capacidades"}
 
 
+def _br(data_iso: str) -> str:
+    """2026-08-02 -> 02/08. O usuário não fala ISO."""
+    try:
+        a, m, d = str(data_iso).split("-")
+        return f"{d}/{m}"
+    except Exception:
+        return str(data_iso)
+
+
 def _fmt_itens(itens: list) -> str:
     if not itens:
         return "(nada anotado no momento)"
     linhas = []
     for it in itens:
         partes = [f"id={it.get('id')}", str(it.get("descricao") or "?")]
+        # valor ausente: omitir. Se escrevermos "valor não informado" aqui, o
+        # LLM repete isso para o usuário — foi o que aconteceu no teste.
         if it.get("valor_reais") is not None:
             partes.append(("R$ %.2f" % it["valor_reais"]).replace(".", ","))
-        else:
-            partes.append("valor não informado")
         if it.get("data_vencimento"):
-            partes.append(f"vence {it['data_vencimento']}")
+            partes.append(f"vence {_br(it['data_vencimento'])}")
         if it.get("hora_alvo"):
             partes.append(f"às {it['hora_alvo']}")
         if it.get("status"):

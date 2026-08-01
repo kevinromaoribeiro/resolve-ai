@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v9-contexto-2026-08-01"
+BUILD = "v9.1-antecipa-2026-08-01"
 
 EVOLUTION_URL = os.environ.get("EVOLUTION_URL", "http://localhost:8080").rstrip("/")
 EVOLUTION_APIKEY = os.environ.get("EVOLUTION_APIKEY", "")
