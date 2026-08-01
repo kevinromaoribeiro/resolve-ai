@@ -371,6 +371,22 @@ def _preparar_item(novo: dict, ai_engine) -> Optional[dict]:
         _registrar_falha(f"data no passado ({novo['data_vencimento']}) em "
                          f"'{novo.get('descricao')}' — descartada")
         novo["data_vencimento"] = None
+
+    # (3) HORA QUE JÁ PASSOU HOJE começa AMANHÃ. Sem isto, "me lembra de
+    # tomar vitamina D todo dia às 9h" pedido às 18h tocava na mesma hora —
+    # o usuário leva um susto e acha que o bot é doido.
+    if novo.get("hora_alvo") and not novo.get("data_vencimento"):
+        try:
+            import datetime
+            h, mi = (int(x) for x in str(novo["hora_alvo"]).split(":")[:2])
+            agora = tempo.agora()
+            if (h, mi) <= (agora.hour, agora.minute):
+                novo["data_vencimento"] = (tempo.hoje() +
+                                           datetime.timedelta(days=1)).isoformat()
+            else:
+                novo["data_vencimento"] = tempo.hoje().isoformat()
+        except Exception:
+            pass
     return novo
 
 
@@ -531,10 +547,40 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
 
     if (intent in ("registro", "resposta") and novos
             and not result.get("atualizar")):
+        manut = _extrair_manutencao(text, fatos)
         for novo in novos[:10]:
             pronto = _preparar_item(novo, ai_engine)
-            if pronto:
-                result["items"].append(pronto)
+            if not pronto:
+                continue
+
+            # (1) MANUTENÇÃO: a data sai de conta em Python, não do modelo.
+            if _e_manutencao(pronto["descricao"]) and not pronto.get("data_vencimento"):
+                calc = _data_dois_gatilhos(manut)
+                if calc:
+                    pronto["data_vencimento"], motivo = calc
+                    if manut.get("meses"):
+                        pronto["recorrencia"] = "dias:%d" % int(manut["meses"] * 30.44)
+                    result["reply"] = (
+                        f"Anotado a troca de hoje.\n\n"
+                        f"*Te aviso em {_br(pronto['data_vencimento'])}* — "
+                        f"{motivo}.\n\n"
+                        f"Se você rodar mais que o normal, me avisa que eu "
+                        f"antecipo.")
+
+            # (2) DEDUPE: item praticamente igual já aberto vira atualização.
+            gemeo = _ja_existe(pronto["descricao"], itens)
+            if gemeo:
+                campos = {k: v for k, v in pronto.items()
+                          if k in ("valor_reais", "data_vencimento", "hora_alvo",
+                                   "recorrencia") and v is not None}
+                if campos:
+                    result["atualizar"] = {"id": gemeo["id"], "campos": campos}
+                _registrar_falha(f"'{pronto['descricao']}' ja existia como "
+                                 f"'{gemeo.get('descricao')}' — atualizei em vez "
+                                 f"de duplicar")
+                continue
+
+            result["items"].append(pronto)
 
         n = _resgatar_valores(result["items"], result["reply"])
         if n:
@@ -784,14 +830,34 @@ _STOPWORDS = {
     "de", "da", "do", "das", "dos", "a", "o", "as", "os", "e", "em", "no",
     "na", "nos", "nas", "um", "uma", "para", "pra", "por", "com", "que",
     "me", "meu", "minha", "todo", "toda", "todos", "todas", "dia", "dias",
-    "mes", "mês", "hora", "horas", "as", "às", "conta", "boleto", "fatura",
+    "mes", "mês", "hora", "horas", "as", "às",
     "lembra", "lembre", "lembrar", "tomar", "pagar", "anota", "anote",
 }
+# "conta", "boleto" e "fatura" NÃO entram: sem elas "fatura do cartão" fica
+# só com "cartão" e a comparação de duplicata perde precisão.
+
+
+def _tira_acento_simples(t):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", t)
+                   if unicodedata.category(c) != "Mn")
+
+
+_STOPWORDS_SEM_ACENTO = {_tira_acento_simples(p) for p in _STOPWORDS}
+
+
+def _sem_acento(txt: str) -> str:
+    """No WhatsApp metade escreve 'oleo' e a outra 'óleo'. Sem normalizar,
+    'Óleo do carro' e 'oleo do carro' viravam dois itens diferentes."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", txt or "")
+                   if unicodedata.category(c) != "Mn")
 
 
 def _palavras(txt: str) -> set:
-    limpo = re.sub(r"[^\wàáâãéêíóôõúç ]", " ", (txt or "").lower())
-    return {p for p in limpo.split() if len(p) > 2 and p not in _STOPWORDS}
+    limpo = re.sub(r"[^\w ]", " ", _sem_acento(txt).lower())
+    return {p for p in limpo.split()
+            if len(p) > 2 and p not in _STOPWORDS_SEM_ACENTO}
 
 
 def _atualizacao_plausivel(text: str, alvo: dict, pergunta_aberta: bool) -> bool:
@@ -834,6 +900,107 @@ def _promete_guardar(reply: str) -> bool:
     """
     low = (reply or "").lower()
     return any(p in low for p in _PROMESSAS)
+
+
+_MANUTENCAO = ("oleo", "óleo", "revisao", "revisão", "filtro", "correia",
+               "pneu", "alinhamento", "balanceamento", "velas")
+
+
+def _e_manutencao(desc: str) -> bool:
+    low = (desc or "").lower()
+    return any(p in low for p in _MANUTENCAO)
+
+
+def _num(txt: str) -> Optional[float]:
+    try:
+        return float(txt.replace(".", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extrair_manutencao(text: str, fatos: list) -> dict:
+    """Tira do texto (e do que já foi aprendido) os números da manutenção.
+
+    Conta não pode ficar no prompt: o modelo entendeu "10 mil km ou 6 meses,
+    rodo 800 km/mês" e mesmo assim não agendou nada. Número a gente extrai e
+    calcula em Python — igual fizemos com valor e data, que só pararam de
+    errar quando saíram do texto.
+    """
+    dados = {"km": None, "meses": None, "km_mes": None}
+    baixo = " " + (text or "").lower().replace("mil", "000") + " "
+    baixo = re.sub(r"(\d)\s+000", r"\g<1>000", baixo)
+
+    m = re.search(r"(\d[\d.,]*)\s*km\s*(?:por|/|a cada)\s*(?:m[eê]s|mes)", baixo)
+    if m:
+        dados["km_mes"] = _num(m.group(1))
+    m = re.search(r"rodo\s+(?:uns?\s+)?(\d[\d.,]*)", baixo)
+    if m and dados["km_mes"] is None:
+        dados["km_mes"] = _num(m.group(1))
+    for m in re.finditer(r"(\d[\d.,]*)\s*km", baixo):
+        v = _num(m.group(1))
+        if v and v >= 1000 and dados["km"] is None:
+            dados["km"] = v          # intervalo (10.000), não a quilometragem/mês
+    m = re.search(r"(\d[\d.,]*)\s*(?:mes|m[eê]s|meses)", baixo)
+    if m:
+        dados["meses"] = _num(m.group(1))
+
+    for f in (fatos or []):
+        chave, valor = str(f.get("chave", "")).lower(), _num(str(f.get("valor", "")))
+        if valor is None:
+            continue
+        if dados["km"] is None and "km" in chave and "mes" not in chave:
+            dados["km"] = valor
+        if dados["km_mes"] is None and "km_por_mes" in chave:
+            dados["km_mes"] = valor
+        if dados["meses"] is None and ("mes" in chave and "km" not in chave):
+            dados["meses"] = valor
+    return dados
+
+
+def _data_dois_gatilhos(dados: dict) -> Optional[tuple]:
+    """Devolve (data_iso, motivo) do que vencer PRIMEIRO — km ou tempo."""
+    import datetime
+    hoje = tempo.hoje()
+    candidatos = []
+    if dados.get("km") and dados.get("km_mes"):
+        meses_km = dados["km"] / max(dados["km_mes"], 1)
+        candidatos.append((_soma_meses(hoje, meses_km),
+                           f"{int(dados['km']):,}".replace(",", ".") + " km"))
+    if dados.get("meses"):
+        candidatos.append((_soma_meses(hoje, dados["meses"]),
+                           f"{int(dados['meses'])} meses"))
+    if not candidatos:
+        return None
+    data, motivo = min(candidatos, key=lambda c: c[0])
+    outro = [c for c in candidatos if c[1] != motivo]
+    if outro:
+        motivo = f"{motivo} vence antes de {outro[0][1]}"
+    return data.isoformat(), motivo
+
+
+def _soma_meses(data, meses: float):
+    import datetime
+    dias = int(round(meses * 30.44))
+    return data + datetime.timedelta(days=dias)
+
+
+def _ja_existe(descricao: str, itens: list) -> Optional[dict]:
+    """Item praticamente igual já aberto? Evita 'Óleo do carro' duplicado.
+
+    Aconteceu no teste: duas linhas idênticas, as duas sem data. Duas linhas
+    para a mesma coisa é ruído — o usuário não sabe qual vale.
+    """
+    novas = _palavras(descricao)
+    if not novas:
+        return None
+    for it in itens:
+        antigas = _palavras(it.get("descricao", ""))
+        if not antigas:
+            continue
+        comuns = novas & antigas
+        if comuns and len(comuns) >= min(len(novas), len(antigas)):
+            return it   # todas as palavras significativas batem
+    return None
 
 
 def _multi_item(text: str) -> bool:
