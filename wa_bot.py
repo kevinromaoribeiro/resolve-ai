@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v9.8-final-2026-08-01"
+BUILD = "v10.0-painel-fechado-2026-08-01"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -74,6 +74,41 @@ TERMS_URL = os.environ.get(
     "https://resolveai.ia.br/termos.html")
 # Número do dono (só ele pode ativar assinaturas manualmente no MVP)
 ADMIN_PHONE = re.sub(r"\D", "", os.environ.get("ADMIN_PHONE", ""))
+
+# ---------------------------------------------------------------------------
+# TRAVA DO PAINEL
+# ---------------------------------------------------------------------------
+# O painel e o /painel/acao ficavam abertos na porta 8000 sem nenhuma
+# autenticação: qualquer um com o IP apagava usuário e item, lia conversa e
+# disparava mensagem em nome do Resolve AI. Aceitável enquanto era só o dono
+# testando; inaceitável com cliente pagante.
+#
+# FAIL-CLOSED de propósito: sem PAINEL_TOKEN definido, o painel fica FECHADO.
+# O contrário (abrir quando falta config) é como buracos assim nascem.
+PAINEL_TOKEN = os.environ.get("PAINEL_TOKEN", "").strip()
+
+
+def _painel_autorizado(request) -> bool:
+    """Token via ?k=... (para abrir no navegador) ou header X-Painel-Token
+    (para o JS da própria página). Comparação em tempo constante."""
+    import secrets
+    if not PAINEL_TOKEN:
+        return False
+    enviado = (request.query_params.get("k")
+               or request.headers.get("x-painel-token")
+               or "")
+    return secrets.compare_digest(str(enviado), PAINEL_TOKEN)
+
+
+def _negado(request):
+    """Resposta única para acesso sem token. Não revela se o token existe,
+    nem devolve dado nenhum."""
+    from fastapi.responses import JSONResponse
+    import logging
+    logging.getLogger("resolveai").warning(
+        "[painel] acesso negado (%s)",
+        "PAINEL_TOKEN nao configurado" if not PAINEL_TOKEN else "token invalido")
+    return JSONResponse(status_code=401, content={"erro": "nao autorizado"})
 
 
 # ---------------------------------------------------------------------------
@@ -973,7 +1008,7 @@ try:
     app = FastAPI(title="Resolve AI · WhatsApp Gateway")
 
     @app.get("/health")
-    async def health():
+    async def health(request: Request):
         """Vigia: 500 só quando a sessão está claramente CAÍDA. Estados
         ambíguos (open/connected/connecting) contam como ok pra não gerar
         falso alarme no monitor."""
@@ -988,7 +1023,11 @@ try:
                 "build": BUILD,
                 "memoria": hasattr(db, "lembrar_fato"),
                 "contexto": hasattr(db, "conversa_recente"),
-                "v8_ultima_falha": getattr(motor_v8, "ULTIMA_FALHA", "")}
+                "painel": "protegido" if PAINEL_TOKEN else "SEM TOKEN"}
+        # o diagnóstico do v8 carrega trecho de mensagem de usuário —
+        # só sai com token, senão /health vira vazamento de conversa.
+        if _painel_autorizado(request):
+            body["v8_ultima_falha"] = getattr(motor_v8, "ULTIMA_FALHA", "")
         if wa in ("close", "closed", "disconnected", "removed"):
             from fastapi.responses import JSONResponse
             return JSONResponse(status_code=500, content=body)
@@ -1030,10 +1069,15 @@ try:
         return {"ok": True}
 
     @app.post("/cron/proactive")
-    async def cron_proactive():
+    async def cron_proactive(request: Request):
         """Disparo manual do motor proativo. O agendamento normal roda SOZINHO
         dentro do app (ver _loop_proativo abaixo) — este endpoint fica só para
-        forçar na mão (botão do painel, debug)."""
+        forçar na mão (botão do painel, debug).
+
+        Exige token: aberto, qualquer um forçava o bot a mandar mensagem em
+        nome do Resolve AI para os seus usuários."""
+        if not _painel_autorizado(request):
+            return _negado(request)
         db.registrar_cron_ping()
         sent = dispatch_proactive()
         maybe_admin_report()
@@ -1078,14 +1122,21 @@ try:
 
     @app.post("/watchdog")
     @app.get("/watchdog")
-    async def watchdog():
-        """Vigia de auto-recuperação. Chame a cada 1-2 min no cron-job.org.
-        Se a sessão do WhatsApp travar, reinicia sozinho e avisa o admin."""
+    async def watchdog(request: Request):
+        """Vigia de auto-recuperação. Chame a cada 1-2 min no cron-job.org
+        usando .../watchdog?k=SEU_PAINEL_TOKEN.
+        Se a sessão do WhatsApp travar, reinicia sozinho e avisa o admin.
+        Exige token: ele pode reiniciar a sessão do WhatsApp."""
+        if not _painel_autorizado(request):
+            return _negado(request)
         return watchdog_check()
 
     @app.get("/painel")
-    async def painel():
-        """Dashboard em tempo real — abra http://SEU-IP:8000/painel no navegador."""
+    async def painel(request: Request):
+        """Dashboard em tempo real.
+        Abra http://SEU-IP:8000/painel?k=SEU_PAINEL_TOKEN no navegador."""
+        if not _painel_autorizado(request):
+            return _negado(request)
         from fastapi.responses import HTMLResponse
         m = db.painel_metricas()
         wa = _instance_state()
@@ -1188,6 +1239,9 @@ th{{text-align:left;padding:8px 10px;background:#f1f5f9;font-size:12px;color:#47
 </table>
 <div class="foot">Resolve AI · painel interno · dados ao vivo do servidor de produção</div>
 <script>
+// o token que abriu a página segue nas chamadas seguintes
+const K = new URLSearchParams(location.search).get('k') || '';
+const H = {{'Content-Type':'application/json', 'X-Painel-Token': K}};
 async function acao(uid, tipo, extra) {{
   let body = {{user_id: uid, acao: tipo}};
   if (tipo === 'estender') {{
@@ -1196,11 +1250,11 @@ async function acao(uid, tipo, extra) {{
     body.dias = parseInt(d);
   }}
   const r = await fetch('/painel/acao', {{method:'POST',
-    headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(body)}});
+    headers:H, body: JSON.stringify(body)}});
   if (r.ok) {{ location.reload(); }} else {{ alert('Falhou. Tente de novo.'); }}
 }}
 async function testarMotor() {{
-  const r = await fetch('/cron/proactive', {{method:'POST'}});
+  const r = await fetch('/cron/proactive', {{method:'POST', headers:H}});
   const j = await r.json();
   alert('Motor executado! Lembretes disparados agora: ' + (j.sent||0) +
         '\\n\\nSe você tinha um lembrete na hora, ele foi enviado. ' +
@@ -1213,8 +1267,11 @@ async function testarMotor() {{
 
     @app.post("/painel/acao")
     async def painel_acao(request: Request):
-        """Ações de admin do painel: estender trial, bloquear, ativar, etc."""
+        """Ações de admin do painel: estender trial, bloquear, ativar, etc.
+        AÇÕES DESTRUTIVAS (apagar usuário/item) — exige token."""
         from fastapi.responses import JSONResponse
+        if not _painel_autorizado(request):
+            return _negado(request)
         try:
             body = await request.json()
             uid = int(body.get("user_id"))

@@ -2,6 +2,11 @@
 # Agora a mensageria é a WasenderAPI (nuvem), então NÃO subimos mais Evolution
 # nem Postgres localmente. Só o bot FastAPI. Libera RAM na VPS.
 # Comando:  docker compose up -d --build
+#
+# ATENÇÃO: variável que não aparece aqui com ${PLACEHOLDER} NÃO chega no
+# container, mesmo estando salva no Ambiente do EasyPanel. Já queimamos horas
+# com isso (WASENDER_API_KEY chegava vazia e o bot rodava sem autenticação).
+# Ao criar env nova: declare AQUI e salve no EasyPanel.
 services:
   bot:
     build: .
@@ -22,6 +27,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - PAYMENT_LINK=${PAYMENT_LINK}
       - PAYMENT_LINK_ANUAL=${PAYMENT_LINK_ANUAL}
+      # --- Painel (fail-closed: sem token, painel fechado) ---
+      - PAINEL_TOKEN=${PAINEL_TOKEN}
       - DB_PATH=/app/data/resolve_ai.db
     volumes:
       - ./data:/app/data
