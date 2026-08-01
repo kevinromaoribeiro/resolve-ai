@@ -97,7 +97,7 @@ F6. Emoji: no máximo 1, e só quando couber. Zero emoji é melhor que dois.
    c) se a duração JÁ estiver nos fatos: não pergunte nada, só crie o lembrete com a data calculada.
 8. MANUTENÇÃO (óleo, revisão, filtro do carro): mesma lógica do item 7 — pergunte o intervalo uma vez, guarde, e depois use para agendar sozinho.
 9. CONTA QUE REPETE TODO MÊS: use "recorrencia":"mensal:DIA" (ex.: "mensal:20"). Para consumível/manutenção por tempo, use "recorrencia":"dias:N".
-10. Em "memoria", grave fatos duráveis e reaproveitáveis, com chave curta e estável. Ex.: {{"chave":"racao gatos:dura_dias","valor":"40"}}, {{"chave":"aluguel:dia_vencimento","valor":"05"}}. Não grave conversa fiada.
+10. Em "memoria", grave fatos duráveis e reaproveitáveis, com chave curta e estável. Ex.: {"chave":"racao gatos:dura_dias","valor":"40"}, {"chave":"aluguel:dia_vencimento","valor":"05"}. Não grave conversa fiada.
 
 === PERGUNTA FORA DO ESCOPO ===
 11. NUNCA responda "não sei" nem "não faço isso" e pare aí. Se ele perguntar qualquer coisa — receita, remédio, dúvida do dia a dia, como funciona algo — primeiro RESPONDA de verdade, com o que você sabe, de forma curta e útil.
@@ -113,12 +113,12 @@ F6. Emoji: no máximo 1, e só quando couber. Zero emoji é melhor que dois.
 19. NUNCA pergunte algo que você acabou de responder. Se você listou os valores, não pergunte "qual o valor?". Antes de mandar, releia sua própria "reply": a pergunta do final só entra se ela pedir algo que REALMENTE falta.
 
 Formato (SOMENTE o JSON):
-{{"intent":"consulta|registro|complemento|resposta|conclusao|conversa",
+{"intent":"consulta|registro|complemento|resposta|conclusao|conversa",
   "reply":"<mensagem ao usuário>",
-  "itens": [] | [{{"tipo":"lembrete|despesa","descricao":"...","valor_reais":null,"data_vencimento":"YYYY-MM-DD"|null,"hora_alvo":"HH:MM"|null,"recorrencia":null|"mensal:DIA"|"dias:N"}}],
-  "atualizar": null | {{"id":<id>,"campos":{{"valor_reais":0,"data_vencimento":"YYYY-MM-DD","hora_alvo":"HH:MM","descricao":"...","recorrencia":"..."}}}},
+  "itens": [] | [{"tipo":"lembrete|despesa","descricao":"...","valor_reais":null,"data_vencimento":"YYYY-MM-DD"|null,"hora_alvo":"HH:MM"|null,"recorrencia":null|"mensal:DIA"|"dias:N"}],
+  "atualizar": null | {"id":<id>,"campos":{"valor_reais":0,"data_vencimento":"YYYY-MM-DD","hora_alvo":"HH:MM","descricao":"...","recorrencia":"..."}},
   "concluir": null | <id>,
-  "memoria": [] | [{{"chave":"...","valor":"..."}}]}}"""
+  "memoria": [] | [{"chave":"...","valor":"..."}]}"""
 
 
 # Intenções em que a regra clássica é confiável E baratíssima (não gasta LLM).
@@ -243,8 +243,17 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="") -> Optiona
                 # estoura e o mordomo cai calado no regex antigo.
                 data = json.loads(bruto, strict=False)
             except json.JSONDecodeError as e:
-                _registrar_falha(f"json invalido ({e}) :: {bruto[:400]}")
-                continue
+                # O modelo às vezes imita chave dupla ({{"intent"...) — foi
+                # o que derrubou o v8 o dia inteiro, porque o schema do
+                # prompt tinha {{ }} sobrando de um .format() antigo. O
+                # prompt já foi corrigido; isto aqui é o cinto de segurança.
+                remendo = bruto.replace("{{", "{").replace("}}", "}")
+                try:
+                    data = json.loads(remendo, strict=False)
+                    _registrar_falha("json veio com chave dupla — remendado")
+                except json.JSONDecodeError:
+                    _registrar_falha(f"json invalido ({e}) :: {bruto[:400]}")
+                    continue
             if data.get("reply") and data.get("intent"):
                 return data
             _registrar_falha(f"json sem reply/intent :: {bruto[:400]}")
