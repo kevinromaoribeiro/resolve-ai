@@ -878,9 +878,18 @@ try:
             pass
         reply = handle_incoming(payload)
         if reply:
-            send_whatsapp(reply["number"], reply["text"])
+            ok = send_whatsapp(reply["number"], reply["text"])
+            if not ok:
+                # Antes o retorno era ignorado: o painel registrava "enviada"
+                # mesmo quando a API recusava, escondendo falhas de credencial
+                # e rate limit. Agora a falha aparece no log.
+                import logging
+                logging.getLogger("resolveai").error(
+                    "[webhook] FALHA ao enviar resposta p/ …%s",
+                    str(reply["number"])[-4:])
             try:
-                db.log_message(None, reply["number"], "out", "texto", reply["text"])
+                db.log_message(None, reply["number"], "out" if ok else "out_falhou",
+                               "texto", reply["text"])
             except Exception:
                 pass
         return {"ok": True}

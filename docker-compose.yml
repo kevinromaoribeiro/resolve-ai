@@ -1,5 +1,5 @@
-# RESOLVE AI — infraestrutura enxuta (Whapi.Cloud)
-# Agora a mensageria é o Whapi (nuvem), então NÃO subimos mais Evolution
+# RESOLVE AI — infraestrutura enxuta (WasenderAPI)
+# Agora a mensageria é a WasenderAPI (nuvem), então NÃO subimos mais Evolution
 # nem Postgres localmente. Só o bot FastAPI. Libera RAM na VPS.
 # Comando:  docker compose up -d --build
 services:
@@ -10,9 +10,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # --- Whapi.Cloud (mensageria) ---
-      - WHAPI_TOKEN=${WHAPI_TOKEN}
-      - WHAPI_URL=${WHAPI_URL:-https://gate.whapi.cloud}
+      # --- WasenderAPI (mensageria) ---
+      - WASENDER_API_KEY=${WASENDER_API_KEY}
+      - WASENDER_URL=${WASENDER_URL:-https://www.wasenderapi.com}
       # --- App ---
       - ADMIN_PHONE=${ADMIN_PHONE}
       - MASTER_PHONE=${MASTER_PHONE}
