@@ -5,12 +5,15 @@ wasender.py — Camada de integração com a WasenderAPI (substitui o Whapi).
 Isola TUDO que fala com a WasenderAPI. O wa_bot.py só chama:
     - wasender.send_text(number, text)      -> enviar mensagem
     - wasender.to_evolution_shape(payload)  -> traduzir webhook p/ formato interno
-    - wasender.fetch_media_base64(url)       -> baixar áudio/foto e virar base64
+    - wasender.baixar_midia(...)             -> áudio/foto/doc em base64 (já limpo)
     - wasender.instance_state()              -> 'open' se a sessão está conectada
 
-Por que "traduzir"? O handle_incoming() do wa_bot foi escrito para o formato
-Evolution (data.key.remoteJid, data.message.conversation). Convertemos o
-payload da WasenderAPI para o mesmo formato — menos risco, menos linhas.
+MÍDIA — por que não basta baixar a URL:
+O WhatsApp entrega mídia CRIPTOGRAFADA. O webhook traz `url` (arquivo .enc) e
+`mediaKey`. Baixar a url direto devolve bytes cifrados — foi o que acontecia
+antes: o áudio chegava, era classificado certo, e o Whisper recebia lixo e
+falhava calado. A Wasender expõe POST /api/decrypt-media, que devolve uma
+`publicUrl` já descriptografada (válida por 1 hora). É o caminho usado aqui.
 
 CONFIG (variáveis de ambiente):
     WASENDER_API_KEY=<api key da sessão, do dashboard>   (obrigatório)
@@ -33,6 +36,10 @@ _HEADERS = {
     "Authorization": f"Bearer {WASENDER_API_KEY}",
     "Content-Type": "application/json",
 }
+
+# Tipos de mídia que o WhatsApp manda, na ordem em que procuramos no payload.
+TIPOS_MIDIA = ("imageMessage", "audioMessage", "voiceMessage", "pttMessage",
+               "documentMessage", "videoMessage", "stickerMessage")
 
 
 # ---------------------------------------------------------------------------
@@ -95,23 +102,14 @@ def to_evolution_shape(payload: dict) -> Optional[dict]:
     """
     Recebe o payload da WasenderAPI e devolve um dict no formato Evolution.
     Retorna None se não for mensagem de entrada que interessa.
-
-    Formato Wasender (messages.received / messages.upsert):
-      {"event":"messages.received","data":{"messages":{
-          "key":{"id","fromMe","remoteJid","cleanedSenderPn",...},
-          "messageBody":"texto",
-          "message":{"conversation":"..."} | {"imageMessage":{...}} | ...
-      }}}
     """
     event = payload.get("event", "")
-    # só tratamos entrada; ignora status de envio/sessão aqui
     if event not in ("messages.received", "messages.upsert"):
         return None
 
     data = payload.get("data") or {}
     m = data.get("messages")
     if not isinstance(m, dict):
-        # em alguns eventos "messages" pode vir como lista
         if isinstance(m, list) and m:
             m = m[0]
         else:
@@ -125,39 +123,53 @@ def to_evolution_shape(payload: dict) -> Optional[dict]:
     if "@g.us" in remote or "@newsletter" in remote or "@broadcast" in remote:
         return None  # ignora grupo/canal no MVP
 
-    # telefone limpo: prefere cleanedSenderPn, senão extrai do remoteJid
+    # O remoteJid pode ser um LID (@lid), não um telefone. A doc manda usar
+    # os campos "cleaned" — senão o usuário vira um cadastro novo a cada vez.
     phone = (key.get("cleanedSenderPn")
+             or key.get("cleanedParticipantPn")
              or re.sub(r"[^\d]", "", remote.split("@")[0]))
+    phone = re.sub(r"[^\d]", "", str(phone or ""))
     if not phone:
         return None
     push_name = m.get("pushName") or data.get("pushName") or ""
 
-    # conteúdo: Wasender já traz messageBody achatado; também traz message.*
     inner = m.get("message") or {}
-    body = m.get("messageBody", "")
+    body = m.get("messageBody", "")   # texto unificado (inclui legenda)
+    msg_id = key.get("id", "")
+
+    # Qual mídia veio (se veio)?
+    tipo_midia = ""
+    node_midia: dict = {}
+    for t in TIPOS_MIDIA:
+        if isinstance(inner.get(t), dict):
+            tipo_midia, node_midia = t, inner[t]
+            break
+    # documento com legenda vem aninhado
+    if not tipo_midia and isinstance(inner.get("documentWithCaptionMessage"), dict):
+        interno = (inner["documentWithCaptionMessage"].get("message") or {})
+        if isinstance(interno.get("documentMessage"), dict):
+            tipo_midia, node_midia = "documentMessage", interno["documentMessage"]
 
     message: dict = {}
-    media_link = ""
-
-    if "conversation" in inner or (body and not _has_media(inner)):
+    if not tipo_midia:
         message = {"conversation": inner.get("conversation", body) or body}
-    elif "imageMessage" in inner:
-        node = inner["imageMessage"] or {}
-        message = {"imageMessage": {"caption": node.get("caption", "") or ""}}
-        media_link = node.get("url") or node.get("link") or ""
-    elif "audioMessage" in inner or "voiceMessage" in inner:
-        node = inner.get("audioMessage") or inner.get("voiceMessage") or {}
-        message = {"audioMessage": {"seconds": node.get("seconds", 0)}}
-        media_link = node.get("url") or node.get("link") or ""
-    elif "videoMessage" in inner:
+    elif tipo_midia == "imageMessage":
+        message = {"imageMessage": {"caption": node_midia.get("caption", "") or ""}}
+    elif tipo_midia in ("audioMessage", "voiceMessage", "pttMessage"):
+        message = {"audioMessage": {"seconds": node_midia.get("seconds", 0)}}
+    elif tipo_midia == "documentMessage":
+        message = {"documentMessage": {
+            "caption": node_midia.get("caption", "") or "",
+            "fileName": node_midia.get("fileName", "") or "",
+            "mimetype": node_midia.get("mimetype", "") or ""}}
+    elif tipo_midia == "videoMessage":
         message = {"videoMessage": {}}
-    elif "stickerMessage" in inner:
+    elif tipo_midia == "stickerMessage":
         message = {"stickerMessage": {}}
-    elif "reactionMessage" in inner:
+
+    if "reactionMessage" in inner:
         node = inner["reactionMessage"] or {}
         message = {"reactionMessage": {"text": node.get("text", "") or ""}}
-    else:
-        message = {"conversation": body or ""}
 
     return {
         "event": "messages.upsert",
@@ -165,38 +177,73 @@ def to_evolution_shape(payload: dict) -> Optional[dict]:
             "key": {
                 "remoteJid": f"{phone}@s.whatsapp.net",
                 "fromMe": False,
-                "id": key.get("id", ""),
+                "id": msg_id,
             },
             "pushName": push_name,
             "message": message,
-            "_media_link": media_link,  # reusa o campo já lido pelo wa_bot
+            # tudo que baixar_midia() precisa para descriptografar:
+            "_msg_id": msg_id,
+            "_media_tipo": tipo_midia,
+            "_media_node": node_midia,
         },
     }
 
 
-def _has_media(inner: dict) -> bool:
-    return any(k in inner for k in (
-        "imageMessage", "audioMessage", "voiceMessage",
-        "videoMessage", "stickerMessage", "documentMessage"))
-
-
 # ---------------------------------------------------------------------------
-# 3. DOWNLOAD DE MÍDIA
+# 3. DOWNLOAD + DESCRIPTOGRAFIA DE MÍDIA
 # ---------------------------------------------------------------------------
-def fetch_media_base64(link: str) -> str:
-    """Baixa o arquivo do link que a Wasender mandou e devolve base64."""
-    if not link:
+def baixar_midia(msg_id: str, tipo: str, node: dict) -> str:
+    """Devolve o arquivo em base64, já descriptografado — ou "" se falhar.
+
+    Fluxo: POST /api/decrypt-media  ->  publicUrl (1h)  ->  GET  ->  base64.
+    """
+    if not (tipo and isinstance(node, dict) and node.get("url")):
+        log.warning("[media] payload sem url/mediaKey (tipo=%r)", tipo)
         return ""
+    if not node.get("mediaKey"):
+        log.warning("[media] payload sem mediaKey — nao da pra descriptografar")
+        return ""
+
     import httpx
+
+    # A API espera o nó como veio no webhook, no envelope original.
+    corpo = {"data": {"messages": {
+        "key": {"id": msg_id},
+        "message": {tipo: node},
+    }}}
+
     try:
-        r = httpx.get(link, timeout=30, follow_redirects=True)
-        if r.status_code == 200:
-            b64 = base64.b64encode(r.content).decode("ascii")
-            log.info("[media] baixado da Wasender: %d bytes", len(r.content))
-            return b64
-        log.warning("[media] Wasender link respondeu %s", r.status_code)
+        r = httpx.post(f"{WASENDER_URL}/api/decrypt-media",
+                       headers=_HEADERS, json=corpo, timeout=45)
+        if r.status_code not in (200, 201):
+            log.warning("[media] decrypt-media respondeu %s: %s",
+                        r.status_code, r.text[:200])
+            return ""
+        j = r.json() or {}
+        url_publica = j.get("publicUrl") or ""
+        if not url_publica:
+            log.warning("[media] decrypt-media sem publicUrl: %s", str(j)[:200])
+            return ""
     except Exception as e:
-        log.warning("[media] erro ao baixar da Wasender: %r", e)
+        log.warning("[media] erro no decrypt-media: %r", e)
+        return ""
+
+    try:
+        r2 = httpx.get(url_publica, timeout=45, follow_redirects=True)
+        if r2.status_code == 200 and r2.content:
+            log.info("[media] %s baixado e descriptografado: %d bytes",
+                     tipo, len(r2.content))
+            return base64.b64encode(r2.content).decode("ascii")
+        log.warning("[media] publicUrl respondeu %s", r2.status_code)
+    except Exception as e:
+        log.warning("[media] erro ao baixar publicUrl: %r", e)
+    return ""
+
+
+def fetch_media_base64(link: str, msg_id: str = "") -> str:
+    """(Compat) Assinatura antiga. A mídia do WhatsApp é criptografada, então
+    baixar o link cru não serve — use baixar_midia()."""
+    log.warning("[media] fetch_media_base64 chamado (obsoleto); use baixar_midia")
     return ""
 
 
@@ -204,9 +251,7 @@ def fetch_media_base64(link: str) -> str:
 # 4. ESTADO DA SESSÃO
 # ---------------------------------------------------------------------------
 def instance_state() -> str:
-    """Consulta o status da sessão. 'open' = conectada.
-    A Wasender expõe status via /api/status ou similar; tentamos ler e
-    normalizamos para o vocabulário do resto do código."""
+    """Consulta o status da sessão. 'open' = conectada."""
     import httpx
     try:
         r = httpx.get(f"{WASENDER_URL}/api/status",

@@ -355,8 +355,8 @@ def _answer_and_reprompt_name(user: dict, text: str) -> str:
 def _classify_message(msg: dict) -> tuple[str, str]:
     """
     Mapeia a mensagem da Evolution para (kind, content) do ai_engine.
-    kinds: texto | audio | imagem_silenciosa | imagem_com_texto | video |
-           figurinha | reacao | desconhecido
+    kinds: texto | audio | imagem_silenciosa | imagem_com_texto | documento |
+           video | figurinha | reacao | desconhecido
     """
     if "conversation" in msg and msg["conversation"]:
         return "texto", msg["conversation"]
@@ -364,10 +364,22 @@ def _classify_message(msg: dict) -> tuple[str, str]:
     if ext.get("text"):
         return "texto", ext["text"]
     if "audioMessage" in msg:
-        return "audio", ""          # base64 chega em data.message.base64 (webhook_base64)
+        return "audio", ""          # arquivo é buscado via wasender.baixar_midia
     if "imageMessage" in msg:
         caption = (msg["imageMessage"] or {}).get("caption", "") or ""
         return ("imagem_com_texto" if caption.strip() else "imagem_silenciosa"), caption
+    if "documentMessage" in msg:
+        # Boleto/comprovante em PDF cai aqui. Antes virava "desconhecido" e o
+        # usuário levava um "não suportado" — agora tem tratamento próprio.
+        doc = msg["documentMessage"] or {}
+        legenda = (doc.get("caption") or "").strip()
+        nome = (doc.get("fileName") or "").strip()
+        mime = (doc.get("mimetype") or "").lower()
+        # PDF/foto mandados como "documento" (sem compressão) são lidos igual
+        # a uma imagem; o resto pedimos em foto.
+        if mime.startswith("image/"):
+            return ("imagem_com_texto" if legenda else "imagem_silenciosa"), legenda
+        return "documento", (legenda or nome)
     if "videoMessage" in msg:
         return "video", ""
     if "stickerMessage" in msg:
@@ -440,8 +452,21 @@ def _read_image(b64: str) -> Optional[str]:
     """Extrai texto da imagem via visão (Anthropic ou OpenAI). Loga erro real."""
     import logging
     log = logging.getLogger("resolveai")
-    prompt = ("Extraia desta imagem, em uma linha: descrição do documento, "
-              "valor em R$ e data de vencimento se houver. Responda só o texto.")
+    # O prompt antigo só procurava boleto (descrição + valor + vencimento).
+    # Print de conversa, comprovante, cardápio, receita ou etiqueta não se
+    # encaixavam e vinham vazios. Agora descreve QUALQUER imagem em uma linha
+    # útil, puxando valor/data só quando existem.
+    prompt = (
+        "Você lê imagens que uma pessoa manda no WhatsApp para um assistente "
+        "pessoal que organiza contas, compras, consultas e lembretes.\n"
+        "Descreva o conteúdo em UMA linha objetiva, em português, incluindo:\n"
+        "- o que é (boleto, comprovante, print de conversa, receita médica, "
+        "etiqueta de produto, cardápio, foto de algo, etc.);\n"
+        "- valor em R$ se houver;\n"
+        "- data/prazo se houver;\n"
+        "- nome do estabelecimento/empresa/remetente se houver.\n"
+        "Não invente dado que não está visível. Não use listas nem rótulos "
+        "como 'Descrição:'. Responda apenas a frase.")
     if not b64:
         log.warning("[imagem] base64 vazio — nada pra ler")
         return None
@@ -506,15 +531,18 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     first_name = user["nome"].split()[0]
 
     media_b64 = ""
-    # Wasender manda a mídia como LINK (não base64). Baixa e converte.
+    # A mídia do WhatsApp vem criptografada: a wasender.baixar_midia() chama o
+    # endpoint de decrypt e devolve o arquivo já legível em base64.
     if kind in ("audio", "imagem_silenciosa", "imagem_com_texto"):
-        link = data.get("_media_link") or ""
-        if link:
-            media_b64 = wasender.fetch_media_base64(link)
-        else:
+        media_b64 = wasender.baixar_midia(
+            msg_id=data.get("_msg_id", "") or "",
+            tipo=data.get("_media_tipo", "") or "",
+            node=data.get("_media_node") or {})
+        if not media_b64:
             import logging
-            logging.getLogger("resolveai").info(
-                "[media] %s sem link no payload Wasender", kind)
+            logging.getLogger("resolveai").warning(
+                "[media] %s nao pode ser lido (tipo=%s)",
+                kind, data.get("_media_tipo"))
 
     # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
     # Veio da landing page com dados no payload? Cria perfil completo e
@@ -612,6 +640,25 @@ def handle_incoming(payload: dict) -> Optional[dict]:
         if result["needs_decision"]:
             PENDING[phone] = result["pending_payload"]
         return {"number": phone, "text": result["reply"]}
+
+    elif kind == "documento":
+        # PDF (boleto, comprovante, contrato). Não lemos PDF direto, mas o
+        # mordomo não devolve beco sem saída: usa o nome/legenda do arquivo
+        # como pista e oferece o caminho que funciona.
+        pista = (content or "").strip()
+        contexto = f" Vi que é *{pista}*." if pista else ""
+        return {"number": phone, "text":
+                (f"Recebi seu arquivo 📄{contexto}\n\n"
+                 f"PDF eu ainda não consigo abrir, mas resolvo fácil: "
+                 f"me manda *print da tela* (foto) que eu leio valor e "
+                 f"vencimento na hora — ou me diz em uma linha, tipo "
+                 f"_\"luz 187 vence dia 20\"_.")}
+
+    elif kind == "video":
+        return {"number": phone, "text":
+                ("Recebi seu vídeo 🎥 — esse formato eu ainda não leio. "
+                 "Se for algo pra eu anotar, me manda em *foto, áudio ou "
+                 "texto* que eu registro na hora.")}
 
     elif kind == "figurinha":
         # Figurinha: responde leve, sem "formato não suportado"
