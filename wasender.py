@@ -38,29 +38,54 @@ _HEADERS = {
 # ---------------------------------------------------------------------------
 # 1. ENVIO
 # ---------------------------------------------------------------------------
-def send_text(number: str, text: str) -> bool:
+def send_text(number: str, text: str, tentativas: int = 3) -> bool:
     """Envia texto pela WasenderAPI. Número em E.164 com '+' (ex.: +5511...).
-    Retorna True se a API aceitou (200/201)."""
+    Retorna True se a API aceitou (200/201).
+
+    Em 429 (rate limit) NÃO desiste: espera o `retry_after` que a própria API
+    informa e tenta de novo. Isso mantém a "Account Protection" ligada (que
+    protege o número contra ban) sem perder mensagem quando o bot precisa
+    mandar duas seguidas — ex.: alarme do cron + resposta a uma mensagem.
+    """
+    import time
     import httpx
     to = number.split("@")[0]
     to = re.sub(r"[^\d]", "", to)          # só dígitos
     if not to.startswith("+"):
         to = "+" + to
-    try:
-        r = httpx.post(
-            f"{WASENDER_URL}/api/send-message",
-            headers=_HEADERS,
-            json={"to": to, "text": text},
-            timeout=20,
-        )
-        if r.status_code in (200, 201):
-            return True
-        log.warning("[envio] Wasender recusou (%s): %s",
-                    r.status_code, r.text[:200])
-        return False
-    except Exception as e:
-        log.warning("[envio] ERRO ao enviar via Wasender: %r", e)
-        return False
+
+    for tentativa in range(1, tentativas + 1):
+        try:
+            r = httpx.post(
+                f"{WASENDER_URL}/api/send-message",
+                headers=_HEADERS,
+                json={"to": to, "text": text},
+                timeout=20,
+            )
+            if r.status_code in (200, 201):
+                return True
+
+            if r.status_code == 429 and tentativa < tentativas:
+                espera = 5
+                try:
+                    espera = int((r.json() or {}).get("retry_after") or 5)
+                except Exception:
+                    pass
+                espera = max(1, min(espera, 65))
+                log.info("[envio] rate limit (429); aguardando %ds "
+                         "(tentativa %d/%d)", espera, tentativa, tentativas)
+                time.sleep(espera)
+                continue
+
+            log.warning("[envio] Wasender recusou (%s): %s",
+                        r.status_code, r.text[:200])
+            return False
+        except Exception as e:
+            log.warning("[envio] ERRO ao enviar via Wasender: %r", e)
+            return False
+
+    log.warning("[envio] desistiu apos %d tentativas (rate limit)", tentativas)
+    return False
 
 
 # ---------------------------------------------------------------------------

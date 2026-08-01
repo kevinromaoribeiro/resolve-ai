@@ -901,12 +901,50 @@ try:
 
     @app.post("/cron/proactive")
     async def cron_proactive():
-        """Chame a cada 15 min (cron-job.org gratuito). Dedup garante zero spam;
-        alarmes com hora tocam no minuto; o resto respeita 8h-21h."""
+        """Disparo manual do motor proativo. O agendamento normal roda SOZINHO
+        dentro do app (ver _loop_proativo abaixo) — este endpoint fica só para
+        forçar na mão (botão do painel, debug)."""
         db.registrar_cron_ping()
         sent = dispatch_proactive()
         maybe_admin_report()
         return {"sent": sent}
+
+    # -----------------------------------------------------------------------
+    # AGENDADOR INTERNO
+    # -----------------------------------------------------------------------
+    # Antes o motor proativo dependia de um cron externo (cron-job.org) bater
+    # em /cron/proactive. Se aquele serviço parasse, NENHUM lembrete tocava e
+    # nada avisava — foi exatamente o que aconteceu (motor parado por ~6h).
+    # Agora o próprio app se agenda: enquanto o container estiver de pé, os
+    # alarmes tocam. Sem dependência externa, sem ponto único de falha.
+    # O dedup do db.log_dispatch continua garantindo zero mensagem repetida.
+    CRON_INTERNO_SEGUNDOS = int(os.environ.get("CRON_INTERNO_SEGUNDOS", "60"))
+    CRON_INTERNO_ATIVO = os.environ.get("CRON_INTERNO", "1") != "0"
+
+    async def _loop_proativo():
+        import asyncio
+        import logging
+        log = logging.getLogger("resolveai")
+        await asyncio.sleep(15)   # deixa o app terminar de subir
+        log.info("[cron-interno] ativo — ciclo de %ds", CRON_INTERNO_SEGUNDOS)
+        while True:
+            try:
+                db.registrar_cron_ping()
+                # dispatch_proactive faz I/O bloqueante (httpx sync + sqlite):
+                # roda em thread pra não travar o event loop do FastAPI.
+                enviados = await asyncio.to_thread(dispatch_proactive)
+                if enviados:
+                    log.info("[cron-interno] %d disparo(s)", enviados)
+                await asyncio.to_thread(maybe_admin_report)
+            except Exception:
+                log.warning("[cron-interno] ciclo falhou", exc_info=True)
+            await asyncio.sleep(CRON_INTERNO_SEGUNDOS)
+
+    @app.on_event("startup")
+    async def _iniciar_cron_interno():
+        if CRON_INTERNO_ATIVO:
+            import asyncio
+            asyncio.create_task(_loop_proativo())
 
     @app.post("/watchdog")
     @app.get("/watchdog")
