@@ -67,6 +67,7 @@ Intenções:
 - "conversa": bate-papo, desabafo, dúvida sobre você. NÃO é para registrar.
 
 === REGRAS QUE NÃO PODEM SER QUEBRADAS ===
+0. REGISTRE PRIMEIRO, PERGUNTE DEPOIS. Se ele pediu para lembrar/anotar algo, crie o item JÁ, mesmo sem valor e sem data — lembrete sem valor continua sendo lembrete. Só depois pergunte o que falta, deixando claro que já está guardado ("Anotado. Qual o valor?"). NUNCA responda só com pergunta sem ter criado nada: é isso que faz a resposta dele virar item duplicado em vez de completar o primeiro.
 1. Se a sua última mensagem terminou com PERGUNTA, a mensagem do usuário é a RESPOSTA dela. Nunca trate como assunto novo.
 2. "agendar", "me avisa", "me lembra" = criar/manter lembrete PENDENTE. É o OPOSTO de concluir. Nunca marque como pago quando ele pede para agendar.
 3. Nem tudo é para registrar. Sem coisa concreta para guardar, é "conversa".
@@ -256,8 +257,32 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
     if data.get("concluir") in ids_validos:
         result["concluir"] = data["concluir"]
 
-    # item novo — só em registro de verdade e sem atualização no mesmo turno
     item = data.get("item")
+
+    # REDE DE SEGURANÇA (o prompt sozinho não garante):
+    # o bot perguntou algo, o usuário respondeu um fragmento curto ("são 340
+    # reais", "dia 20") e o LLM devolveu item NOVO em vez de completar o que
+    # já existe. Fragmento curto depois de pergunta é resposta, não assunto
+    # novo — então convertemos em atualização do item mais recente.
+    if (pergunta_aberta and isinstance(item, dict) and itens
+            and not result.get("atualizar") and not result.get("concluir")
+            and len(text.split()) <= 6):
+        campos = {k: item.get(k) for k in
+                  ("valor_reais", "data_vencimento", "hora_alvo", "recorrencia")
+                  if item.get(k) is not None}
+        if campos:
+            # o alvo é o item MAIS RECENTE (o assunto da pergunta), não o de
+            # vencimento mais próximo — por isso ultimo_item, não itens[-1].
+            try:
+                ult = db.ultimo_item(user_id) or {}
+            except Exception:
+                ult = {}
+            alvo = ult.get("id") if ult.get("id") in ids_validos else None
+            if alvo:
+                result["atualizar"] = {"id": alvo, "campos": campos}
+                item = None   # não cria duplicado
+
+    # item novo — só em registro de verdade e sem atualização no mesmo turno
     if (intent in ("registro", "resposta") and isinstance(item, dict)
             and item.get("descricao") and not result.get("atualizar")):
         item.setdefault("tipo", "lembrete")

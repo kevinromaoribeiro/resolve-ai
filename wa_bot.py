@@ -43,6 +43,11 @@ import motor_v8  # mordomo híbrido: entende linguagem natural fora do script
 
 db.init_db()
 
+# Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
+# request (/health) se o código novo subiu, em vez de deduzir pelo
+# comportamento do bot.
+BUILD = "v9-contexto-2026-08-01"
+
 EVOLUTION_URL = os.environ.get("EVOLUTION_URL", "http://localhost:8080").rstrip("/")
 EVOLUTION_APIKEY = os.environ.get("EVOLUTION_APIKEY", "")
 EVOLUTION_INSTANCE = os.environ.get("EVOLUTION_INSTANCE", "resolveai")
@@ -967,7 +972,13 @@ try:
         conectado = wa in ("open", "connected", "online", "connecting", "unknown")
         body = {"status": "ok" if conectado else "degraded",
                 "whatsapp": wa, "instance": EVOLUTION_INSTANCE,
-                "llm": "on" if ai_engine.LLM_AVAILABLE else "mock"}
+                "llm": "on" if ai_engine.LLM_AVAILABLE else "mock",
+                # marcador de build: sem isto não dá pra saber se o deploy
+                # realmente trocou o código ou se o container velho ficou de
+                # pé. Já perdemos tempo adivinhando isso.
+                "build": BUILD,
+                "memoria": hasattr(db, "lembrar_fato"),
+                "contexto": hasattr(db, "conversa_recente")}
         if wa in ("close", "closed", "disconnected", "removed"):
             from fastapi.responses import JSONResponse
             return JSONResponse(status_code=500, content=body)
