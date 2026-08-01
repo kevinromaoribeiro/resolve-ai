@@ -684,25 +684,27 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     # Se devolver None (intenção clássica confiável), cai no fluxo de sempre.
     if kind in ("texto", "audio"):
         try:
-            v8 = motor_v8.route(user["id"], first_name, content, db, ai_engine)
+            # telefone vai junto: é a chave da conversa recente (o webhook
+            # grava msg_log com user_id nulo). Sem ele o mordomo é amnésico —
+            # foi o que fez "feito" virar baixa em vez de resposta.
+            # situacao: em trial o mordomo deve sugerir um uso que dê retorno
+            # DENTRO dos dias que faltam — não adianta propor algo que só faz
+            # efeito depois que o teste acabou.
+            if status == "trial":
+                faltam = db.trial_days_left(user, TRIAL_DAYS)
+                situacao = (f"em TESTE GRÁTIS, faltam {faltam} dia(s) — "
+                            f"sugira usos que ele consegue sentir nesse prazo")
+            else:
+                situacao = "assinante ativo"
+            v8 = motor_v8.route(user["id"], first_name, content, db, ai_engine,
+                                telefone=phone, situacao=situacao)
         except Exception:
             import logging
             logging.getLogger("resolveai").warning(
                 "[v8] erro no motor_v8.route", exc_info=True)
             v8 = None
         if v8 is not None:
-            for item in v8.get("items", []):
-                db.add_item(user_id=user["id"], tipo=item.get("tipo", "lembrete"),
-                            categoria=item.get("categoria", "Outros"),
-                            descricao=(item.get("descricao") or "item")[:120],
-                            valor_reais=item.get("valor_reais"),
-                            data_vencimento=item.get("data_vencimento"),
-                            hora_alvo=item.get("hora_alvo"),
-                            recorrencia=item.get("recorrencia"),
-                            status=item.get("status", "pendente"),
-                            link_afiliado=item.get("link_afiliado"))
-            if not v8.get("items"):
-                db.touch_user(user["id"])
+            _aplicar_v8(user["id"], v8)
             if v8.get("needs_decision"):
                 PENDING[phone] = v8.get("pending_payload")
             return {"number": phone, "text": v8["reply"]}
@@ -712,6 +714,66 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     if result["needs_decision"]:
         PENDING[phone] = result["pending_payload"]
     return {"number": phone, "text": result["reply"]}
+
+
+def _aplicar_v8(user_id: int, v8: dict) -> None:
+    """Grava no banco o que o mordomo decidiu.
+
+    São 4 efeitos possíveis, nessa ordem de importância:
+      atualizar -> completa um item que já existe (informação mandada em
+                   partes: "me lembra da luz" + "são 185 reais")
+      concluir  -> dá baixa em algo que já foi resolvido
+      items     -> cria coisa nova
+      memoria   -> guarda fato durável (quanto dura a ração, dia da conta)
+                   pra nunca perguntar duas vezes a mesma coisa
+    Nenhum deles pode derrubar a resposta ao usuário — por isso cada bloco
+    tem seu próprio try.
+    """
+    import logging
+    log_ = logging.getLogger("resolveai")
+
+    atualizar = v8.get("atualizar")
+    if isinstance(atualizar, dict) and atualizar.get("id"):
+        try:
+            ok = db.atualizar_item(int(atualizar["id"]),
+                                   **(atualizar.get("campos") or {}))
+            log_.info("[v8] atualizar item %s -> %s", atualizar["id"], ok)
+        except Exception:
+            log_.warning("[v8] falha ao atualizar item", exc_info=True)
+
+    if v8.get("concluir"):
+        try:
+            db.atualizar_item(int(v8["concluir"]), status="concluido")
+            log_.info("[v8] concluir item %s", v8["concluir"])
+        except Exception:
+            log_.warning("[v8] falha ao concluir item", exc_info=True)
+
+    for item in v8.get("items", []):
+        try:
+            db.add_item(user_id=user_id, tipo=item.get("tipo", "lembrete"),
+                        categoria=item.get("categoria", "Outros"),
+                        descricao=(item.get("descricao") or "item")[:120],
+                        valor_reais=item.get("valor_reais"),
+                        data_vencimento=item.get("data_vencimento"),
+                        hora_alvo=item.get("hora_alvo"),
+                        recorrencia=item.get("recorrencia"),
+                        status=item.get("status", "pendente"),
+                        link_afiliado=item.get("link_afiliado"))
+        except Exception:
+            log_.warning("[v8] falha ao criar item", exc_info=True)
+
+    for fato in (v8.get("memoria") or []):
+        try:
+            db.lembrar_fato(user_id, fato.get("chave"), fato.get("valor"))
+            log_.info("[v8] memoria: %s = %s", fato.get("chave"), fato.get("valor"))
+        except Exception:
+            log_.warning("[v8] falha ao gravar memoria", exc_info=True)
+
+    if not (v8.get("items") or atualizar or v8.get("concluir")):
+        try:
+            db.touch_user(user_id)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

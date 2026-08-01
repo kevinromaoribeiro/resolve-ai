@@ -45,11 +45,14 @@ CREATE TABLE IF NOT EXISTS msg_log (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id     INTEGER,
                 telefone    TEXT,
-                direcao     TEXT NOT NULL CHECK (direcao IN ('in','out')),
+                direcao     TEXT NOT NULL
+                            CHECK (direcao IN ('in','out','out_falhou')),
                 tipo        TEXT,
                 preview     TEXT,
                 ts          TEXT NOT NULL
             );
+CREATE INDEX IF NOT EXISTS idx_msglog_ts  ON msg_log(ts);
+CREATE INDEX IF NOT EXISTS idx_msglog_tel ON msg_log(telefone, id);
 """
 
 
@@ -112,17 +115,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
             CREATE INDEX IF NOT EXISTS idx_items_venc   ON items(data_vencimento);
 
-            CREATE TABLE IF NOT EXISTS msg_log (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id     INTEGER,
-                telefone    TEXT,
-                direcao     TEXT NOT NULL CHECK (direcao IN ('in','out')),
-                tipo        TEXT,
-                preview     TEXT,
-                ts          TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_msglog_ts ON msg_log(ts);
-            """
+            """ + _MSGLOG_DDL
         )
         # Migração leve: adiciona colunas novas em bancos criados antes delas
         existing = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
@@ -169,6 +162,23 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_disp_item ON dispatches(item_id, kind);
             """
         )
+        # msg_log: o CHECK antigo só conhecia 'in'/'out'. Quando passamos a
+        # registrar 'out_falhou' (envio recusado pela Wasender), o INSERT
+        # violava o CHECK e o try/except do log_message engolia — a
+        # instrumentação criada pra achar falha silenciosa falhava em
+        # silêncio. Rebuild pra aceitar o novo valor.
+        sql_log = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='msg_log'").fetchone()
+        if sql_log and "out_falhou" not in (sql_log["sql"] or ""):
+            conn.execute("ALTER TABLE msg_log RENAME TO msg_log_old")
+            conn.executescript(_MSGLOG_DDL)
+            conn.execute(
+                "INSERT INTO msg_log (id,user_id,telefone,direcao,tipo,preview,ts) "
+                "SELECT id,user_id,telefone,direcao,tipo,preview,ts FROM msg_log_old")
+            conn.execute("DROP TABLE msg_log_old")
+
+    # memória de longo prazo (fatos aprendidos sobre cada usuário)
+    init_memoria()
 
 
 def _now_iso() -> str:
@@ -709,7 +719,7 @@ def log_message(user_id, telefone, direcao, tipo, preview):
                 "INSERT INTO msg_log (user_id, telefone, direcao, tipo, preview, ts) "
                 "VALUES (?,?,?,?,?,?)",
                 (user_id, telefone, direcao, tipo,
-                 (preview or "")[:120], tempo.agora().isoformat(timespec="seconds")))
+                 (preview or "")[:600], tempo.agora().isoformat(timespec="seconds")))
     except Exception:
         pass
 
@@ -835,3 +845,158 @@ def get_setting(k: str) -> Optional[str]:
             return r["v"] if r else None
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# MEMÓRIA DE CURTO PRAZO (contexto de conversa)
+# ---------------------------------------------------------------------------
+# O bot tratava cada mensagem isolada: perguntava algo, o usuário respondia, e
+# a resposta virava um item novo. Estas funções dão ao motor o que ele precisa
+# pra entender continuidade — a conversa recente e o que a pessoa já tem aberto.
+
+def conversa_recente(telefone: str, limite: int = 8) -> list[dict]:
+    """Últimas mensagens (in/out) desse telefone, em ordem cronológica.
+    Busca por telefone porque o webhook grava msg_log com user_id nulo."""
+    tel = "".join(ch for ch in str(telefone or "") if ch.isdigit())
+    if not tel:
+        return []
+    sufixo = tel[-8:]                      # ignora DDI/9º dígito divergente
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT direcao, tipo, preview, ts FROM msg_log "
+                "WHERE telefone LIKE ? ORDER BY id DESC LIMIT ?",
+                (f"%{sufixo}", int(limite))).fetchall()
+        return [dict(r) for r in reversed(rows)]
+    except Exception:
+        return []
+
+
+def ultimo_item(user_id: int) -> Optional[dict]:
+    """Item criado mais recentemente — alvo natural de um complemento
+    ('são 185 reais' logo depois de registrar a conta de luz)."""
+    try:
+        with get_conn() as conn:
+            r = conn.execute(
+                "SELECT * FROM items WHERE user_id=? ORDER BY id DESC LIMIT 1",
+                (user_id,)).fetchone()
+        return dict(r) if r else None
+    except Exception:
+        return None
+
+
+def itens_abertos(user_id: int, limite: int = 20) -> list[dict]:
+    """Pendências em aberto, das mais próximas de vencer para as demais.
+    É o que o mordomo precisa saber pra responder 'o que tenho pra pagar?'."""
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, tipo, categoria, descricao, valor_reais, "
+                "       data_vencimento, hora_alvo, status "
+                "FROM items WHERE user_id=? AND status IN ('pendente','vencido') "
+                "ORDER BY COALESCE(data_vencimento, data_criacao) LIMIT ?",
+                (user_id, int(limite))).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def atualizar_item(item_id: int, **campos) -> bool:
+    """Completa/corrige um item existente (valor, data, hora, descrição...).
+    Usado quando a pessoa manda a informação em partes."""
+    permitidos = {"descricao", "valor_reais", "data_vencimento", "hora_alvo",
+                  "recorrencia", "categoria", "status", "tipo"}
+    limpos = {k: v for k, v in campos.items()
+              if k in permitidos and v is not None}
+    if "status" in limpos and limpos["status"] not in VALID_STATUSES:
+        limpos.pop("status")
+    if "tipo" in limpos and limpos["tipo"] not in VALID_ITEM_TYPES:
+        limpos.pop("tipo")
+    if "categoria" in limpos and limpos["categoria"] not in VALID_CATEGORIES:
+        limpos["categoria"] = "Outros"
+    if not limpos:
+        return False
+    sets = ", ".join(f"{k}=?" for k in limpos)
+    try:
+        with get_conn() as conn:
+            conn.execute(f"UPDATE items SET {sets} WHERE id=?",
+                         (*limpos.values(), int(item_id)))
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# MEMÓRIA DE LONGO PRAZO (fatos que o mordomo aprende sobre a pessoa)
+# ---------------------------------------------------------------------------
+# Um mordomo de verdade pergunta UMA vez e nunca mais esquece: quanto dura
+# 3kg de ração, de quantos em quantos km troca o óleo, que dia do mês vence o
+# aluguel. Sem isso ele repete a mesma pergunta e nunca consegue antecipar a
+# recompra/manutenção — que é a promessa do produto.
+
+def init_memoria() -> None:
+    with get_conn() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS memoria (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id  INTEGER NOT NULL,
+                chave    TEXT NOT NULL,
+                valor    TEXT NOT NULL,
+                ts       TEXT NOT NULL,
+                UNIQUE(user_id, chave)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memoria_user ON memoria(user_id);
+            """
+        )
+
+
+def lembrar_fato(user_id: int, chave: str, valor: str) -> bool:
+    """Guarda (ou atualiza) um fato duradouro. Ex.: chave='racao gatos:dura_dias'."""
+    chave = (chave or "").strip().lower()[:80]
+    valor = str(valor or "").strip()[:300]
+    if not chave or not valor:
+        return False
+    try:
+        init_memoria()
+        with get_conn() as conn:
+            conn.execute(
+                "INSERT INTO memoria (user_id, chave, valor, ts) VALUES (?,?,?,?) "
+                "ON CONFLICT(user_id, chave) DO UPDATE SET valor=excluded.valor, "
+                "ts=excluded.ts",
+                (user_id, chave, valor, _now_iso()))
+        return True
+    except Exception:
+        return False
+
+
+def fatos(user_id: int, limite: int = 40) -> list[dict]:
+    """Tudo que já foi aprendido sobre a pessoa, mais recente primeiro."""
+    try:
+        init_memoria()
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT chave, valor, ts FROM memoria WHERE user_id=? "
+                "ORDER BY id DESC LIMIT ?", (user_id, int(limite))).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def buscar_conversa(telefone: str, termo: str, limite: int = 6) -> list[dict]:
+    """Procura no histórico inteiro (não só nas últimas mensagens).
+    É o que permite responder 'o que eu te falei sobre a ração?'."""
+    tel = "".join(ch for ch in str(telefone or "") if ch.isdigit())
+    termo = (termo or "").strip()
+    if not tel or len(termo) < 3:
+        return []
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT direcao, tipo, preview, ts FROM msg_log "
+                "WHERE telefone LIKE ? AND preview LIKE ? "
+                "ORDER BY id DESC LIMIT ?",
+                (f"%{tel[-8:]}", f"%{termo}%", int(limite))).fetchall()
+        return [dict(r) for r in reversed(rows)]
+    except Exception:
+        return []
