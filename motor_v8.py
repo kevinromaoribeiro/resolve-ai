@@ -46,8 +46,16 @@ _V8_SYSTEM = """Você é o cérebro do "Resolve AI", um mordomo pessoal no Whats
 Hoje é {today}, agora são {now} (fuso Brasil). O usuário se chama {nome}.
 Situação da conta dele: {situacao}
 
-=== O QUE ELE TEM EM ABERTO ===
+=== O QUE ELE TEM EM ABERTO (ÚNICA FONTE DE VERDADE) ===
 {itens}
+
+Esta lista acima é a ÚNICA verdade sobre o que ele tem anotado. Ela vem do
+banco de dados agora. A CONVERSA RECENTE mais abaixo serve só para você
+entender o CONTEXTO do que ele está falando — ela NÃO é lista de itens.
+Uma conta que aparece na conversa mas NÃO está na lista acima foi apagada ou
+já foi concluída: ela NÃO EXISTE MAIS. Nunca a mencione como se estivesse em
+aberto. Se a lista acima estiver vazia, ele não tem nada anotado — diga isso
+com todas as letras, mesmo que a conversa fale de contas.
 
 === O QUE VOCÊ JÁ APRENDEU SOBRE ELE (não pergunte de novo) ===
 {fatos}
@@ -330,6 +338,17 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
 
     ids_validos = {it.get("id") for it in itens}
 
+    # CONSULTA é resposta sobre dinheiro do usuário: confere contra o banco
+    # antes de sair. Só vale para consulta pura — em registro os valores da
+    # resposta são justamente os que estão sendo criados agora.
+    if intent == "consulta":
+        substituto = _consulta_confere(result["reply"], itens)
+        if substituto:
+            _registrar_falha("consulta citou conta inexistente (lida do "
+                             "historico) — resposta trocada pelo real")
+            result["reply"] = substituto
+            return result
+
     # fatos aprendidos (perguntar só uma vez)
     memoria = data.get("memoria")
     if isinstance(memoria, list):
@@ -468,6 +487,51 @@ def _resgatar_valores(itens: list, reply: str) -> int:
                 pass
             break
     return resgatados
+
+
+def _valores_citados(texto: str) -> set:
+    """Todo 'R$ 187,00' / 'R$ 187' que aparece no texto, normalizado."""
+    achados = set()
+    for bruto in re.findall(r"R\$\s*([\d.]+,\d{2}|[\d.]+)", texto or ""):
+        try:
+            achados.add(round(float(bruto.replace(".", "").replace(",", ".")), 2))
+        except ValueError:
+            pass
+    return achados
+
+
+def _consulta_confere(reply: str, itens: list) -> Optional[str]:
+    """Barra consulta que cita conta que NÃO existe no banco.
+
+    Bug real: o banco estava vazio e o mordomo respondeu "Vencendo essa
+    semana: Luz R$187, Net R$129, Seguro R$340" — tudo lido da conversa
+    antiga, tudo já apagado. Inventar conta é o pior defeito possível num
+    produto que existe para o usuário confiar de olhos fechados.
+
+    Devolve None se a resposta está OK, ou um texto substituto se mentiu.
+    """
+    citados = _valores_citados(reply)
+    if not citados:
+        return None  # não citou dinheiro: nada a conferir aqui
+    reais = {round(float(i["valor_reais"]), 2) for i in itens
+             if i.get("valor_reais") is not None}
+    fantasmas = citados - reais
+    if not fantasmas:
+        return None
+    if not itens:
+        return ("Olhei aqui e você *não tem nada anotado* no momento.\n\n"
+                "Me manda uma conta ou lembrete que eu guardo.")
+    return ("Deixa eu te dar o que está *realmente* guardado agora:\n\n"
+            + "\n".join(f"• {_item_linha(i)}" for i in itens[:5]))
+
+
+def _item_linha(it: dict) -> str:
+    partes = [f"*{(it.get('descricao') or 'item').strip()}*"]
+    if it.get("valor_reais") is not None:
+        partes.append("— *" + ("R$ %.2f" % it["valor_reais"]).replace(".", ",") + "*")
+    if it.get("data_vencimento"):
+        partes.append("· *" + _br(it["data_vencimento"]) + "*")
+    return " ".join(partes)
 
 
 def _tirar_pergunta_redundante(reply: str, itens: list) -> str:
