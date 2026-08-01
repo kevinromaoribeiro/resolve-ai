@@ -390,6 +390,45 @@ def _preparar_item(novo: dict, ai_engine) -> Optional[dict]:
     return novo
 
 
+def _pos_processar(result: dict, text: str, fatos: list, itens: list) -> None:
+    """Passada ÚNICA sobre os itens criados, venha de onde vier.
+
+    Havia dois caminhos de criação (o normal e o da reconsulta) e a regra de
+    manutenção só existia num deles: o item da troca de óleo nasceu pela
+    reconsulta e saiu sem data. Regra que mora em um só caminho é regra que
+    não vale — agora tudo passa por aqui, no fim.
+    """
+    if not result.get("items"):
+        return
+    manut = _extrair_manutencao(text, fatos)
+    finais = []
+    for pronto in result["items"]:
+        # MANUTENÇÃO: a data vem de conta em Python, nunca do modelo.
+        if _e_manutencao(pronto.get("descricao", "")) and not pronto.get("data_vencimento"):
+            calc = _data_dois_gatilhos(manut)
+            if calc:
+                pronto["data_vencimento"], motivo = calc
+                if manut.get("meses"):
+                    pronto["recorrencia"] = "dias:%d" % int(manut["meses"] * 30.44)
+                result["reply"] = (
+                    f"Anotado a troca de hoje.\n\n"
+                    f"*Te aviso em {_br(pronto['data_vencimento'])}* — {motivo}.\n\n"
+                    f"Se você rodar mais que o normal, me avisa que eu antecipo.")
+        # DEDUPE: item praticamente igual já aberto vira atualização.
+        gemeo = _ja_existe(pronto.get("descricao", ""), itens)
+        if gemeo:
+            campos = {k: v for k, v in pronto.items()
+                      if k in ("valor_reais", "data_vencimento", "hora_alvo",
+                               "recorrencia") and v is not None}
+            if campos and not result.get("atualizar"):
+                result["atualizar"] = {"id": gemeo["id"], "campos": campos}
+            _registrar_falha(f"'{pronto.get('descricao')}' ja existia como "
+                             f"'{gemeo.get('descricao')}' — atualizei em vez de duplicar")
+            continue
+        finais.append(pronto)
+    result["items"] = finais
+
+
 def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
           situacao: str = "") -> Optional[dict]:
     """Ponto de entrada do V8. Ver contrato no topo do arquivo."""
@@ -547,40 +586,10 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
 
     if (intent in ("registro", "resposta") and novos
             and not result.get("atualizar")):
-        manut = _extrair_manutencao(text, fatos)
         for novo in novos[:10]:
             pronto = _preparar_item(novo, ai_engine)
-            if not pronto:
-                continue
-
-            # (1) MANUTENÇÃO: a data sai de conta em Python, não do modelo.
-            if _e_manutencao(pronto["descricao"]) and not pronto.get("data_vencimento"):
-                calc = _data_dois_gatilhos(manut)
-                if calc:
-                    pronto["data_vencimento"], motivo = calc
-                    if manut.get("meses"):
-                        pronto["recorrencia"] = "dias:%d" % int(manut["meses"] * 30.44)
-                    result["reply"] = (
-                        f"Anotado a troca de hoje.\n\n"
-                        f"*Te aviso em {_br(pronto['data_vencimento'])}* — "
-                        f"{motivo}.\n\n"
-                        f"Se você rodar mais que o normal, me avisa que eu "
-                        f"antecipo.")
-
-            # (2) DEDUPE: item praticamente igual já aberto vira atualização.
-            gemeo = _ja_existe(pronto["descricao"], itens)
-            if gemeo:
-                campos = {k: v for k, v in pronto.items()
-                          if k in ("valor_reais", "data_vencimento", "hora_alvo",
-                                   "recorrencia") and v is not None}
-                if campos:
-                    result["atualizar"] = {"id": gemeo["id"], "campos": campos}
-                _registrar_falha(f"'{pronto['descricao']}' ja existia como "
-                                 f"'{gemeo.get('descricao')}' — atualizei em vez "
-                                 f"de duplicar")
-                continue
-
-            result["items"].append(pronto)
+            if pronto:
+                result["items"].append(pronto)
 
         n = _resgatar_valores(result["items"], result["reply"])
         if n:
@@ -588,6 +597,7 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
                              f"do campo (estavam so no texto)")
         result["reply"] = _tirar_pergunta_redundante(result["reply"],
                                                      result["items"])
+        _pos_processar(result, text, fatos, itens)
 
     # INVARIANTE: prometeu guardar -> tem que ter guardado alguma coisa.
     # O modelo lia no histórico que já havia dito "vou te lembrar da vitamina
@@ -614,6 +624,9 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
             if corrigido.get("reply"):
                 result["reply"] = corrigido["reply"]
             intent = "registro"
+            # o item que nasce aqui passa pelas MESMAS regras do caminho
+            # normal — foi por não passar que a troca de óleo saiu sem data.
+            _pos_processar(result, text, fatos, itens)
         else:
             _registrar_falha("reconsulta tambem nao devolveu item")
             result["reply"] = ("Não consegui guardar isso direito aqui. 😕\n\n"
