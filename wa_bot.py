@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v12.2-um-caminho-so-2026-08-01"
+BUILD = "v13.0-alerta-dono-2026-08-01"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -844,6 +844,67 @@ def _aplicar_v8(user_id: int, v8: dict) -> None:
 # Envio via WasenderAPI
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# ALERTA AO DONO
+# ---------------------------------------------------------------------------
+# O motor já registrava toda falha em motor_v8.ULTIMA_FALHA, mas ninguém era
+# avisado: só descobria quem abrisse o /health na mão. Com você sozinho dá pra
+# olhar; com 10 amigos usando, não — o beta quebra e você fica sabendo pelo
+# amigo, dias depois. Agora a falha chega no seu WhatsApp na hora.
+_ALERTAS_ENVIADOS: dict[str, float] = {}
+ALERTA_JANELA_SEG = int(os.environ.get("ALERTA_JANELA_SEG", "1800"))  # 30 min
+ALERTA_MAX_HORA = int(os.environ.get("ALERTA_MAX_HORA", "8"))
+
+
+def _assinatura_falha(motivo: str) -> str:
+    """Agrupa falhas parecidas: o que muda é o nome do item, não o problema."""
+    base = re.sub(r"\d+", "#", (motivo or "")[:80])
+    return re.sub(r"'[^']*'", "'X'", base)
+
+
+def _alertar_dono(motivo: str, telefone: Optional[str], texto: str) -> None:
+    """Manda a falha pro dono, sem transformar o celular dele em alarme.
+
+    Duas travas: a MESMA falha só volta depois de 30 min, e o total é limitado
+    por hora. Alerta que toca demais é alerta que a pessoa silencia — e aí
+    volta a não existir.
+    """
+    if not ADMIN_PHONE:
+        return
+    import time
+    import logging
+    agora = time.time()
+    try:
+        # limpa o que já passou da janela e aplica o teto por hora
+        for k in [k for k, t in _ALERTAS_ENVIADOS.items()
+                  if agora - t > max(ALERTA_JANELA_SEG, 3600)]:
+            _ALERTAS_ENVIADOS.pop(k, None)
+        recentes = sum(1 for t in _ALERTAS_ENVIADOS.values() if agora - t < 3600)
+        if recentes >= ALERTA_MAX_HORA:
+            logging.getLogger("resolveai").warning(
+                "[alerta] teto por hora atingido; segurando: %s", motivo[:80])
+            return
+        chave = _assinatura_falha(motivo)
+        if agora - _ALERTAS_ENVIADOS.get(chave, 0) < ALERTA_JANELA_SEG:
+            return  # mesma falha, ainda dentro da janela
+        _ALERTAS_ENVIADOS[chave] = agora
+
+        quem = ("…" + str(telefone)[-4:]) if telefone else "?"
+        corpo = (f"⚠️ *Resolve AI — falha no motor*\n\n"
+                 f"Usuário: {quem}\n"
+                 f"Mensagem: _{(texto or '')[:80]}_\n\n"
+                 f"Motivo: {motivo[:220]}\n\n"
+                 f"_Painel:_ {PAINEL_URL_DICA}")
+        wasender.send_text(ADMIN_PHONE, corpo)
+        logging.getLogger("resolveai").warning("[alerta] enviado ao dono: %s",
+                                               motivo[:80])
+    except Exception:
+        logging.getLogger("resolveai").warning("[alerta] falhou", exc_info=True)
+
+
+PAINEL_URL_DICA = os.environ.get("PAINEL_URL", "veja /painel?k=SEU_TOKEN")
+
+
 def send_whatsapp(number: str, text: str) -> bool:
     """Envia texto via WasenderAPI (antes era Whapi/Evolution)."""
     return wasender.send_text(number, text)
@@ -1038,7 +1099,8 @@ try:
                 "build": BUILD,
                 "memoria": hasattr(db, "lembrar_fato"),
                 "contexto": hasattr(db, "conversa_recente"),
-                "painel": "protegido" if PAINEL_TOKEN else "SEM TOKEN"}
+                "painel": "protegido" if PAINEL_TOKEN else "SEM TOKEN",
+                "alerta_dono": "armado" if ADMIN_PHONE else "SEM ADMIN_PHONE"}
         # o diagnóstico do v8 carrega trecho de mensagem de usuário —
         # só sai com token, senão /health vira vazamento de conversa.
         if _painel_autorizado(request):
@@ -1056,6 +1118,7 @@ try:
         if not payload:
             return {"ignored": True}
         # log da mensagem recebida (para o painel)
+        num, content = None, ""
         try:
             data = payload.get("data") or {}
             key = data.get("key") or {}
@@ -1065,7 +1128,27 @@ try:
             db.log_message(None, num, "in", kind, content)
         except Exception:
             pass
+
+        # Comando do dono para conferir se o canal de alerta está de pé.
+        # Alerta que ninguém testou é alerta que você descobre que não
+        # funciona no dia em que precisava dele.
+        if (MASTER_PHONE and num and re.sub(r"\D", "", num) == MASTER_PHONE
+                and (content or "").strip().lower() in ("teste alerta",
+                                                        "testar alerta")):
+            _ALERTAS_ENVIADOS.clear()   # ignora a janela anti-spam no teste
+            _alertar_dono("TESTE MANUAL — se você recebeu isto, o canal de "
+                          "alerta está funcionando.", num, "teste alerta")
+            return {"ok": True, "alerta": "enviado"}
+
+        # foto do diagnóstico ANTES de processar: se mudar, o motor falhou
+        # nesta mensagem e o dono precisa saber na hora.
+        falha_antes = getattr(motor_v8, "ULTIMA_FALHA", "")
+
         reply = handle_incoming(payload)
+
+        falha_depois = getattr(motor_v8, "ULTIMA_FALHA", "")
+        if falha_depois and falha_depois != falha_antes:
+            _alertar_dono(falha_depois, num, content)
         if reply:
             ok = send_whatsapp(reply["number"], reply["text"])
             if not ok:
@@ -1076,6 +1159,11 @@ try:
                 logging.getLogger("resolveai").error(
                     "[webhook] FALHA ao enviar resposta p/ …%s",
                     str(reply["number"])[-4:])
+                # bot que não consegue responder é a falha mais grave de
+                # todas: o usuário fica no vácuo e nem sabe por quê.
+                _alertar_dono("NAO CONSEGUI RESPONDER (envio recusado pela "
+                              "Wasender — cheque credencial/rate limit)",
+                              reply["number"], content)
             try:
                 db.log_message(None, reply["number"], "out" if ok else "out_falhou",
                                "texto", reply["text"])
