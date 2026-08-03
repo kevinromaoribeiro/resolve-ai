@@ -679,17 +679,7 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
         if n:
             _registrar_falha(f"resgatei {n} valor(es) que o LLM deixou de fora "
                              f"do campo (estavam so no texto)")
-        result["reply"] = _tirar_pergunta_redundante(result["reply"],
-                                                     result["items"])
-        result["reply"] = _corrigir_hoje_falso(result["reply"],
-                                               result["items"])
-        result["reply"] = _completar_ano_nas_datas(result["reply"],
-                                                   result["items"])
-        # faxina ANTES de anexar o bloco "Guardei também": depois que o bloco
-        # entra, o enchimento deixa de estar no fim e escapa da regra.
-        result["reply"] = tirar_enchimento(result["reply"])
-        result["reply"] = _confirmar_todos_os_itens(result["reply"],
-                                                    result["items"])
+        result["reply"] = _polir_resposta(result["reply"], result["items"])
         _pos_processar(result, text, fatos, itens)
 
     # INVARIANTE: prometeu guardar -> tem que ter guardado alguma coisa.
@@ -719,6 +709,15 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
             intent = "registro"
             # o item que nasce aqui passa pelas MESMAS regras do caminho
             # normal — foi por não passar que a troca de óleo saiu sem data.
+            #
+            # v16.8: o comentário acima já dizia isso, mas só o
+            # _pos_processar era chamado. A resposta continuava crua.
+            # Teste ao vivo 11:04: "me lembra do pediatra em 8 meses" gravou
+            # #67 com data 03/04/2027 (certo) e respondeu "Anotado. Qual a
+            # data do pediatra?" — a mesma pergunta que o corte de pergunta
+            # redundante mata em 1 linha, só que ele nunca rodava neste ramo.
+            # Agora a faxina mora numa função só e os DOIS caminhos chamam.
+            result["reply"] = _polir_resposta(result["reply"], result["items"])
             _pos_processar(result, text, fatos, itens)
         else:
             _registrar_falha("reconsulta tambem nao devolveu item")
@@ -845,6 +844,26 @@ def _completar_ano_nas_datas(reply: str, items: list) -> str:
     return re.sub(r"\b(\d{1,2})/(\d{1,2})\b(?!/\d)", _troca, reply)
 
 
+def _polir_resposta(reply: str, items: list) -> str:
+    """Toda a faxina de resposta, num lugar só, na ordem que importa.
+
+    Existir em UM lugar é o ponto. Enquanto essa sequência estava copiada
+    dentro do ramo de registro, o ramo da reconsulta gravava o item certo e
+    mandava a resposta crua — e ninguém percebia, porque o banco estava OK.
+    Quem confere só o banco não vê; quem confere só a tela não confia.
+    """
+    if not reply:
+        return reply
+    reply = _tirar_pergunta_redundante(reply, items)
+    reply = _corrigir_hoje_falso(reply, items)
+    reply = _completar_ano_nas_datas(reply, items)
+    # enchimento ANTES de anexar "Guardei também": depois que o bloco entra,
+    # a frase de enchimento deixa de estar no fim e escapa da regra.
+    reply = tirar_enchimento(reply)
+    reply = _confirmar_todos_os_itens(reply, items)
+    return reply
+
+
 def _confirmar_todos_os_itens(reply: str, items: list) -> str:
     """Se gravou 2 e só falou de 1, a resposta completa o que faltou.
 
@@ -856,8 +875,12 @@ def _confirmar_todos_os_itens(reply: str, items: list) -> str:
 
     A promessa do produto é "não perde item". Não perder inclui AVISAR.
     """
-    if len(items) < 2:
+    if not items:
         return reply
+    # v16.8: antes só agia com 2+ itens. Mas depois que o corte de pergunta
+    # redundante transforma "Anotado. Qual a data do pediatra?" em "Anotado.",
+    # sobra uma confirmação que não diz O QUÊ nem QUANDO. Item único também
+    # precisa aparecer.
     baixo = _sem_acento(reply or "").lower()
 
     def _citado(desc: str) -> bool:
@@ -871,10 +894,13 @@ def _confirmar_todos_os_itens(reply: str, items: list) -> str:
     faltando = [it for it in items if not _citado(it.get("descricao", ""))]
     if not faltando:
         return reply
-    _registrar_falha(f"resposta citou {len(items) - len(faltando)} de "
-                     f"{len(items)} itens — completei na mão")
+    citados = len(items) - len(faltando)
+    _registrar_falha(f"resposta citou {citados} de {len(items)} itens — "
+                     f"completei na mão")
     linhas = [f"• {_item_linha(it)}" for it in faltando]
-    return (f"{reply.rstrip()}\n\nGuardei também:\n" + "\n".join(linhas))
+    # "também" só faz sentido se algo já foi citado antes.
+    cabecalho = "Guardei também:" if citados else "Guardei:"
+    return f"{reply.rstrip()}\n\n{cabecalho}\n" + "\n".join(linhas)
 
 
 def _e_pergunta(text: str) -> bool:

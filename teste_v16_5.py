@@ -97,9 +97,18 @@ REPLY_BOM = ("Anotei os dois: a *ração da Nina* na sexta e a *troca de óleo* 
 check("resposta completa passa intacta",
       motor_v8._confirmar_todos_os_itens(REPLY_BOM, ITENS) == REPLY_BOM)
 
-print("\nB3. Item único não ganha bloco extra")
-check("1 item não vira lista",
-      motor_v8._confirmar_todos_os_itens("Anotado.", ITENS[:1]) == "Anotado.")
+print("\nB3. Item único TAMBÉM é confirmado (mudou na v16.8)")
+# Antes só agia com 2+ itens. Mas "Anotado." sozinho não diz o quê nem quando
+# — e é exatamente o que sobra depois que o corte de pergunta redundante
+# limpa "Anotado. Qual a data do pediatra?".
+uni = motor_v8._confirmar_todos_os_itens("Anotado.", ITENS[:1])
+check("1 item não citado é listado", "ração" in uni or "racao" in uni.lower(),
+      uni)
+check("usa 'Guardei:' (nada foi citado antes)", "Guardei:" in uni, uni)
+check("1 item JÁ citado não vira lista",
+      motor_v8._confirmar_todos_os_itens(
+          "Anotei a *ração da Nina* pra sexta.", ITENS[:1])
+      == "Anotei a *ração da Nina* pra sexta.")
 check("0 item não quebra",
       motor_v8._confirmar_todos_os_itens("Oi!", []) == "Oi!")
 

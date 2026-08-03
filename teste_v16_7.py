@@ -137,6 +137,31 @@ check("sem sinal de data -> None", vazio.get("data_vencimento") is None,
       f"veio {vazio.get('data_vencimento')!r}")
 
 # ---------------------------------------------------------------------------
+print("\n3. _polir_resposta: a faxina roda nos DOIS caminhos (v16.8)")
+PED = [{"descricao": "levar a Rafinha no pediatra",
+        "data_vencimento": "2027-04-03", "valor_reais": None,
+        "hora_alvo": None, "tipo": "lembrete", "categoria": "Saúde"}]
+REAL = "Anotado. Qual a data do pediatra?"   # o que saiu em prod às 11:04
+pol = motor_v8._polir_resposta(REAL, PED)
+print(f'\n--- prod 11:04 ---\n{REAL}\n\n--- agora ---\n{pol}\n---\n')
+check("some com a pergunta que ele já respondeu",
+      "Qual a data" not in pol, pol)
+check("passa a DIZER a data", "03/04/2027" in pol, pol)
+check("diz o que guardou", "pediatra" in pol, pol)
+check("usa 'Guardei:' e não 'Guardei também:'",
+      "Guardei:" in pol and "também" not in pol, pol)
+
+print("\n3b. Resposta que já diz tudo não ganha bloco")
+BOA = "Anotado! Te aviso do *pediatra* em 03/04/2027. 👍"
+check("resposta completa passa intacta",
+      motor_v8._polir_resposta(BOA, PED) == BOA,
+      motor_v8._polir_resposta(BOA, PED))
+
+print("\n3c. Sem itens, não inventa bloco")
+check("conversa pura passa intacta",
+      motor_v8._polir_resposta("Tô aqui, Kevin. 🤝", []) == "Tô aqui, Kevin. 🤝")
+check("reply vazio não quebra", motor_v8._polir_resposta("", PED) == "")
+
 print("\n" + "=" * 60)
 if FALHAS:
     print(f"{len(FALHAS)} FALHA(S): " + ", ".join(FALHAS))
