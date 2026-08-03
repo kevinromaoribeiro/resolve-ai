@@ -103,14 +103,26 @@ check("data preenchida em Python", bool(item.get("data_vencimento")),
 check("categoria Saúde", item["categoria"] == "Saúde",
       f"veio {item['categoria']!r}")
 
-print("\n2b. Data do LLM tem prioridade — não sobrescrevo")
+print("\n2b. QUANDO EU SEI CALCULAR, EU MANDO (mudou na v17.5)")
+# Caso real: segunda 03/08, "me lembra sexta" -> LLM disse 05/08 (quarta).
+# Sexta é 07/08. Aritmética de calendário é minha, não do modelo.
 item2 = motor_v8._preparar_item(
-    {"descricao": "pediatra", "tipo": "lembrete",
-     "data_vencimento": "2027-04-10"},
-    ai_engine, texto_origem="pediatra em 8 meses")
-check("respeita a data que veio do LLM",
-      item2["data_vencimento"] == "2027-04-10",
-      f"veio {item2['data_vencimento']!r}")
+    {"descricao": "ligar pra minha mae sexta", "tipo": "lembrete",
+     "data_vencimento": "2026-08-05"},          # o erro real do LLM
+    ai_engine, texto_origem="me lembra sexta de ligar pra minha mae")
+esperado = ai_engine.extract_due_date("sexta")
+check("corrige a data errada do LLM",
+      item2["data_vencimento"] == esperado,
+      f"veio {item2['data_vencimento']!r}, esperado {esperado!r}")
+
+print("\n2b2. Sem expressão que eu saiba calcular, a data do LLM fica")
+item2b = motor_v8._preparar_item(
+    {"descricao": "reuniao com o contador", "tipo": "lembrete",
+     "data_vencimento": "2026-09-22"},
+    ai_engine, texto_origem="marca a reuniao com o contador")
+check("respeita o LLM quando não sei calcular",
+      item2b["data_vencimento"] == "2026-09-22",
+      f"veio {item2b['data_vencimento']!r}")
 
 print("\n2c. Frase COMPOSTA não vaza a data do vizinho")
 FRASE = ("anota o boleto do IPTU dia 15 de 320 reais e me lembra de levar a "

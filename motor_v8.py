@@ -438,21 +438,37 @@ def _preparar_item(novo: dict, ai_engine,
     novo.setdefault("data_vencimento", None)
     novo.setdefault("recorrencia", None)
 
-    # DATA RELATIVA: se o LLM não trouxe data mas o usuário disse "em 8 meses",
-    # a conta é minha, não dele. Antes o item nascia sem data e o bot
-    # perguntava "qual a data?" para algo que a pessoa acabou de falar — a
-    # forma mais rápida de parecer que não escutou.
+    # DATA: QUANDO EU SEI CALCULAR, EU MANDO — mesmo contra o LLM.
+    #
+    # Caso real (03/08/2026, uma SEGUNDA): "me lembra sexta de ligar pra minha
+    # mãe". Sexta era 07/08. O LLM devolveu 05/08 — uma QUARTA. O item foi pro
+    # banco com a data errada e a confirmação repetiu a data errada com toda a
+    # confiança do mundo. O usuário perde a ligação e a culpa é do produto.
+    #
+    # Modelo de linguagem é ruim em aritmética de calendário e não tem como
+    # saber que hoje é segunda a não ser pelo que eu escrevo no prompt.
+    # `extract_due_date` é determinística, testada e nunca erra dia da semana.
+    # Então: se o texto tem uma expressão de data que eu SEI resolver
+    # ("sexta", "amanhã", "em 8 meses", "dia 15"), a minha conta ganha.
+    # O LLM continua dono da INTERPRETAÇÃO (o que é o item); a data é minha.
+    #
     # Só olha a frase inteira quando ela trata de UMA coisa só; em frase
     # composta a data do vizinho não pode vazar pra cá.
-    if not novo.get("data_vencimento") and texto_origem:
-        alvo = novo.get("descricao") or ""
-        relativa = ai_engine.extract_due_date(alvo)
-        if not relativa and not re.search(r"\be\b|,|;|\n", texto_origem.strip()):
-            relativa = ai_engine.extract_due_date(texto_origem)
-        if relativa:
-            novo["data_vencimento"] = relativa
+    if texto_origem or novo.get("descricao"):
+        calculada = ai_engine.extract_due_date(novo.get("descricao") or "")
+        if not calculada and texto_origem and not re.search(
+                r"\be\b|,|;|\n", texto_origem.strip()):
+            calculada = ai_engine.extract_due_date(texto_origem)
+        atual = novo.get("data_vencimento")
+        if calculada and not atual:
+            novo["data_vencimento"] = calculada
             _registrar_falha("data relativa calculada em Python — o LLM "
                              "devolveu o item sem data")
+        elif calculada and atual and calculada != atual:
+            novo["data_vencimento"] = calculada
+            _registrar_falha(
+                f"data relativa calculada em Python: o LLM disse {atual} e a "
+                f"conta dá {calculada} — vale a minha")
     novo.setdefault("link_afiliado",
                     ai_engine.affiliate_link_for(novo.get("descricao", "")))
     # data no passado dispara o alarme na hora e assusta o usuário
