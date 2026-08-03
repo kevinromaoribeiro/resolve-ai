@@ -298,6 +298,13 @@ RESUMO_JANELA_DIAS = 7    # horizonte da lista "esta semana"
 RESUMO_MAX_ITENS = 8      # teto de linhas; o resto vira "+N outros"
 RESUMO_MAX_ATRASADOS = 3
 
+# O QUE NÃO ENTRA NO RESUMO.
+# "Me lembra de almoçar meio-dia" é rotina, não compromisso: entraria 7 vezes
+# na lista da semana e afogaria o boleto que realmente importa. Rotina já tem
+# canal próprio — o alarme ⏰ toca na hora certa, todo dia. O resumo semanal é
+# sobre o que TEM DATA e CONSEQUÊNCIA: conta, vencimento, documento, revisão.
+RESUMO_IGNORA_RECORRENCIA = ("diaria", "horas:")
+
 _DIAS_SEMANA = {"segunda": 0, "terca": 1, "quarta": 2, "quinta": 3,
                 "sexta": 4, "sabado": 5, "domingo": 6}
 _DIA_CURTO = ("seg", "ter", "qua", "qui", "sex", "sáb", "dom")
@@ -331,6 +338,23 @@ def _e_demo(item: dict) -> bool:
     return "(lembrete de demonstração)" in (item.get("descricao") or "")
 
 
+def _e_rotina(item: dict) -> bool:
+    """Alarme de rotina (almoçar, remédio de 8h em 8h, alongar).
+
+    Critério em Python e não no prompt: `recorrencia` diária ou de N em N
+    horas. Não é julgamento sobre a descrição — é o que o próprio usuário
+    declarou quando pediu "todo dia às 12h".
+    """
+    rec = item.get("recorrencia") or ""
+    return any(rec == p or rec.startswith(p)
+               for p in RESUMO_IGNORA_RECORRENCIA)
+
+
+def _entra_no_resumo(item: dict) -> bool:
+    """Filtro único do resumo: fora demo e fora rotina diária/horária."""
+    return not _e_demo(item) and not _e_rotina(item)
+
+
 def _linha_item(item: dict, ref: date) -> str:
     """Uma linha de item: quando — o quê — hora — valor."""
     quando = ""
@@ -362,9 +386,9 @@ def montar_resumo_semanal(user: dict, ref: Optional[date] = None) -> Optional[st
     uid = user["id"]
 
     semana = [i for i in db.items_due_within(uid, days=RESUMO_JANELA_DIAS,
-                                             ref=ref) if not _e_demo(i)]
+                                             ref=ref) if _entra_no_resumo(i)]
     atrasados = [i for i in db.items_overdue_for_user(uid, ref=ref)
-                 if not _e_demo(i)]
+                 if _entra_no_resumo(i)]
     ini = (ref - timedelta(days=6)).isoformat()
     gastos = db.spend_by_category_period(uid, ini, ref.isoformat())
     total_gasto = sum(gastos.values())

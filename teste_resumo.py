@@ -145,6 +145,48 @@ check("corta em 8 itens", msg.count("\n• ") <= scheduler.RESUMO_MAX_ITENS + 1,
 check("avisa quantos sobraram", "outro(s)" in msg, msg)
 
 # ---------------------------------------------------------------------------
+print("\n8b. Rotina diária/horária NÃO entra (almoçar, remédio de 8/8h)")
+uid_rot = novo_usuario("Elis Rotina", "5511999990006")
+db.add_item(uid_rot, "lembrete", "Saúde", "Almoçar",
+            data_vencimento=SEG.isoformat(), hora_alvo="12:00",
+            recorrencia="diaria")
+db.add_item(uid_rot, "lembrete", "Saúde", "Remédio",
+            data_vencimento=SEG.isoformat(), hora_alvo="08:00",
+            recorrencia="horas:8")
+db.add_item(uid_rot, "lembrete", "Casa", "Alongar",
+            data_vencimento=(SEG + timedelta(days=2)).isoformat(),
+            recorrencia="diaria")
+msg = scheduler.montar_resumo_semanal(db.get_user(uid_rot), ref=SEG)
+check("só rotina => resumo vazio (None)", msg is None, f"veio: {msg!r}")
+
+# agora com UMA conta de verdade no meio da rotina
+db.add_item(uid_rot, "lembrete", "Contas", "Boleto do IPTU",
+            valor_reais=340.0,
+            data_vencimento=(SEG + timedelta(days=2)).isoformat())
+msg = scheduler.montar_resumo_semanal(db.get_user(uid_rot), ref=SEG)
+check("a conta entra", msg and "Boleto do IPTU" in msg, f"{msg!r}")
+check("Almoçar NÃO entra", msg and "Almoçar" not in msg, f"{msg!r}")
+check("Remédio (horas:8) NÃO entra", msg and "Remédio" not in msg, f"{msg!r}")
+check("Alongar NÃO entra", msg and "Alongar" not in msg, f"{msg!r}")
+check("lista tem exatamente 1 item", msg and msg.count("\n• ") == 1, f"{msg!r}")
+
+# recorrente semanal/mensal CONTINUA entrando (não é rotina de rotina)
+db.add_item(uid_rot, "lembrete", "Veículo", "Revisão do carro",
+            data_vencimento=(SEG + timedelta(days=4)).isoformat(),
+            recorrencia="mensal:7")
+msg = scheduler.montar_resumo_semanal(db.get_user(uid_rot), ref=SEG)
+check("recorrente mensal entra", msg and "Revisão do carro" in msg, f"{msg!r}")
+print("\n--- resumo com rotina filtrada ---\n" + str(msg)
+      + "\n----------------------------------\n")
+
+check("_e_rotina('diaria')", scheduler._e_rotina({"recorrencia": "diaria"}))
+check("_e_rotina('horas:6')", scheduler._e_rotina({"recorrencia": "horas:6"}))
+check("_e_rotina('mensal:10') == False",
+      not scheduler._e_rotina({"recorrencia": "mensal:10"}))
+check("_e_rotina(sem recorrencia) == False",
+      not scheduler._e_rotina({"recorrencia": None}))
+
+# ---------------------------------------------------------------------------
 print("\n9. Integração: run_proactive_engine expõe resumo_dispatches")
 limpar_disparos()
 r = scheduler.run_proactive_engine(ref_date=SEG, ref_datetime=SEG_8H)
