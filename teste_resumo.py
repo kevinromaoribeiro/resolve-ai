@@ -1,0 +1,177 @@
+"""
+teste_resumo.py — Bateria do resumo semanal (v16). Banco descartável.
+
+Rodar:  python teste_resumo.py
+Sai com código 1 se qualquer caso falhar (dá pra plugar em CI depois).
+
+Verifica contra o BANCO, não contra a resposta bonita: cada caso monta o
+estado no SQLite e pergunta ao motor o que ele dispararia.
+"""
+import os
+import sys
+import tempfile
+from datetime import date, datetime, timedelta
+
+DB = os.path.join(tempfile.mkdtemp(), "teste_resumo.db")
+os.environ["DB_PATH"] = DB          # antes do import: db.py lê no import
+
+import db          # noqa: E402
+import scheduler   # noqa: E402
+
+FALHAS = []
+
+
+def check(nome, cond, detalhe=""):
+    print(("  OK   " if cond else "  FALHA") + f" {nome}"
+          + (f"  -> {detalhe}" if (detalhe and not cond) else ""))
+    if not cond:
+        FALHAS.append(nome)
+
+
+def novo_usuario(nome, telefone, dia="Segunda-feira"):
+    uid = db.create_user(nome=nome, telefone=telefone, dia_resumo=dia)
+    db.update_user_fields(uid, onboarding_step="done", status="ativo")
+    return uid
+
+
+def limpar_disparos():
+    with db.get_conn() as conn:
+        conn.execute("DELETE FROM dispatches")
+
+
+db.init_db()
+print(f"banco de teste: {DB}\n")
+
+# Segunda-feira de referência (2026-08-03 é uma segunda).
+SEG = date(2026, 8, 3)
+assert SEG.weekday() == 0, "data base do teste não é segunda"
+SEG_8H = datetime(2026, 8, 3, 8, 5)
+SEG_22H = datetime(2026, 8, 3, 22, 5)
+TER_8H = datetime(2026, 8, 4, 8, 5)
+
+# ---------------------------------------------------------------------------
+print("1. Parser de dia_resumo (o gatilho)")
+casos = {"Segunda-feira": 0, "segunda": 0, "SEGUNDA FEIRA": 0, "Terça-feira": 1,
+         "terca": 1, "Sábado": 5, "sabado": 5, "Domingo": 6,
+         "": None, None: None, "banana": None}
+for entrada, esperado in casos.items():
+    got = scheduler.dia_resumo_weekday(entrada)
+    check(f"dia_resumo_weekday({entrada!r}) == {esperado}", got == esperado,
+          f"veio {got}")
+
+# ---------------------------------------------------------------------------
+print("\n2. Usuário com semana cheia recebe resumo")
+uid = novo_usuario("Kevin Ribeiro", "5511999990001")
+db.add_item(uid, "lembrete", "Contas", "Conta de luz", valor_reais=187.4,
+            data_vencimento=SEG.isoformat())
+db.add_item(uid, "lembrete", "Pet", "Ração da Nina",
+            data_vencimento=(SEG + timedelta(days=3)).isoformat())
+db.add_item(uid, "lembrete", "Saúde", "Dentista",
+            data_vencimento=(SEG - timedelta(days=6)).isoformat())  # atrasado
+db.add_item(uid, "despesa", "Alimentação", "Mercado", valor_reais=210.0)
+db.add_item(uid, "despesa", "Pet", "Petshop", valor_reais=132.9)
+
+d = scheduler.check_weekly_summary(ref=SEG_8H)
+check("dispara 1 resumo", len(d) == 1, f"veio {len(d)}")
+msg = d[0]["message"] if d else ""
+check("kind == 'resumo'", bool(d) and d[0]["kind"] == "resumo")
+check("item_id é None (não é item)", bool(d) and d[0]["item_id"] is None)
+check("cita Conta de luz", "Conta de luz" in msg)
+check("cita o atrasado", "Dentista" in msg and "Em atraso" in msg)
+check("soma gastos = R$ 342,90", "R$ 342,90" in msg, msg)
+check("valor formatado BR", "R$ 187,40" in msg, msg)
+check("marca 'hoje' no item de hoje", "hoje —" in msg, msg)
+print("\n--- mensagem gerada ---\n" + msg + "\n-----------------------\n")
+
+# ---------------------------------------------------------------------------
+print("3. Janela horária e dia da semana")
+check("22h não dispara", scheduler.check_weekly_summary(ref=SEG_22H) == [])
+check("terça não dispara", scheduler.check_weekly_summary(ref=TER_8H) == [])
+check("7h não dispara",
+      scheduler.check_weekly_summary(ref=datetime(2026, 8, 3, 7, 59)) == [])
+check("11h59 ainda dispara",
+      len(scheduler.check_weekly_summary(ref=datetime(2026, 8, 3, 11, 59))) == 1)
+
+# ---------------------------------------------------------------------------
+print("\n4. Dedup: não manda duas vezes no mesmo dia")
+limpar_disparos()
+d1 = scheduler.check_weekly_summary(ref=SEG_8H)
+db.log_dispatch(uid, "resumo")
+d2 = scheduler.check_weekly_summary(ref=SEG_8H)
+check("1ª chamada dispara", len(d1) == 1)
+check("2ª chamada não dispara", len(d2) == 0, f"veio {len(d2)}")
+limpar_disparos()
+
+# ---------------------------------------------------------------------------
+print("\n5. Usuário sem nada NÃO recebe (silêncio > 'você não tem nada')")
+uid_vazio = novo_usuario("Ana Vazia", "5511999990002")
+d = [x for x in scheduler.check_weekly_summary(ref=SEG_8H)
+     if x["user_id"] == uid_vazio]
+check("usuário vazio não recebe", d == [], f"veio {d}")
+check("montar_resumo_semanal devolve None",
+      scheduler.montar_resumo_semanal(db.get_user(uid_vazio), ref=SEG) is None)
+
+# ---------------------------------------------------------------------------
+print("\n6. Quem está em onboarding não recebe")
+uid_onb = novo_usuario("Bruno Novato", "5511999990003")
+db.update_user_fields(uid_onb, onboarding_step="nome")
+db.add_item(uid_onb, "lembrete", "Contas", "Água",
+            data_vencimento=SEG.isoformat())
+d = [x for x in scheduler.check_weekly_summary(ref=SEG_8H)
+     if x["user_id"] == uid_onb]
+check("onboarding incompleto não recebe", d == [], f"veio {d}")
+
+# ---------------------------------------------------------------------------
+print("\n7. dia_resumo diferente respeita o usuário")
+uid_qui = novo_usuario("Carla Quinta", "5511999990004", dia="Quinta-feira")
+db.add_item(uid_qui, "lembrete", "Casa", "Faxina",
+            data_vencimento=(SEG + timedelta(days=3)).isoformat())
+seg = [x for x in scheduler.check_weekly_summary(ref=SEG_8H)
+       if x["user_id"] == uid_qui]
+qui = [x for x in scheduler.check_weekly_summary(
+    ref=datetime(2026, 8, 6, 8, 5)) if x["user_id"] == uid_qui]
+check("não recebe na segunda", seg == [])
+check("recebe na quinta", len(qui) == 1, f"veio {len(qui)}")
+
+# ---------------------------------------------------------------------------
+print("\n8. Teto de itens (+N outros)")
+uid_muito = novo_usuario("Davi Cheio", "5511999990005")
+for i in range(12):
+    db.add_item(uid_muito, "lembrete", "Outros", f"Tarefa {i}",
+                data_vencimento=(SEG + timedelta(days=i % 7)).isoformat())
+msg = scheduler.montar_resumo_semanal(db.get_user(uid_muito), ref=SEG)
+check("corta em 8 itens", msg.count("\n• ") <= scheduler.RESUMO_MAX_ITENS + 1,
+      f"linhas: {msg.count(chr(10) + '• ')}")
+check("avisa quantos sobraram", "outro(s)" in msg, msg)
+
+# ---------------------------------------------------------------------------
+print("\n9. Integração: run_proactive_engine expõe resumo_dispatches")
+limpar_disparos()
+r = scheduler.run_proactive_engine(ref_date=SEG, ref_datetime=SEG_8H)
+check("chave resumo_dispatches existe", "resumo_dispatches" in r)
+check("total soma o resumo", r["total"] >= len(r["resumo_dispatches"]))
+check("gera pelo menos 1 resumo", len(r["resumo_dispatches"]) >= 1,
+      f"veio {len(r.get('resumo_dispatches', []))}")
+r_noite = scheduler.run_proactive_engine(ref_date=SEG, ref_datetime=SEG_22H)
+check("quiet hours zera o resumo", r_noite["resumo_dispatches"] == [])
+
+# ---------------------------------------------------------------------------
+print("\n10. Helpers novos do db.py")
+gastos = db.spend_by_category_period(uid, (SEG - timedelta(days=6)).isoformat(),
+                                     SEG.isoformat())
+check("spend_by_category_period soma certo",
+      round(sum(gastos.values()), 2) == 342.90, f"veio {gastos}")
+check("ordena do maior pro menor",
+      list(gastos) == sorted(gastos, key=gastos.get, reverse=True))
+atr = db.items_overdue_for_user(uid, ref=SEG)
+check("items_overdue_for_user acha o atrasado",
+      len(atr) == 1 and atr[0]["descricao"] == "Dentista", f"veio {atr}")
+check("não conta item futuro como atrasado",
+      all(i["data_vencimento"] < SEG.isoformat() for i in atr))
+
+# ---------------------------------------------------------------------------
+print("\n" + "=" * 60)
+if FALHAS:
+    print(f"{len(FALHAS)} FALHA(S): " + ", ".join(FALHAS))
+    sys.exit(1)
+print("TUDO VERDE.")

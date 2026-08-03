@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v15.0-busca-web-2026-08-03"
+BUILD = "v16.0-resumo-semanal-2026-08-03"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1048,14 +1048,16 @@ def dispatch_proactive() -> int:
     result = scheduler.run_proactive_engine()
     sent = 0
     all_dispatches = (result.get("alarm_dispatches", [])
+                      + result.get("resumo_dispatches", [])
                       + result.get("overdue_dispatches", [])
                       + result["due_dispatches"]
                       + result["churn_dispatches"]
                       + result.get("trial_dispatches", [])
                       + result.get("guided_dispatches", []))
     n_alarm = len(result.get("alarm_dispatches", []))
-    log.info("[cron] motor rodou: %d alarme(s) de hora, %d total pra enviar",
-             n_alarm, len(all_dispatches))
+    n_resumo = len(result.get("resumo_dispatches", []))
+    log.info("[cron] motor rodou: %d alarme(s) de hora, %d resumo(s), "
+             "%d total pra enviar", n_alarm, n_resumo, len(all_dispatches))
     for d in all_dispatches[:DISPATCH_MAX_PER_CYCLE]:
         number = re.sub(r"\D", "", d["telefone"])
         if not number:

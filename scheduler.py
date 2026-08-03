@@ -16,6 +16,7 @@ fossem mensagens proativas de WhatsApp.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+import unicodedata
 import tempo
 from typing import Optional
 
@@ -282,6 +283,159 @@ def check_time_alarms(ref: Optional[datetime] = None) -> list[dict]:
     return dispatches
 
 
+# ---------------------------------------------------------------------------
+# RESUMO SEMANAL (v16)
+# ---------------------------------------------------------------------------
+# A coluna `dia_resumo` existia desde o v1 e nunca foi lida por ninguém.
+# Regra da casa: gatilho, corte e formatação ficam AQUI, em Python. Nada de
+# pedir "faça um resumo bonito" pro LLM — resumo é fato de banco, e fato de
+# banco não pode oscilar entre uma segunda e outra.
+
+RESUMO_HORA_INICIO = 8    # 8h. Antes disso o _in_quiet_hours já barra.
+RESUMO_HORA_LIMITE = 12   # se o app ficou fora a manhã toda, desiste do dia:
+                          # resumo de segunda chegando 21h é lixo, não serviço.
+RESUMO_JANELA_DIAS = 7    # horizonte da lista "esta semana"
+RESUMO_MAX_ITENS = 8      # teto de linhas; o resto vira "+N outros"
+RESUMO_MAX_ATRASADOS = 3
+
+_DIAS_SEMANA = {"segunda": 0, "terca": 1, "quarta": 2, "quinta": 3,
+                "sexta": 4, "sabado": 5, "domingo": 6}
+_DIA_CURTO = ("seg", "ter", "qua", "qui", "sex", "sáb", "dom")
+
+
+def _sem_acento(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", s or "")
+                   if unicodedata.category(c) != "Mn")
+
+
+def dia_resumo_weekday(valor: Optional[str]) -> Optional[int]:
+    """'Segunda-feira' | 'segunda' | 'SEGUNDA FEIRA' | 'Sábado' -> int (0=seg).
+
+    Valor desconhecido devolve None e o usuário simplesmente não recebe —
+    melhor não receber do que receber na quinta achando que é segunda.
+    """
+    chave = _sem_acento(str(valor or "")).lower().strip()
+    chave = chave.replace("-", " ").split()
+    if not chave:
+        return None
+    return _DIAS_SEMANA.get(chave[0])
+
+
+def _brl(v: float) -> str:
+    """1234.5 -> 'R$ 1.234,50'."""
+    return "R$ " + (f"{v:,.2f}".replace(",", "X")
+                    .replace(".", ",").replace("X", "."))
+
+
+def _e_demo(item: dict) -> bool:
+    return "(lembrete de demonstração)" in (item.get("descricao") or "")
+
+
+def _linha_item(item: dict, ref: date) -> str:
+    """Uma linha de item: quando — o quê — hora — valor."""
+    quando = ""
+    iso = item.get("data_vencimento")
+    if iso:
+        y, m, d = map(int, iso.split("-"))
+        dt = date(y, m, d)
+        dias = (dt - ref).days
+        if dias == 0:
+            rotulo = "hoje"
+        elif dias == 1:
+            rotulo = "amanhã"
+        else:
+            rotulo = f"{_DIA_CURTO[dt.weekday()]} {dt.day:02d}/{dt.month:02d}"
+        quando = f"{rotulo} — "
+    hora = f" às {item['hora_alvo']}" if item.get("hora_alvo") else ""
+    valor = f" ({_brl(item['valor_reais'])})" if item.get("valor_reais") else ""
+    return f"{quando}{item['descricao']}{hora}{valor}"
+
+
+def montar_resumo_semanal(user: dict, ref: Optional[date] = None) -> Optional[str]:
+    """Monta o texto do resumo a partir do banco. Sem LLM, sem invenção.
+
+    Devolve None quando não há NADA a dizer (semana sem item, sem atraso e
+    sem gasto). Mandar "você não tem nada" toda segunda é exatamente como se
+    ensina o usuário a ignorar o bot.
+    """
+    ref = ref or tempo.hoje()
+    uid = user["id"]
+
+    semana = [i for i in db.items_due_within(uid, days=RESUMO_JANELA_DIAS,
+                                             ref=ref) if not _e_demo(i)]
+    atrasados = [i for i in db.items_overdue_for_user(uid, ref=ref)
+                 if not _e_demo(i)]
+    ini = (ref - timedelta(days=6)).isoformat()
+    gastos = db.spend_by_category_period(uid, ini, ref.isoformat())
+    total_gasto = sum(gastos.values())
+
+    if not semana and not atrasados and total_gasto <= 0:
+        return None
+
+    first = (user.get("nome") or "").split()
+    first = first[0] if first else "Oi"
+    linhas = [f"☀️ Bom dia, {first}. Sua semana no Resolve AI:"]
+
+    if semana:
+        linhas.append(f"\n📌 *Esta semana* ({len(semana)})")
+        for it in semana[:RESUMO_MAX_ITENS]:
+            linhas.append("• " + _linha_item(it, ref))
+        sobra = len(semana) - RESUMO_MAX_ITENS
+        if sobra > 0:
+            linhas.append(f"• _+{sobra} outro(s)_")
+
+    if atrasados:
+        linhas.append(f"\n⚠️ *Em atraso* ({len(atrasados)})")
+        for it in atrasados[:RESUMO_MAX_ATRASADOS]:
+            linhas.append(f"• {it['descricao']} — venceu "
+                          f"{_fmt_br(it.get('data_vencimento'))}")
+        sobra = len(atrasados) - RESUMO_MAX_ATRASADOS
+        if sobra > 0:
+            linhas.append(f"• _+{sobra} outro(s)_")
+
+    if total_gasto > 0:
+        linhas.append(f"\n💸 *Últimos 7 dias*: {_brl(total_gasto)}")
+        linhas.append(" · ".join(f"{c} {_brl(v)}"
+                                 for c, v in list(gastos.items())[:3]))
+
+    linhas.append("\nResponda *feito* + o nome do item que eu dou baixa.")
+    return "\n".join(linhas)
+
+
+def check_weekly_summary(ref: Optional[datetime] = None) -> list[dict]:
+    """Checagem 4: resumo no dia escolhido pelo usuário (default segunda).
+
+    1x por dia (dedup pelo log de disparos), só na janela da manhã.
+    """
+    now = ref or tempo.agora()
+    if not (RESUMO_HORA_INICIO <= now.hour < RESUMO_HORA_LIMITE):
+        return []
+    hoje = now.date()
+    dispatches: list[dict] = []
+    for user in db.list_users():
+        alvo = dia_resumo_weekday(user.get("dia_resumo"))
+        if alvo is None or alvo != hoje.weekday():
+            continue
+        if (user.get("onboarding_step") or "done") != "done":
+            continue  # quem ainda está se cadastrando não leva resumo
+        if not db.user_can_receive(user):
+            continue
+        if db.dispatched_today("resumo", user["id"]):
+            continue
+        msg = montar_resumo_semanal(user, ref=hoje)
+        if not msg:
+            continue  # semana limpa: silêncio é a resposta certa
+        dispatches.append({
+            "user_id": user["id"],
+            "user_nome": user["nome"],
+            "telefone": user["telefone"],
+            "item_id": None,
+            "kind": "resumo",
+            "message": msg,
+        })
+    return dispatches
+
+
 def check_winback() -> list[dict]:
     """1 única mensagem 3 dias após o trial expirar sem conversão."""
     dispatches: list[dict] = []
@@ -316,11 +470,12 @@ def run_proactive_engine(
     roll_recurring(ref=ref_date)          # recorrentes rolam ANTES de tudo
     alarms = check_time_alarms(ref=now)
     if _in_quiet_hours(now):
-        due, churn, trial, guided, overdue = [], [], [], [], []
+        due, churn, trial, guided, overdue, resumo = [], [], [], [], [], []
     else:
         overdue = check_overdue(ref=ref_date) + check_winback()
         due = check_due_items(ref=ref_date)
         churn = check_churn(ref=ref_datetime)
+        resumo = check_weekly_summary(ref=now)
         try:
             import trial_guiado
             guided = trial_guiado.run_trial_nudges()
@@ -330,13 +485,14 @@ def run_proactive_engine(
     return {
         "executed_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "alarm_dispatches": alarms,
+        "resumo_dispatches": resumo,
         "overdue_dispatches": overdue,
         "due_dispatches": due,
         "churn_dispatches": churn,
         "trial_dispatches": trial,
         "guided_dispatches": guided,
-        "total": (len(alarms) + len(overdue) + len(due) + len(churn)
-                  + len(trial) + len(guided)),
+        "total": (len(alarms) + len(resumo) + len(overdue) + len(due)
+                  + len(churn) + len(trial) + len(guided)),
     }
 
 

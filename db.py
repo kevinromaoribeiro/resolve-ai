@@ -123,7 +123,11 @@ def init_db() -> None:
                          ("interesses", "TEXT"),
                          ("status", "TEXT DEFAULT 'trial'"),
                          ("onboarding_step", "TEXT"),
-                         ("trial_nudges_sent", "TEXT DEFAULT ''")]:
+                         ("trial_nudges_sent", "TEXT DEFAULT ''"),
+                         # v16: sem isto, um banco criado antes da coluna
+                         # derruba TODO o resumo semanal com OperationalError
+                         # dentro do cron — e o cron engole a exceção.
+                         ("dia_resumo", "TEXT DEFAULT 'Segunda-feira'")]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
         # items: coluna de horário-alvo (v6.1)
@@ -444,6 +448,48 @@ def spend_by_category(user_id: int) -> dict[str, float]:
             (user_id,),
         ).fetchall()
         return {r["categoria"]: float(r["total"]) for r in rows}
+
+
+def spend_by_category_period(user_id: int, ini: str, fim: str) -> dict[str, float]:
+    """Despesas por categoria REGISTRADAS entre ini e fim (ISO, inclusive).
+
+    Filtra por data_criacao e não por data_vencimento: quando o usuário diz
+    "gastei 80 no mercado", o que ele quer ver de volta é o dia em que contou.
+    Categorias zeradas ficam de fora — linha com R$ 0,00 é ruído.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT categoria, COALESCE(SUM(valor_reais),0) AS total
+               FROM items
+               WHERE user_id=? AND tipo='despesa'
+                 AND valor_reais IS NOT NULL
+                 AND substr(data_criacao,1,10) BETWEEN ? AND ?
+               GROUP BY categoria
+               HAVING total > 0
+               ORDER BY total DESC""",
+            (user_id, ini, fim),
+        ).fetchall()
+        return {r["categoria"]: float(r["total"]) for r in rows}
+
+
+def items_overdue_for_user(user_id: int,
+                           ref: Optional[date] = None) -> list[dict]:
+    """Itens pendentes DESTE usuário cuja data já passou.
+
+    Existe `overdue_items`, mas ela é global (varre todo mundo, pra cobrança).
+    Aqui o recorte é por usuário, para o resumo.
+    """
+    ref = ref or tempo.hoje()
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM items
+               WHERE user_id=? AND status='pendente'
+                 AND data_vencimento IS NOT NULL
+                 AND data_vencimento < ?
+               ORDER BY data_vencimento""",
+            (user_id, ref.isoformat()),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def items_due_within(user_id: int, days: int = 3, ref: Optional[date] = None) -> list[dict]:
