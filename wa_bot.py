@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v16.4-busca-mobile-2026-08-03"
+BUILD = "v16.6-sem-enchimento-2026-08-03"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1195,6 +1195,14 @@ try:
         falha_antes = getattr(motor_v8, "ULTIMA_FALHA", "")
 
         reply = handle_incoming(payload)
+
+        # FAXINA FINAL, num lugar só.
+        # "Precisando de ajuda com algo?" e "Posso ajudar com mais alguma
+        # coisa?" saíram por caminhos diferentes do código em 03/08 — não
+        # adianta caçar na origem. Aqui passa TODA resposta ao usuário, venha
+        # do motor v8, do ai_engine clássico ou do onboarding.
+        if reply and reply.get("text"):
+            reply["text"] = motor_v8.tirar_enchimento(reply["text"])
 
         falha_depois = getattr(motor_v8, "ULTIMA_FALHA", "")
         if falha_depois and falha_depois != falha_antes:

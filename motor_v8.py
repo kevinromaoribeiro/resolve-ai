@@ -198,9 +198,18 @@ def _data_passada(data_iso: str) -> bool:
 
 
 def _br(data_iso: str) -> str:
-    """2026-08-02 -> 02/08. O usuário não fala ISO."""
+    """2026-08-02 -> 02/08. Ano só aparece quando NÃO é o ano corrente.
+
+    Teste ao vivo 03/08/2026: o usuário pediu troca de óleo "em 6 meses" e o
+    bot confirmou "Te aviso em 02/02". Fevereiro de quando? A data no banco
+    era 2027-02-02, certa — a mensagem é que era ambígua. Data futura sem ano
+    faz o usuário achar que o lembrete é pra daqui a duas semanas, e o valor
+    inteiro do produto está em ele confiar na data que eu digo.
+    """
     try:
         a, m, d = str(data_iso).split("-")
+        if int(a) != tempo.hoje().year:
+            return f"{d}/{m}/{a}"
         return f"{d}/{m}"
     except Exception:
         return str(data_iso)
@@ -391,10 +400,21 @@ def _preparar_item(novo: dict, ai_engine,
              "Lazer", "Outros")
     cat = novo.get("categoria")
     if cat not in _CATS or cat == "Outros":
-        # classifica sobre descrição + texto original: "me lembra do cartão
-        # de débito dia 20" tem o sinal na frase inteira, não só no resumo.
-        base = f"{novo.get('descricao', '')} {texto_origem}"
-        novo["categoria"] = ai_engine.classify_category(base)
+        # A DESCRIÇÃO MANDA. O texto original só entra como último recurso.
+        #
+        # Na v16.3 eu classificava "descrição + frase inteira" de uma vez. Teste
+        # ao vivo em 03/08: "comprar ração da Nina sexta E trocar o óleo do
+        # carro" gerou dois itens, e AMBOS receberam a frase inteira como
+        # contexto — "ração" (Pet) venceu "óleo/carro" (Veículo) e a troca de
+        # óleo foi parar em Pet. Um item não pode herdar o sinal do vizinho.
+        desc = novo.get("descricao", "")
+        adivinhado = ai_engine.classify_category(desc)
+        if adivinhado == "Outros" and texto_origem:
+            # descrição muda ("Cartão de débito" sem contexto) — aí sim olha a
+            # frase, mas só se ela não estiver falando de várias coisas.
+            if not re.search(r"\be\b|,|;|\n", texto_origem.strip()):
+                adivinhado = ai_engine.classify_category(texto_origem)
+        novo["categoria"] = adivinhado
     novo.setdefault("hora_alvo", None)
     novo.setdefault("valor_reais", None)
     novo.setdefault("data_vencimento", None)
@@ -645,6 +665,15 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
                              f"do campo (estavam so no texto)")
         result["reply"] = _tirar_pergunta_redundante(result["reply"],
                                                      result["items"])
+        result["reply"] = _corrigir_hoje_falso(result["reply"],
+                                               result["items"])
+        result["reply"] = _completar_ano_nas_datas(result["reply"],
+                                                   result["items"])
+        # faxina ANTES de anexar o bloco "Guardei também": depois que o bloco
+        # entra, o enchimento deixa de estar no fim e escapa da regra.
+        result["reply"] = tirar_enchimento(result["reply"])
+        result["reply"] = _confirmar_todos_os_itens(result["reply"],
+                                                    result["items"])
         _pos_processar(result, text, fatos, itens)
 
     # INVARIANTE: prometeu guardar -> tem que ter guardado alguma coisa.
@@ -692,6 +721,144 @@ _INTERROGATIVAS = ("qual", "quais", "quando", "quanto", "quantos", "quanta",
                    "consigo", "voce sabe", "você sabe", "vc sabe",
                    "me explica", "explica", "pode me dizer", "ja paguei",
                    "já paguei", "tenho que", "preciso")
+
+
+# ---------------------------------------------------------------------------
+# ENCHIMENTO DE LINGUIÇA
+# ---------------------------------------------------------------------------
+# Medido no WhatsApp em 03/08: depois de mandar o resumo semanal, o bot emendou
+# "Precisando de ajuda com algo?" e, na mensagem seguinte, "Concluído. Posso
+# ajudar com mais alguma coisa?". Nenhuma das duas carrega informação.
+#
+# No WhatsApp isso não é educação, é NOTIFICAÇÃO. Cada frase vazia vibra o
+# celular da pessoa por nada, e é assim que o usuário arquiva a conversa. O
+# modelo escreve isso porque foi treinado em atendimento; nenhum prompt tira,
+# porque ele acha que está sendo gentil. Some por função.
+_ENCHIMENTO = (
+    r"precisando de ajuda com (?:algo|alguma coisa)",
+    r"posso (?:te )?ajudar (?:com|em) mais (?:alguma coisa|algo)",
+    r"posso (?:te )?ajudar em algo mais",
+    r"(?:tem )?mais alguma coisa\??",
+    r"em que (?:mais )?posso (?:te )?ajudar",
+    r"como posso (?:te )?ajudar (?:hoje)?",
+    r"estou (?:aqui )?(?:à|a) (?:sua )?disposi[çc][ãa]o",
+    r"fico (?:à|a) disposi[çc][ãa]o",
+    r"qualquer coisa (?:é )?s[óo] (?:me )?chamar",
+    r"espero ter ajudado",
+    r"precisa de mais alguma coisa",
+)
+_RE_ENCHIMENTO = re.compile(
+    r"(?im)^\s*[*_]{0,2}(?:" + "|".join(_ENCHIMENTO) + r")[*_]{0,2}\s*[.!?]*\s*$")
+# a mesma frase colada no fim de um parágrafo
+_RE_ENCHIMENTO_FIM = re.compile(
+    r"(?i)(?:^|(?<=[.!?…]))\s*[*_]{0,2}(?:" + "|".join(_ENCHIMENTO)
+    + r")[*_]{0,2}\s*[.!?]*\s*$")
+
+
+def tirar_enchimento(reply: str) -> str:
+    """Corta frase de atendimento que não carrega informação nenhuma."""
+    if not reply:
+        return reply
+    t = _RE_ENCHIMENTO.sub("", reply)
+    t = _RE_ENCHIMENTO_FIM.sub("", t)
+    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    # se sobrou só pontuação/emoji solto, devolve o original (nunca some com
+    # a resposta inteira por causa de uma regra de faxina)
+    return t if re.search(r"[A-Za-zÀ-ÿ0-9]", t) else reply
+
+
+_RE_HOJE = re.compile(r"(?i)\b(?:de\s+)?hoje\b")
+
+
+def _corrigir_hoje_falso(reply: str, items: list) -> str:
+    """Tira o "hoje" quando NENHUM item salvo é de hoje.
+
+    Caso real 03/08: "trocar o óleo do carro em 5000 km ou 6 meses" virou
+    "*Anotado a troca de hoje.*" — o usuário nunca disse que trocou hoje, e o
+    item ficou gravado para 02/02/2027. Um mordomo que confirma um fato que
+    você não falou é um mordomo em quem você para de confiar, mesmo quando
+    ele acerta o resto.
+    """
+    if not reply or not items or not _RE_HOJE.search(reply):
+        return reply
+    hoje = tempo.hoje().isoformat()
+    if any((it.get("data_vencimento") or "") == hoje for it in items):
+        return reply          # tem item de hoje: o "hoje" é legítimo
+    _registrar_falha("resposta dizia 'hoje' sem nenhum item de hoje — tirei")
+    t = _RE_HOJE.sub("", reply)
+    # [ \t] e NÃO \s: \s engole \n e amassava a resposta inteira numa linha só.
+    # Com tudo numa linha, a faxina de enchimento (que é ancorada por linha)
+    # deixava de achar "Precisando de ajuda com algo?" — um remendo quebrando
+    # o outro, em silêncio.
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    t = re.sub(r"[ \t]+([.,!?])", r"\1", t)
+    t = re.sub(r"[ \t]+\n", "\n", t)
+    return t.strip()
+
+
+def _completar_ano_nas_datas(reply: str, items: list) -> str:
+    """"Te aviso em 02/02" -> "Te aviso em 02/02/2027".
+
+    O `_br` já devolve o ano nas linhas que EU monto. Só que esta frase quem
+    escreveu foi o modelo, em texto livre, e nenhuma formatação minha passa
+    por ali. Então eu comparo o dd/mm que ele escreveu com a data que está
+    no item salvo: se o ano for outro, eu completo. Não invento data — só
+    desambiguo a que já existe no banco.
+    """
+    if not reply or not items:
+        return reply
+    ano_atual = tempo.hoje().year
+    alvos = {}
+    for it in items:
+        iso = it.get("data_vencimento") or ""
+        try:
+            a, m, d = iso.split("-")
+        except ValueError:
+            continue
+        if int(a) != ano_atual:
+            alvos[f"{d}/{m}"] = a
+    if not alvos:
+        return reply
+
+    def _troca(m):
+        ddmm = f"{int(m.group(1)):02d}/{int(m.group(2)):02d}"
+        ano = alvos.get(ddmm)
+        return f"{ddmm}/{ano}" if ano else m.group(0)
+
+    # dd/mm que ainda NÃO tem ano colado
+    return re.sub(r"\b(\d{1,2})/(\d{1,2})\b(?!/\d)", _troca, reply)
+
+
+def _confirmar_todos_os_itens(reply: str, items: list) -> str:
+    """Se gravou 2 e só falou de 1, a resposta completa o que faltou.
+
+    Teste ao vivo 03/08: "comprar ração da Nina sexta E trocar o óleo do carro
+    em 5000km ou 6 meses" gravou os DOIS itens no banco, e o bot respondeu só
+    "Anotado a troca de hoje". A ração estava salva — o usuário não tinha como
+    saber. Isso é pior que perder o item: ele manda de novo e vira duplicata,
+    ou deixa de confiar e volta a anotar no papel.
+
+    A promessa do produto é "não perde item". Não perder inclui AVISAR.
+    """
+    if len(items) < 2:
+        return reply
+    baixo = _sem_acento(reply or "").lower()
+
+    def _citado(desc: str) -> bool:
+        # Compara pelo RADICAL (5 primeiras letras): a resposta escreve
+        # "troca" e o item é "trocar" — sem isso o item era listado de novo,
+        # e confirmação em dobro faz o usuário achar que duplicou.
+        palavras = [p for p in _palavras(_sem_acento(desc or "").lower())
+                    if len(p) >= 4]
+        return any(p[:5] in baixo for p in palavras) if palavras else True
+
+    faltando = [it for it in items if not _citado(it.get("descricao", ""))]
+    if not faltando:
+        return reply
+    _registrar_falha(f"resposta citou {len(items) - len(faltando)} de "
+                     f"{len(items)} itens — completei na mão")
+    linhas = [f"• {_item_linha(it)}" for it in faltando]
+    return (f"{reply.rstrip()}\n\nGuardei também:\n" + "\n".join(linhas))
 
 
 def _e_pergunta(text: str) -> bool:
