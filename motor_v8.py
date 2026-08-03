@@ -397,6 +397,9 @@ def _preparar_item(novo: dict, ai_engine, texto_origem: str = "",
     """
     if not (isinstance(novo, dict) and novo.get("descricao")):
         return None
+    # a descrição é o que o usuário vê no lembrete e no resumo — sem verbo
+    # de comando e sem cauda de dinheiro colada.
+    novo["descricao"] = limpar_descricao(novo["descricao"])
     # COERÇÃO, não setdefault: o LLM inventa tipo ("medicamento") e o
     # db.add_item LANÇA ValueError — o item sumia em silêncio.
     if novo.get("tipo") not in ("lembrete", "despesa", "documento"):
@@ -769,6 +772,7 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
             if pronto:
                 result["items"].append(pronto)
 
+        result["items"] = fundir_duplicatas(result["items"])
         n = _resgatar_valores(result["items"], result["reply"])
         if n:
             _registrar_falha(f"resgatei {n} valor(es) que o LLM deixou de fora "
@@ -1660,6 +1664,95 @@ def _soma_meses(data, meses: float):
     import datetime
     dias = int(round(meses * 30.44))
     return data + datetime.timedelta(days=dias)
+
+
+# Verbo de comando no começo e cauda de valor no fim não são o ASSUNTO.
+_LIXO_INICIO_RE = re.compile(
+    r"(?i)^\s*(?:(?:me\s+)?lembr(?:a|e|ar)(?:\s+de)?|"
+    r"n[ãa]o\s+(?:me\s+)?deixa\s+esquecer\s+de|"
+    r"me\s+avisa?r?(?:\s+que)?|avisa?r?(?:\s+que)?|"
+    r"anot(?:a|e|ar)|agend(?:a|e|ar)|marc(?:a|e|ar)\s+(?=de\b)|"
+    r"preciso(?:\s+de)?|tenho\s+que|quero|gostaria\s+de|"
+    r"que\s+preciso|que\s+eu\s+preciso|de\s+que\s+preciso"
+    r")\s+")
+# "... e gastar até 250,00" / "... , R$ 90" — isso é valor, não descrição
+_LIXO_FIM_RE = re.compile(
+    r"\s*(?:,|\se)?\s*(?:gastar?|gasto|custa(?:r)?|pagar?)\s+"
+    r"(?:at[ée]\s+)?R?\$?\s*[\d.,]+\s*(?:reais|r\$)?\s*$"
+    r"|\s*[,;]\s*R\$?\s*[\d.,]+\s*(?:reais)?\s*$",
+    re.IGNORECASE)
+
+
+def limpar_descricao(desc: str) -> str:
+    """"preciso ir no mercado e gastar até 250,00" -> "ir no mercado".
+
+    A descrição é o que aparece no lembrete, no resumo de segunda e na
+    confirmação. Quando ela é a frase inteira, o resumo semanal vira um
+    parágrafo e o usuário não bate o olho e entende. Verbo de comando
+    ("preciso", "me lembra de") e cauda de dinheiro não são o assunto —
+    o valor já tem campo próprio no banco.
+    Conservador de propósito: se a limpeza deixar menos de 3 caracteres,
+    devolve o original. Descrição feia é melhor que descrição vazia.
+    """
+    if not desc:
+        return desc
+    t = desc.strip()
+    for _ in range(3):                      # "que preciso pegar" -> 2 passadas
+        novo = _LIXO_INICIO_RE.sub("", t, count=1)
+        if novo == t:
+            break
+        t = novo
+    t = _LIXO_FIM_RE.sub("", t).strip(" ,;.-")
+    return t if len(t) >= 3 else desc.strip()
+
+
+def fundir_duplicatas(items: list) -> list:
+    """Dois itens do MESMO assunto na mesma mensagem viram um.
+
+    Caso real (03/08): "preciso ir no mercado e gastar até 250,00" gerou
+        #73 [despesa] "mercado"                          val=250
+        #74 [lembrete] "preciso ir no mercado e gastar…"  val=250 04/08 19:00
+    Duas linhas para a mesma coisa: o usuário não sabe qual vale, dá baixa
+    numa e a outra continua cobrando. O `_ja_existe` não pegava porque só
+    compara com o que JÁ ESTÁ no banco — estes dois nasceram juntos.
+
+    Mantém o item mais completo e traz do outro os campos que faltam.
+    """
+    if len(items) < 2:
+        return items
+    saida: list = []
+    for novo in items:
+        pn = _palavras(_sem_acento(novo.get("descricao") or "").lower())
+        alvo = None
+        if pn:
+            for ja in saida:
+                pj = _palavras(_sem_acento(ja.get("descricao") or "").lower())
+                if not pj:
+                    continue
+                comuns = pn & pj
+                # um contém o outro: mesmo assunto
+                if comuns and len(comuns) >= min(len(pn), len(pj)):
+                    alvo = ja
+                    break
+        if alvo is None:
+            saida.append(novo)
+            continue
+        _registrar_falha(f"itens duplicados na mesma mensagem "
+                         f"('{(novo.get('descricao') or '')[:25]}') — fundi")
+        for campo in ("valor_reais", "data_vencimento", "hora_alvo",
+                      "recorrencia", "link_afiliado"):
+            if alvo.get(campo) is None and novo.get(campo) is not None:
+                alvo[campo] = novo[campo]
+        # despesa manda sobre lembrete: quem tem valor é despesa
+        if novo.get("tipo") == "despesa":
+            alvo["tipo"] = "despesa"
+        # fica a descrição mais curta (a mais limpa)
+        dn, da = novo.get("descricao") or "", alvo.get("descricao") or ""
+        if dn and (not da or len(dn) < len(da)):
+            alvo["descricao"] = dn
+        if alvo.get("categoria") in (None, "Outros"):
+            alvo["categoria"] = novo.get("categoria") or alvo.get("categoria")
+    return saida
 
 
 def _ja_existe(descricao: str, itens: list) -> Optional[dict]:
