@@ -773,8 +773,9 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
         if n:
             _registrar_falha(f"resgatei {n} valor(es) que o LLM deixou de fora "
                              f"do campo (estavam so no texto)")
-        result["reply"] = _polir_resposta(result["reply"], result["items"],
-                                              _ultima_fala_bot(historico), text)
+        result["reply"] = _polir_resposta(
+            result["reply"], result["items"], _ultima_fala_bot(historico),
+            text, _assunto_da_vez(result, itens), itens)
         _pos_processar(result, text, fatos, itens)
 
     # INVARIANTE: prometeu guardar -> tem que ter guardado alguma coisa.
@@ -814,8 +815,9 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
             # data do pediatra?" — a mesma pergunta que o corte de pergunta
             # redundante mata em 1 linha, só que ele nunca rodava neste ramo.
             # Agora a faxina mora numa função só e os DOIS caminhos chamam.
-            result["reply"] = _polir_resposta(result["reply"], result["items"],
-                                              _ultima_fala_bot(historico), text)
+            result["reply"] = _polir_resposta(
+                result["reply"], result["items"], _ultima_fala_bot(historico),
+                text, _assunto_da_vez(result, itens), itens)
             _pos_processar(result, text, fatos, itens)
         else:
             _registrar_falha("reconsulta tambem nao devolveu item")
@@ -1055,6 +1057,72 @@ def _oferecer_horario(reply: str, items: list) -> str:
             f"*noite* ({HORA_NOITE}) — ou me diz a hora exata.")
 
 
+def _assunto_da_vez(result: dict, itens_abertos: list) -> str:
+    """Qual item ESTA mensagem está tratando? Só devolve quando é inequívoco.
+
+    Um item criado agora, ou um item sendo atualizado: esse é o assunto.
+    Se houver mais de um, devolve vazio — a guarda de assunto não age no
+    escuro (melhor não agir do que reancorar no item errado).
+    """
+    itens_novos = result.get("items") or []
+    if len(itens_novos) == 1:
+        return (itens_novos[0].get("descricao") or "").strip()
+    if itens_novos:
+        return ""
+    alvo = (result.get("atualizar") or {}).get("id")
+    if alvo:
+        for it in (itens_abertos or []):
+            if it.get("id") == alvo:
+                return (it.get("descricao") or "").strip()
+    return ""
+
+
+def _radical_em(desc: str, alvo_baixo: str) -> bool:
+    """Alguma palavra de conteúdo da descrição aparece no texto?"""
+    for p in _palavras(_sem_acento(desc or "").lower()):
+        if len(p) >= 4 and p[:5] in alvo_baixo:
+            return True
+    return False
+
+
+def _nao_trocar_de_assunto(reply: str, alvo_desc: str,
+                           itens_abertos: list) -> str:
+    """A resposta está falando de OUTRO lembrete que não o da conversa.
+
+    Caso real (03/08, 15:48):
+        Kevin: "Amanhã preciso ir no mercado me lembra"
+        bot:   "Guardei: ir no mercado · 04/08. Que horas?"
+        Kevin: "Manhã"
+        bot:   "Te aviso às 08:00 pra *comprar frutas*."   <- item #62, antigo
+
+    E daí em diante o bot conduziu um diálogo inteiro sobre mamão, em cima do
+    item errado. O LLM recebe a lista de itens abertos no prompt e, quando a
+    resposta do usuário é curta ("Manhã"), ele reancora no item mais parecido
+    em vez do item da conversa.
+
+    Regra: se a resposta cita a descrição de OUTRO item aberto e NÃO cita a do
+    item que está em jogo, ela está fora do assunto. Confirmo o item certo e
+    saio — errar de item é pior que responder pouco, porque o usuário só
+    descobre no dia em que o aviso não vem.
+    """
+    if not reply or not alvo_desc:
+        return reply
+    baixo = _sem_acento(reply).lower()
+    if _radical_em(alvo_desc, baixo):
+        return reply                      # citou o item certo: ok
+    alvo_norm = _sem_acento(alvo_desc).strip().lower()
+    for it in (itens_abertos or []):
+        d = (it.get("descricao") or "").strip()
+        if not d or _sem_acento(d).lower() == alvo_norm:
+            continue
+        if _radical_em(d, baixo):
+            _registrar_falha(
+                f"resposta falava de '{d[:30]}' mas o assunto era "
+                f"'{alvo_desc[:30]}' — reancorei no item certo")
+            return f"Anotado ✅ — *{alvo_desc}*."
+    return reply
+
+
 # A resposta PROMETE um horário/dia que o item não tem?
 _PROMESSA_HORA_RE = re.compile(
     r"(?i)(?:te\s+lembro|vou\s+te\s+lembrar|te\s+aviso|aviso\s+voc[êe])"
@@ -1089,7 +1157,8 @@ def _nao_prometer_o_que_nao_gravei(reply: str, items: list) -> str:
 
 
 def _polir_resposta(reply: str, items: list, ultima_bot: str = "",
-                    texto_usuario: str = "") -> str:
+                    texto_usuario: str = "", alvo_desc: str = "",
+                    itens_abertos: list = None) -> str:
     """Toda a faxina de resposta, num lugar só, na ordem que importa.
 
     Existir em UM lugar é o ponto. Enquanto essa sequência estava copiada
@@ -1099,6 +1168,11 @@ def _polir_resposta(reply: str, items: list, ultima_bot: str = "",
     """
     if not reply:
         return reply
+    # PRIMEIRO de tudo: a resposta é sobre o item CERTO?
+    # Tem que vir antes do bloco "Guardei", senão ele anexa a descrição certa,
+    # a resposta passa a citar o item certo E o errado, e a guarda deixa
+    # passar achando que está tudo bem. Ordem aqui não é estilo, é correção.
+    reply = _nao_trocar_de_assunto(reply, alvo_desc, itens_abertos or [])
     reply = _tirar_pergunta_redundante(reply, items)
     reply = _corrigir_hoje_falso(reply, items)
     reply = _completar_ano_nas_datas(reply, items)
