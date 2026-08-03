@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v17.0-trial-14-dias-2026-08-03"
+BUILD = "v17.1-health-mostra-trial-2026-08-03"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1197,6 +1197,12 @@ try:
                 # realmente trocou o código ou se o container velho ficou de
                 # pé. Já perdemos tempo adivinhando isso.
                 "build": BUILD,
+                # TRIAL_DAYS vem de env e ENV GANHA DO CÓDIGO. Se o EasyPanel
+                # ainda tiver "7" setado, a landing promete 14 e o bot entrega
+                # 7 — inconsistência que queima confiança no primeiro contato.
+                # Sem isto aqui só dava pra saber logando no painel.
+                "trial_days": TRIAL_DAYS,
+                "extensao_dias": TRIAL_EXTENSAO_DIAS,
                 "memoria": hasattr(db, "lembrar_fato"),
                 "contexto": hasattr(db, "conversa_recente"),
                 "painel": "protegido" if PAINEL_TOKEN else "SEM TOKEN",
