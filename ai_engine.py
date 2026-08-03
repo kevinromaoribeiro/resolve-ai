@@ -78,7 +78,19 @@ CATEGORY_KEYWORDS = {
     "Saúde": ["farmácia", "farmacia", "remédio", "remedio", "consulta",
               "médico", "medico", "dentista", "exame", "vacina humana",
               "psicólogo", "psicologo", "academia", "plano de saúde",
-              "plano de saude", "hospital", "dermato", "cardiologista"],
+              "plano de saude", "hospital", "dermato", "cardiologista",
+              # v16.7: "levar a Rafinha no pediatra" caía em Outros. Nome de
+              # especialista é o jeito NORMAL de falar de consulta — ninguém
+              # escreve "consulta médica", escreve "pediatra", "ortopedista".
+              "pediatra", "ginecologista", "urologista", "oftalmologista",
+              "ortopedista", "neurologista", "psiquiatra", "endocrino",
+              "endocrinologista", "otorrino", "nutricionista", "fisioterapia",
+              "fisioterapeuta", "terapia", "terapeuta", "laboratório",
+              "laboratorio", "raio-x", "ultrassom", "ressonância",
+              "ressonancia", "check-up", "checkup", "cirurgia", "upa",
+              "posto de saúde", "posto de saude", "clínica", "clinica",
+              "convênio", "convenio", "unimed", "receita médica",
+              "receita medica"],
     "Casa": ["gás", "gas", "botijão", "botijao", "faxina", "diarista",
              "encanador", "eletricista", "reforma", "móvel", "movel",
              "manutenção casa", "conserto", "lâmpada", "lampada",
@@ -245,9 +257,26 @@ _WEEKDAYS = {"segunda": 0, "terca": 1, "quarta": 2, "quinta": 3,
              "sexta": 4, "sabado": 5, "domingo": 6}
 
 
+def _somar_meses(base: date, meses: int) -> date:
+    """31/01 + 1 mês = 28/02, não estoura. Sem dependência externa."""
+    total = base.month - 1 + meses
+    ano = base.year + total // 12
+    mes = total % 12 + 1
+    dia = base.day
+    while dia > 28:
+        try:
+            return date(ano, mes, dia)
+        except ValueError:
+            dia -= 1
+    return date(ano, mes, dia)
+
+
 def extract_due_date(text: str, ref: Optional[date] = None) -> Optional[str]:
     """Extrai data de vencimento explícita ou implícita. Retorna ISO ou None."""
-    ref = ref or date.today()
+    # tempo.hoje() e NÃO date.today(): o servidor roda em UTC, 3h à frente.
+    # Depois das 21h de Brasília o date.today() já virou o dia seguinte, e
+    # "amanhã" virava depois de amanhã. Regra da casa desde o tempo.py.
+    ref = ref or tempo.hoje()
     low = text.lower()
 
     # dd/mm/yyyy ou dd/mm
@@ -303,6 +332,23 @@ def extract_due_date(text: str, ref: Optional[date] = None) -> Optional[str]:
         return (ref + timedelta(days=7)).isoformat()
     if "mês que vem" in low or "mes que vem" in low:
         return (ref + timedelta(days=30)).isoformat()
+
+    # Relativos por MÊS e ANO.
+    # BURACO ENCONTRADO NO TESTE AO VIVO (03/08/2026): "me lembra de levar a
+    # Rafinha no pediatra em 8 meses" — o parser conhecia "em N dias" e
+    # "em N semanas", nunca "em N meses". Sem data, o item não nasceu e o bot
+    # perguntou "qual a data do pediatra?" para uma pergunta que o usuário já
+    # tinha respondido. Consulta médica, revisão e garantia são JUSTAMENTE as
+    # coisas que se marcam em meses — é o caso de uso central do produto.
+    m = re.search(r"(?:em|daqui(?:\s+a)?|dentro\s+de)\s+(\d+)\s*(?:meses|m[êe]s)\b",
+                  low)
+    if m:
+        return _somar_meses(ref, int(m.group(1))).isoformat()
+    m = re.search(r"(?:em|daqui(?:\s+a)?|dentro\s+de)\s+(\d+)\s*anos?\b", low)
+    if m:
+        return _somar_meses(ref, int(m.group(1)) * 12).isoformat()
+    if "ano que vem" in low or "próximo ano" in low or "proximo ano" in low:
+        return _somar_meses(ref, 12).isoformat()
 
     # Relativos por HORA/MINUTO ou "hoje" -> a data é HOJE
     if re.search(r"(?:daqui(?:\s+a)?|em)\s+\d+\s*(?:min|minuto|h\b|hora)", low) \

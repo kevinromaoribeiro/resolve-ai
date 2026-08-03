@@ -419,6 +419,22 @@ def _preparar_item(novo: dict, ai_engine,
     novo.setdefault("valor_reais", None)
     novo.setdefault("data_vencimento", None)
     novo.setdefault("recorrencia", None)
+
+    # DATA RELATIVA: se o LLM não trouxe data mas o usuário disse "em 8 meses",
+    # a conta é minha, não dele. Antes o item nascia sem data e o bot
+    # perguntava "qual a data?" para algo que a pessoa acabou de falar — a
+    # forma mais rápida de parecer que não escutou.
+    # Só olha a frase inteira quando ela trata de UMA coisa só; em frase
+    # composta a data do vizinho não pode vazar pra cá.
+    if not novo.get("data_vencimento") and texto_origem:
+        alvo = novo.get("descricao") or ""
+        relativa = ai_engine.extract_due_date(alvo)
+        if not relativa and not re.search(r"\be\b|,|;|\n", texto_origem.strip()):
+            relativa = ai_engine.extract_due_date(texto_origem)
+        if relativa:
+            novo["data_vencimento"] = relativa
+            _registrar_falha("data relativa calculada em Python — o LLM "
+                             "devolveu o item sem data")
     novo.setdefault("link_afiliado",
                     ai_engine.affiliate_link_for(novo.get("descricao", "")))
     # data no passado dispara o alarme na hora e assusta o usuário
