@@ -187,6 +187,57 @@ check("_e_rotina(sem recorrencia) == False",
       not scheduler._e_rotina({"recorrencia": None}))
 
 # ---------------------------------------------------------------------------
+print("\n8c. REGRESSÃO com os dados REAIS de produção (user 23, 03/08/2026)")
+# Copiado do banco via /painel/acao. O resumo v16.0 mandou os 5; o certo é 1.
+uid_prod = novo_usuario("Kevin Producao", "5511999990007")
+PROD = [
+    # (desc, valor, venc, hora, recorrencia, deve_entrar)
+    ("Esquentar o almoço", None, "2026-08-02", "12:39", None,     False),
+    ("fruta",              None, "2026-08-03", "10:00", "diaria", False),
+    ("fruta",              None, "2026-08-03", "16:30", "diaria", False),
+    ("Cartão de débito",   None, "2026-08-03", "20:00", None,     True),
+    ("comprar frutas",     None, "2026-08-04", "12:30", None,     False),
+]
+for desc, val, venc, hora, rec, _ in PROD:
+    db.add_item(uid_prod, "lembrete", "Outros", desc, valor_reais=val,
+                data_vencimento=venc, hora_alvo=hora, recorrencia=rec)
+for desc, val, venc, hora, rec, deve in PROD:
+    got = scheduler._entra_no_resumo(
+        {"tipo": "lembrete", "categoria": "Outros", "descricao": desc,
+         "valor_reais": val, "data_vencimento": venc, "hora_alvo": hora,
+         "recorrencia": rec})
+    check(f"{'ENTRA' if deve else 'sai  '} · {desc!r}", got == deve,
+          f"veio {got}")
+msg = scheduler.montar_resumo_semanal(db.get_user(uid_prod), ref=SEG)
+check("resumo real tem exatamente 1 linha de item",
+      msg and msg.count("\n• ") == 1, f"{msg!r}")
+check("mantém o Cartão de débito", msg and "Cartão de débito" in msg)
+check("some com 'fruta'", msg and "fruta" not in msg.lower())
+check("some com 'almoço'", msg and "almo" not in msg.lower())
+print("\n--- resumo real (v16.2) ---\n" + str(msg)
+      + "\n---------------------------\n")
+
+print("\n8d. Léxico de dinheiro salva a conta mal categorizada")
+for termo in ["Boleto da faculdade", "IPVA 2026", "conta de luz",
+              "Fatura do cartao", "pagar o aluguel", "Netflix"]:
+    check(f"dinheiro: {termo!r}", scheduler._cheira_a_dinheiro(termo))
+for termo in ["comprar frutas", "ligar pra mãe", "Esquentar o almoço",
+              "levar o cachorro pra passear"]:
+    check(f"nao-dinheiro: {termo!r}",
+          not scheduler._cheira_a_dinheiro(termo))
+
+print("\n8e. Lembrete SEM hora continua entrando (é planejamento)")
+check("sem hora entra", scheduler._entra_no_resumo(
+    {"tipo": "lembrete", "categoria": "Outros", "descricao": "Levar o carro",
+     "valor_reais": None, "hora_alvo": None, "recorrencia": None}))
+check("despesa sempre entra", scheduler._entra_no_resumo(
+    {"tipo": "despesa", "categoria": "Outros", "descricao": "x",
+     "valor_reais": None, "hora_alvo": "10:00", "recorrencia": None}))
+check("com valor sempre entra", scheduler._entra_no_resumo(
+    {"tipo": "lembrete", "categoria": "Outros", "descricao": "x",
+     "valor_reais": 50.0, "hora_alvo": "10:00", "recorrencia": None}))
+
+# ---------------------------------------------------------------------------
 print("\n9. Integração: run_proactive_engine expõe resumo_dispatches")
 limpar_disparos()
 r = scheduler.run_proactive_engine(ref_date=SEG, ref_datetime=SEG_8H)

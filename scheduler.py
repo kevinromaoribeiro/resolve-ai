@@ -305,6 +305,23 @@ RESUMO_MAX_ATRASADOS = 3
 # sobre o que TEM DATA e CONSEQUÊNCIA: conta, vencimento, documento, revisão.
 RESUMO_IGNORA_RECORRENCIA = ("diaria", "horas:")
 
+# LÉXICO DE DINHEIRO.
+# Existe porque o categorizador está gravando TUDO como "Outros" — em produção,
+# "Cartão de débito" e "comprar frutas" chegam ao banco com exatamente os
+# mesmos campos (lembrete / Outros / sem valor / com hora). Sem um sinal
+# textual, ou o resumo derruba a conta junto com o recado, ou carrega os dois.
+# Isto é remendo consciente: quando `categoria` voltar a ser confiável, o
+# léxico vira rede de segurança em vez de critério principal.
+_PALAVRAS_DINHEIRO = (
+    "conta", "boleto", "fatura", "cartao", "aluguel", "parcela", "prestacao",
+    "financiamento", "seguro", "mensalidade", "ipva", "iptu", "imposto",
+    "darf", "inss", "luz", "energia", "agua", "gas", "internet", "telefone",
+    "celular", "condominio", "escola", "faculdade", "plano de saude",
+    "assinatura", "netflix", "spotify", "pagar", "pagamento", "vencimento",
+    "multa", "taxa", "emprestimo", "consorcio", "previdencia", "salario",
+)
+_CATEGORIAS_SERIAS = ("Contas", "Veículo", "Saúde", "Documento")
+
 _DIAS_SEMANA = {"segunda": 0, "terca": 1, "quarta": 2, "quinta": 3,
                 "sexta": 4, "sabado": 5, "domingo": 6}
 _DIA_CURTO = ("seg", "ter", "qua", "qui", "sex", "sáb", "dom")
@@ -350,9 +367,39 @@ def _e_rotina(item: dict) -> bool:
                for p in RESUMO_IGNORA_RECORRENCIA)
 
 
+def _cheira_a_dinheiro(descricao: Optional[str]) -> bool:
+    """A descrição indica conta/compromisso financeiro?"""
+    d = _sem_acento(descricao or "").lower()
+    return any(p in d for p in _PALAVRAS_DINHEIRO)
+
+
 def _entra_no_resumo(item: dict) -> bool:
-    """Filtro único do resumo: fora demo e fora rotina diária/horária."""
-    return not _e_demo(item) and not _e_rotina(item)
+    """Este item merece uma linha no resumo semanal?
+
+    Ordem importa. Em produção o banco chega assim (user 23, 03/08/2026):
+
+        "Esquentar o almoço"  lembrete/Outros  sem valor  12:39  —      -> não
+        "fruta"               lembrete/Outros  sem valor  10:00  diaria -> não
+        "comprar frutas"      lembrete/Outros  sem valor  12:30  —      -> não
+        "Cartão de débito"    lembrete/Outros  sem valor  20:00  —      -> SIM
+
+    Os quatro têm campos estruturados idênticos. Só o texto separa a conta do
+    recado, e o critério tem que ser explícito — não palpite de LLM.
+    """
+    if _e_demo(item) or _e_rotina(item):
+        return False
+    if item.get("tipo") in ("despesa", "documento"):
+        return True                      # dinheiro e documento sempre entram
+    if item.get("valor_reais"):
+        return True
+    if item.get("categoria") in _CATEGORIAS_SERIAS:
+        return True
+    if _cheira_a_dinheiro(item.get("descricao")):
+        return True
+    # Sobrou lembrete comum. Se tem hora marcada, é alarme de relógio: o ⏰
+    # toca na hora exata e listar de novo aqui é dizer a mesma coisa duas
+    # vezes. Sem hora, é planejamento da semana — esse sim entra.
+    return not item.get("hora_alvo")
 
 
 def _linha_item(item: dict, ref: date) -> str:
