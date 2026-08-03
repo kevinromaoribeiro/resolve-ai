@@ -713,17 +713,41 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
     # lembrete original continuava vivo, cobrando o cara de uma coisa que ele
     # já tinha feito. Aqui a leitura é determinística e ganha do modelo.
     if not result.get("concluir") and _e_conclusao_explicita(text):
-        ult = None
-        try:
-            ult = db.ultimo_item(user_id)
-        except Exception:
-            ult = None
-        if ult and ult.get("id") in ids_validos and ult.get("status") == "pendente":
-            result["concluir"] = ult["id"]
+        # QUAL ITEM? O QUE ACABOU DE ALARMAR — não o mais recente criado.
+        #
+        # Caso real (03/08, 16:50), com 5 testers já rodando:
+        #   16:47 bot   "⏰ chegou a hora: definir próxima pós graduação —
+        #                responda *feito* que eu dou baixa"
+        #   16:50 Kevin "Feito"
+        #   16:50 bot   despejou a lista inteira e não deu baixa em nada.
+        #
+        # Eu usava `ultimo_item` (o de id maior). Mas quando o alarme toca, o
+        # assunto é o item QUE TOCOU, e ele quase nunca é o último criado. O
+        # `last_alarmed_item` existe no db.py exatamente pra isso e eu não
+        # estava chamando. "Feito" é o comando mais usado do produto: falhar
+        # nele é falhar no básico.
+        alvo = None
+        for buscar in (db.ultimo_alarme_disparado, db.last_alarmed_item,
+                       db.ultimo_item):
+            try:
+                cand = buscar(user_id)
+            except Exception:
+                cand = None
+            if cand and cand.get("status") == "pendente":
+                alvo = cand
+                break
+        if alvo:
+            result["concluir"] = alvo["id"]
             _registrar_falha(f"'{text.strip()[:30]}' lido como CONCLUSÃO em "
-                             f"Python — dei baixa no #{ult['id']}")
+                             f"Python — dei baixa no #{alvo['id']} "
+                             f"({(alvo.get('descricao') or '')[:25]})")
             data["itens"] = []          # não cria item novo de "resolvi"
             data.pop("item", None)
+            # a resposta tem que DIZER o que foi dado baixa. "Você já resolveu
+            # a tarefa!" não serve: com vários lembretes abertos, o usuário
+            # fica sem saber qual saiu da lista.
+            result["reply"] = (f"Feito ✅ Dei baixa em "
+                               f"*{alvo.get('descricao') or 'item'}*.")
 
     # aceita "itens" (lista, formato atual) e "item" (singular, tolerância a
     # LLM que ignora o schema). Normaliza tudo para lista.

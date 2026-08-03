@@ -597,6 +597,30 @@ def postpone_item(item_id: int, new_date: Optional[str] = None,
             "AND sent_at >= ?", (item_id, tempo.hoje().isoformat()))
 
 
+def ultimo_alarme_disparado(user_id: int,
+                            horas: int = 12) -> Optional[dict]:
+    """Item cujo alarme REALMENTE tocou por último. Alvo natural de "feito".
+
+    `last_alarmed_item` devolve o item de maior id com hora marcada — que
+    quase nunca é o que acabou de tocar. Em 03/08, o alarme das 16:47 era
+    "definir próxima pós graduação" e a função devolvia "fruta" (id maior).
+    Resultado: o usuário respondeu "Feito" e nada saiu da lista.
+
+    Aqui a fonte é a tabela `dispatches`: quem tocou por último, tocou.
+    """
+    corte = (tempo.agora() - timedelta(hours=horas)).strftime(
+        "%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT i.* FROM dispatches d
+               JOIN items i ON i.id = d.item_id
+               WHERE d.user_id = ? AND d.kind IN ('hora','vencimento','vencido')
+                 AND d.sent_at >= ? AND i.status = 'pendente'
+               ORDER BY d.sent_at DESC, d.id DESC LIMIT 1""",
+            (user_id, corte)).fetchone()
+    return dict(row) if row else None
+
+
 def last_alarmed_item(user_id: int) -> Optional[dict]:
     """Ultimo item que o bot ALARMOU e ainda esta pendente - o alvo natural
     de um 'feito' ou 'adiar' logo apos o alarme tocar. Prioriza o item cujo

@@ -1,4 +1,4 @@
-"""
+﻿"""
 wa_bot.py — Gateway real de WhatsApp do RESOLVE AI via Evolution API (QR Code).
 
 Arquitetura:
@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v17.8-descricao-limpa-2026-08-03"
+BUILD = "v17.9-feito-da-baixa-2026-08-03"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1285,7 +1285,11 @@ try:
                              "tirei", "parei de perguntar",
                              "troquei por confirmação",
                              "troquei por confirmacao",
-                             "data relativa calculada")
+                             "data relativa calculada",
+                             # v17.9: o sistema se corrigindo não é incidente.
+                             "resposta trocada pelo real", "reancorei",
+                             "lido como CONCLUSÃO", "lido como CONCLUSAO",
+                             "fundi", "ancorei em", "hora calculada")
             if not any(p in falha_depois for p in _AUTOCORRECAO):
                 _alertar_dono(falha_depois, num, content)
         if reply:
