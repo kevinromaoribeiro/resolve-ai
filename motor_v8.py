@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 motor_v8.py — Camada de entendimento natural ("mordomo").
 ==========================================================
@@ -688,7 +688,8 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
         if n:
             _registrar_falha(f"resgatei {n} valor(es) que o LLM deixou de fora "
                              f"do campo (estavam so no texto)")
-        result["reply"] = _polir_resposta(result["reply"], result["items"])
+        result["reply"] = _polir_resposta(result["reply"], result["items"],
+                                              _ultima_fala_bot(historico), text)
         _pos_processar(result, text, fatos, itens)
 
     # INVARIANTE: prometeu guardar -> tem que ter guardado alguma coisa.
@@ -726,7 +727,8 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
             # data do pediatra?" — a mesma pergunta que o corte de pergunta
             # redundante mata em 1 linha, só que ele nunca rodava neste ramo.
             # Agora a faxina mora numa função só e os DOIS caminhos chamam.
-            result["reply"] = _polir_resposta(result["reply"], result["items"])
+            result["reply"] = _polir_resposta(result["reply"], result["items"],
+                                              _ultima_fala_bot(historico), text)
             _pos_processar(result, text, fatos, itens)
         else:
             _registrar_falha("reconsulta tambem nao devolveu item")
@@ -853,7 +855,51 @@ def _completar_ano_nas_datas(reply: str, items: list) -> str:
     return re.sub(r"\b(\d{1,2})/(\d{1,2})\b(?!/\d)", _troca, reply)
 
 
-def _polir_resposta(reply: str, items: list) -> str:
+def _confirmacao_seca(items: list) -> str:
+    """Confirmação mínima e honesta: o quê, quando. Sem pergunta nenhuma."""
+    if not items:
+        return "Anotado. ✅"
+    if len(items) == 1:
+        return f"Anotado ✅ — {_item_linha(items[0])}"
+    linhas = "\n".join(f"• {_item_linha(i)}" for i in items[:5])
+    return f"Anotado ✅ — {len(items)} itens:\n{linhas}"
+
+
+def _mesma_pergunta(a: str, b: str) -> bool:
+    """As duas mensagens são, na prática, a mesma pergunta?"""
+    def _norm(s):
+        s = _sem_acento(s or "").lower()
+        return re.sub(r"[^a-z0-9 ]", "", s).strip()
+    na, nb = _norm(a), _norm(b)
+    if not na or not nb:
+        return False
+    return na == nb or (len(na) > 12 and (na in nb or nb in na))
+
+
+def _quebrar_loop(reply: str, items: list, ultima_bot: str) -> str:
+    """Nunca faça DUAS VEZES a mesma pergunta.
+
+    Caso real (03/08, 14:08→14:09):
+        bot:    "Anotado. Qual o valor da encomenda?"
+        Kevin:  "Nao tem valor, é um lembrete apenas"
+        bot:    "Anotado. Qual o valor da encomenda?"   <- idêntico
+
+    O item já estava salvo e certo no banco. Ainda assim o bot repetiu, e do
+    lado de lá isso não parece um bug pontual — parece que o produto não
+    escuta. Uma pergunta repetida destrói mais confiança do que uma resposta
+    errada, porque a pessoa conclui que ninguém está lendo o que ela escreve.
+    Se eu ia repetir, eu paro e confirmo o que tenho.
+    """
+    if not reply or not ultima_bot:
+        return reply
+    if not _mesma_pergunta(reply, ultima_bot):
+        return reply
+    _registrar_falha("ia repetir a mesma pergunta — troquei por confirmação")
+    return _confirmacao_seca(items)
+
+
+def _polir_resposta(reply: str, items: list, ultima_bot: str = "",
+                    texto_usuario: str = "") -> str:
     """Toda a faxina de resposta, num lugar só, na ordem que importa.
 
     Existir em UM lugar é o ponto. Enquanto essa sequência estava copiada
@@ -870,6 +916,10 @@ def _polir_resposta(reply: str, items: list) -> str:
     # a frase de enchimento deixa de estar no fim e escapa da regra.
     reply = tirar_enchimento(reply)
     reply = _confirmar_todos_os_itens(reply, items)
+    # a pessoa disse "não tem valor"? então não pergunta de novo.
+    reply = _nao_insistir(reply, items, texto_usuario)
+    # por último: se mesmo assim eu ia repetir a última fala, corta o loop.
+    reply = _quebrar_loop(reply, items, ultima_bot)
     return reply
 
 
@@ -1008,7 +1058,17 @@ def _item_linha(it: dict) -> str:
     if it.get("valor_reais") is not None:
         partes.append("— *" + _moeda(it["valor_reais"]) + "*")
     if it.get("data_vencimento"):
-        partes.append("· *" + _br(it["data_vencimento"]) + "*")
+        quando = _br(it["data_vencimento"])
+        # A HORA TEM QUE APARECER.
+        # "pegar encomenda na farmácia · 03/08" não serve: o usuário pediu
+        # 14:30 e a confirmação escondia justamente o dado que ele deu. Item
+        # com hora marcada é alarme — e alarme sem hora visível não tranquiliza
+        # ninguém, que é o único motivo de existir a confirmação.
+        if it.get("hora_alvo"):
+            quando += f" às {it['hora_alvo']}"
+        partes.append("· *" + quando + "*")
+    elif it.get("hora_alvo"):
+        partes.append("· *" + str(it["hora_alvo"]) + "*")
     return " ".join(partes)
 
 
@@ -1063,26 +1123,97 @@ def _tirar_pergunta_redundante(reply: str, itens: list) -> str:
     if not m:
         return reply
     pergunta = m.group(1).strip()
-    ultima = pergunta.lower().lstrip("*_ ")
+    ultima = _sem_acento(pergunta).lower().lstrip("*_ ")
+    # "E o valor da encomenda?" começava com "e" e escapava do filtro de
+    # pedido, que só olhava "qual/quanto/quando". Conector no início não muda
+    # o que a frase pede.
+    ultima = re.sub(r"^(?:e|mas|ah|so|entao|ai|agora|ok|certo)\s+", "", ultima)
     # Só mexe em pergunta que PEDE dado ("qual o valor?", "quando vence?").
     # Oferta ("quer que eu te avise um dia antes?") é útil e fica.
-    pedido = any(ultima.startswith(p) for p in
-                 ("qual", "quais", "quanto", "quando", "me diz", "me informa",
-                  "poderia me", "pode me dizer", "voce sabe", "você sabe"))
+    pedido = (any(ultima.startswith(p) for p in
+                  ("qual", "quais", "quanto", "quando", "me diz", "me informa",
+                   "poderia me", "pode me dizer", "voce sabe", "que horas",
+                   "o valor", "o preco", "a data"))
+              # "...da encomenda, qual o valor?" — o pedido não precisa estar
+              # no começo pra ser um pedido.
+              or re.search(r"\b(qual|quanto|quando|que horas)\b", ultima))
     if not pedido:
         return reply
-    pede_valor = "valor" in ultima or "quanto" in ultima
+    # `ultima` já vem sem acento (_sem_acento acima), então "preco", não "preço".
+    pede_valor = any(p in ultima for p in
+                     ("valor", "quanto", "preco", "custou", "custa", "custo"))
     pede_data = ("data" in ultima or "vencimento" in ultima
-                 or "quando" in ultima)
+                 or "quando" in ultima or "que horas" in ultima)
     tem_valores = all(i.get("valor_reais") is not None for i in itens)
     tem_datas = all(i.get("data_vencimento") for i in itens)
+
+    # LEMBRETE NÃO TEM PREÇO.
+    # Caso real (03/08, 14:08): "me lembra hoje às 14:30 que preciso pegar
+    # minha encomenda na farmácia" -> "Anotado. Qual o valor da encomenda?".
+    # O item foi salvo certo (lembrete, hoje, 14:30). A pergunta é pura
+    # invenção: pegar encomenda não custa nada, e mesmo que custasse o
+    # usuário não pediu controle de gasto — pediu pra ser lembrado.
+    # Perguntar preço de um lembrete faz o bot parecer um formulário de
+    # cobrança, e é o tipo de atrito que faz a pessoa desistir no dia 1.
+    # Valor só é pergunta legítima em DESPESA (aí sim o número é o ponto).
+    so_lembretes = all(i.get("tipo") == "lembrete" for i in itens)
+    if pede_valor and so_lembretes and not pede_data:
+        return _limpar_sobra(corpo[:m.start(1)])
+
     redundante = ((pede_valor and tem_valores and not pede_data)
                   or (pede_data and tem_datas and not pede_valor)
                   or (pede_valor and pede_data and tem_valores and tem_datas))
     if not redundante:
         return reply
-    limpo = corpo[:m.start(1)].rstrip()
-    return limpo or reply
+    return _limpar_sobra(corpo[:m.start(1)]) or reply
+
+
+def _limpar_sobra(t: str) -> str:
+    """Depois de cortar a pergunta, não pode sobrar conector órfão.
+
+    "Anotado. E o valor?" -> cortar a pergunta deixava "Anotado. E" pendurado.
+    """
+    t = (t or "").rstrip()
+    t = re.sub(r"[\s,;:—–-]*\b(e|mas|então|entao|só|so|ah|aí|ai)\s*$", "",
+               t, flags=re.IGNORECASE)
+    return t.rstrip(" ,;:—–-\n")
+
+
+# "NÃO TEM" É UMA RESPOSTA, NÃO UMA NÃO-RESPOSTA.
+#
+# Kevin, 03/08 14:09: o bot perguntou o valor, ele respondeu "Nao tem valor,
+# é um lembrete apenas" — e o bot perguntou de novo, igual. Para o LLM aquilo
+# não pareceu resposta porque não veio número. Para qualquer pessoa, é uma
+# resposta clara e definitiva: *esse campo não existe pra esse item*.
+#
+# Isso vira função e não instrução de prompt porque prompt oscila: hoje ele
+# entende, amanhã pergunta de novo. E perguntar duas vezes a mesma coisa é o
+# defeito que mais rápido convence o usuário de que o produto não escuta.
+_RECUSA_CAMPO_RE = re.compile(
+    r"(?i)\b(?:nao|n[aã]o)\s+(?:tem|possui|h[aá]|precisa|sei|informei)\b"
+    r"|\bsem\s+(?:valor|pre[çc]o|custo|data|hora|hor[aá]rio)\b"
+    r"|\b(?:e|eh|é)\s+(?:s[oó]\s+)?(?:um\s+)?lembrete\b"
+    r"|\bn[aã]o\s+[eé]\s+(?:uma\s+)?despesa\b"
+    r"|\bdeixa\s+(?:sem|em\s+branco|assim|vazio)\b"
+    r"|\bnao\s+se\s+aplica\b|\btanto\s+faz\b|\bqualquer\s+(?:um|hora)\b")
+
+
+def usuario_recusou_campo(text: str) -> bool:
+    """A pessoa disse que o campo não existe ('não tem valor', 'é só um
+    lembrete', 'sem data'). Isso ENCERRA a pergunta — não a reabre."""
+    return bool(_RECUSA_CAMPO_RE.search(_sem_acento(text or "")))
+
+
+def _nao_insistir(reply: str, items: list, texto_usuario: str) -> str:
+    """Se a pessoa acabou de dizer 'não tem', a resposta não pode perguntar
+    de novo. Confirma o que existe e sai do caminho."""
+    if not reply or not usuario_recusou_campo(texto_usuario):
+        return reply
+    if "?" not in reply:
+        return reply
+    _registrar_falha("usuario disse que o campo nao existe — parei de perguntar")
+    seca = _confirmacao_seca(items)
+    return f"{seca}\n\nSe quiser completar depois, é só me mandar."
 
 
 _VERBOS_ASSUNTO_NOVO = (
