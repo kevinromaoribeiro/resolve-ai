@@ -361,7 +361,8 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
         return None
 
 
-def _preparar_item(novo: dict, ai_engine) -> Optional[dict]:
+def _preparar_item(novo: dict, ai_engine,
+                   texto_origem: str = "") -> Optional[dict]:
     """Normaliza um item vindo do LLM para o formato que o banco aceita.
 
     Um único lugar faz isso: quando havia duas cópias dessa lógica, uma delas
@@ -377,8 +378,23 @@ def _preparar_item(novo: dict, ai_engine) -> Optional[dict]:
     if novo.get("status") not in ("pendente", "concluido", "aglutinado",
                                   "vencido"):
         novo["status"] = "pendente"
-    if not novo.get("categoria"):
-        novo["categoria"] = "Outros"
+    # CATEGORIA: função, não prompt.
+    # O v8 confiava no LLM devolver `categoria` no JSON. Ele quase nunca
+    # devolvia, e este `if` simplesmente carimbava "Outros". Resultado medido
+    # em produção (03/08/2026): TODOS os itens do banco em "Outros" — inclusive
+    # "Cartão de débito", que a `classify_category` do ai_engine acerta em
+    # cheio, porque "cartao" está na lista de Contas desde sempre. A função
+    # certa existia e ninguém chamava neste caminho.
+    # Consequência: o painel de gastos por categoria vira uma barra só, e o
+    # resumo semanal não consegue separar conta de recado.
+    _CATS = ("Alimentação", "Pet", "Veículo", "Contas", "Saúde", "Casa",
+             "Lazer", "Outros")
+    cat = novo.get("categoria")
+    if cat not in _CATS or cat == "Outros":
+        # classifica sobre descrição + texto original: "me lembra do cartão
+        # de débito dia 20" tem o sinal na frase inteira, não só no resumo.
+        base = f"{novo.get('descricao', '')} {texto_origem}"
+        novo["categoria"] = ai_engine.classify_category(base)
     novo.setdefault("hora_alvo", None)
     novo.setdefault("valor_reais", None)
     novo.setdefault("data_vencimento", None)
@@ -619,7 +635,7 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
     if (intent in ("registro", "resposta") and novos
             and not result.get("atualizar")):
         for novo in novos[:10]:
-            pronto = _preparar_item(novo, ai_engine)
+            pronto = _preparar_item(novo, ai_engine, texto_origem=text)
             if pronto:
                 result["items"].append(pronto)
 
@@ -650,7 +666,7 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
         if isinstance(corrigido, dict) and isinstance(corrigido.get("itens"), list) \
                 and corrigido["itens"]:
             for novo in corrigido["itens"][:10]:
-                pronto = _preparar_item(novo, ai_engine)
+                pronto = _preparar_item(novo, ai_engine, texto_origem=text)
                 if pronto:
                     result["items"].append(pronto)
             if corrigido.get("reply"):
@@ -1095,40 +1111,108 @@ def _responder_com_busca(text: str, nome: str) -> Optional[str]:
         from litellm import completion
     except Exception:
         return None
-    try:
-        resp = completion(
-            model=_MODELO_BUSCA,
-            max_tokens=500,
-            messages=[
-                {"role": "system", "content": (
-                    "Você é o Resolve AI, um mordomo pessoal no WhatsApp. "
-                    "Responda a pergunta do usuário com informação ATUAL, "
-                    "buscando na web. Em português do Brasil.\n"
-                    "REGRAS: responda em no máximo 3 linhas curtas, direto ao "
-                    "ponto, sem citar fontes nem colar link. Negrito do "
-                    "WhatsApp é *asterisco simples*. Se a busca não trouxer "
-                    "certeza, diga que não achou — nunca invente.\n"
-                    "Depois da resposta, pule uma linha e puxe UMA frase curta "
-                    "para o que você faz: não deixar ele esquecer conta, "
-                    "remédio, consulta e recompra.")},
-                {"role": "user", "content": text},
-            ],
-        )
-        txt = (resp.choices[0].message.content or "").strip()
-        return txt or None
-    except Exception as e:
-        _registrar_falha(f"busca web indisponivel ({_MODELO_BUSCA}): {e!r}")
-        return None
+    # DUAS TENTATIVAS. Medido em produção (03/08/2026): 08:46 a mesma pergunta
+    # caiu no "não acesso notícia" e 08:55 respondeu certo. Não era o gatilho —
+    # era a chamada de busca falhando de forma intermitente e o usuário levando
+    # uma desculpa permanente por uma falha temporária. Isso é pior que não
+    # responder: ensina o usuário que o bot não sabe, quando ele sabe.
+    ultimo_erro = None
+    for tentativa in range(2):
+        try:
+            resp = completion(
+                model=_MODELO_BUSCA,
+                max_tokens=500,
+                messages=[
+                    {"role": "system", "content": (
+                        "Você é o Resolve AI, um mordomo pessoal no WhatsApp. "
+                        "Responda a pergunta do usuário com informação ATUAL, "
+                        "buscando na web. Em português do Brasil.\n"
+                        "REGRAS: responda em no máximo 3 linhas curtas, direto "
+                        "ao ponto, sem citar fontes nem colar link. Negrito do "
+                        "WhatsApp é *asterisco simples*. NUNCA use títulos "
+                        "markdown (##), listas com hífen nem colchetes. Se a "
+                        "busca não trouxer certeza, diga que não achou — nunca "
+                        "invente.\n"
+                        "Depois da resposta, pule uma linha e puxe UMA frase "
+                        "curta para o que você faz: não deixar ele esquecer "
+                        "conta, remédio, consulta e recompra.")},
+                    {"role": "user", "content": text},
+                ],
+            )
+            txt = (resp.choices[0].message.content or "").strip()
+            txt = _limpar_saida_busca(txt)
+            if txt:
+                return txt
+            ultimo_erro = "resposta vazia"
+        except Exception as e:
+            ultimo_erro = repr(e)
+    _registrar_falha(f"busca web falhou 2x ({_MODELO_BUSCA}): {ultimo_erro}")
+    return None
+
+
+# Lixo que o modelo de busca cola na resposta mesmo mandado não colar.
+# Instrução em prompt não segura formatação — isso é trabalho de função.
+_RE_MD_HEADER = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
+_RE_MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?|www)[^)]*\)")
+_RE_URL_CRU = re.compile(r"https?://\S+|\bwww\.\S+")
+_RE_UTM = re.compile(r"[?&]utm_[^\s)]*")
+_RE_BULLET_MD = re.compile(r"^\s*[-*+•]\s+", re.MULTILINE)
+_RE_NEGRITO_MD = re.compile(r"\*\*([^*]+)\*\*")
+_RE_LINHAS_VAZIAS = re.compile(r"\n{3,}")
+# frases que só existem para segurar um link
+_RE_CHAMADA_LINK = re.compile(
+    r"(?im)^\s*(?:veja\s+mais|saiba\s+mais|leia\s+mais|mais\s+em|fonte|fontes|"
+    r"refer[êe]ncias?|link|dispon[íi]vel)\s*(?:em|:)?\s*(?=https?://|www\.|$).*$")
+# títulos de seção que o modelo de busca cola por conta própria
+_RE_CABECALHO_LIXO = re.compile(
+    r"(?im)^\s*(?:highlights?|sources?|citations?|refer[êe]ncias?|fontes?|"
+    r"resumo|summary|key\s+points?)\s*:?\s*$\n?")
+
+
+def _limpar_saida_busca(txt: str) -> str:
+    """Tira markdown e link da resposta de busca antes de ir pro WhatsApp.
+
+    O WhatsApp não renderiza markdown: "## Highlights" chega literalmente
+    como "## Highlights", e link cru vira um paredão azul de 120 caracteres
+    que ocupa metade da tela do celular. Foi exatamente o que o usuário 23
+    recebeu em 03/08.
+    """
+    if not txt:
+        return ""
+    t = _RE_MD_LINK.sub(r"\1", txt)      # [texto](url) -> texto
+    t = _RE_UTM.sub("", t)
+    # "Veja mais em <url>" sem a url vira "Veja mais em" pendurado. Mata a
+    # frase inteira, não só o link.
+    t = _RE_CHAMADA_LINK.sub("", t)
+    t = _RE_URL_CRU.sub("", t)           # url solta some
+    t = _RE_MD_HEADER.sub("", t)         # ## Titulo -> Titulo
+    # depois de tirar o "##": a linha vira "Highlights" pelada. Só agora dá
+    # pra reconhecer e matar o cabeçalho.
+    t = _RE_CABECALHO_LIXO.sub("", t)    # "Highlights", "Sources", "Fontes"
+    t = _RE_NEGRITO_MD.sub(r"*\1*", t)   # **x** -> *x* (negrito do zap)
+    t = _RE_BULLET_MD.sub("• ", t)       # - item -> • item
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    t = re.sub(r"\(\s*\)|\[\s*\]", "", t)   # parênteses/colchete órfãos
+    t = re.sub(r"[ \t]+\n", "\n", t)
+    t = _RE_LINHAS_VAZIAS.sub("\n\n", t)
+    return t.strip(" \n·-—")
 
 
 def _resposta_nao_sei_do_mundo(nome: str) -> dict:
+    """Chamado quando a BUSCA FALHOU — não quando o bot não sabe buscar.
+
+    A mensagem antiga dizia "eu não acesso notícia em tempo real". Isso é
+    mentira desde o v15: ele acessa. Quando a busca cai por 30 segundos, o
+    usuário recebia uma limitação permanente inventada e nunca mais tentava.
+    Falha temporária tem que soar temporária.
+    """
     return {
-        "reply": ("Essa eu não tenho como te responder: eu não acesso "
-                  "notícia, resultado nem cotação em tempo real — e prefiro "
-                  "dizer que não sei a te dar um número errado.\n\n"
-                  "No que eu sou bom: não deixar você esquecer conta, "
-                  "remédio, consulta e recompra. Quer que eu guarde algo?"),
-        "items": [], "needs_decision": False, "mode": "v8_fora_do_meu_alcance",
+        "reply": (f"Minha busca falhou agora, {nome} — e eu prefiro te dizer "
+                  f"isso a chutar um resultado errado. Manda de novo daqui a "
+                  f"pouco que eu procuro.\n\n"
+                  f"Enquanto isso: quer que eu guarde alguma conta, consulta "
+                  f"ou lembrete pra você?"),
+        "items": [], "needs_decision": False, "mode": "v8_busca_falhou",
     }
 
 

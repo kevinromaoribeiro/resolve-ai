@@ -90,12 +90,25 @@ CATEGORY_KEYWORDS = {
                 "combustível", "combustivel", "troca de óleo", "alinhamento"],
     "Contas": ["luz", "energia", "água", "agua", "internet", "boleto",
                "fatura", "conta", "aluguel", "condomínio", "condominio",
-               "cartão", "cartao", "iptu", "telefone", "celular"],
+               "cartão", "cartao", "iptu", "telefone", "celular",
+               # v16.3: faltavam os mais óbvios de conta doméstica brasileira
+               "débito", "debito", "crédito", "credito", "parcela",
+               "prestação", "prestacao", "financiamento", "empréstimo",
+               "emprestimo", "mensalidade", "assinatura", "seguro",
+               "imposto", "darf", "inss", "fgts", "taxa", "multa",
+               "escola", "faculdade", "creche", "consórcio", "consorcio",
+               "pix", "transferência", "transferencia", "banco", "nubank",
+               "itaú", "itau", "bradesco", "santander", "caixa", "inter"],
     "Alimentação": ["mercado", "supermercado", "feira", "comida", "almoço",
                     "almoco", "jantar", "ifood", "padaria", "café", "cafe",
-                    "restaurante", "pizza", "lanche"],
+                    "restaurante", "pizza", "lanche", "fruta", "frutas",
+                    "verdura", "legume", "carne", "açougue", "acougue",
+                    "hortifruti", "sacolão", "sacolao", "janta", "marmita",
+                    "rappi", "delivery", "hambúrguer", "hamburguer"],
     "Lazer": ["cinema", "show", "viagem", "streaming", "netflix", "spotify",
-              "jogo", "playstation", "xbox", "bar", "parque"],
+              "jogo", "playstation", "xbox", "bar", "parque", "disney",
+              "prime video", "hbo", "max", "teatro", "balada", "festa",
+              "aniversário", "aniversario", "praia", "hotel", "airbnb"],
 }
 
 MONTHS_PT = {
@@ -330,13 +343,46 @@ def extract_due_time(text: str, ref: Optional[datetime] = None) -> Optional[str]
     return None
 
 
+# Termos FRACOS: aparecem em qualquer frase e sequestram a classificação.
+# "assinatura da netflix" tem "assinatura" (Contas) e "netflix" (Lazer).
+# Contando igual, o genérico ganhava e o gasto ia parar em Contas — errado
+# num painel de gastos, onde streaming é Lazer. Genérico só decide quando
+# nenhum termo forte apareceu ("assinatura do jornal" -> Contas, correto).
+_KEYWORDS_GENERICAS = {
+    "conta", "taxa", "assinatura", "mensalidade", "parcela", "seguro",
+    "imposto", "banco", "pix", "transferência", "transferencia", "multa",
+    "comida", "jogo", "bar", "pet", "carro", "km", "consulta", "exame",
+}
+
+
 def classify_category(text: str) -> str:
+    """Categoria pelo termo MAIS ESPECÍFICO encontrado no texto.
+
+    Antes contava só quantas palavras batiam, e empate era decidido pela ordem
+    do dicionário — silenciosamente. "assinatura da netflix" batia 1 em Contas
+    ("assinatura") e 1 em Lazer ("netflix") e caía em Contas porque Contas vem
+    antes. Errado: "netflix" é um sinal muito mais forte que "assinatura".
+    Agora o desempate é pelo tamanho do termo casado — termo específico
+    ("netflix", "troca de óleo") ganha de termo genérico ("conta", "taxa").
+    """
     low = text.lower()
-    scores = {cat: sum(1 for kw in kws
-                       if re.search(rf"\b{re.escape(kw)}\b", low))
-              for cat, kws in CATEGORY_KEYWORDS.items()}
-    best = max(scores, key=lambda c: scores[c])
-    return best if scores[best] > 0 else "Outros"
+
+    def _pontuar(incluir_genericas: bool) -> dict:
+        placar = {}
+        for cat, kws in CATEGORY_KEYWORDS.items():
+            n = sum(1 for kw in kws
+                    if (incluir_genericas or kw not in _KEYWORDS_GENERICAS)
+                    and re.search(rf"\b{re.escape(kw)}\b", low))
+            if n:
+                placar[cat] = n
+        return placar
+
+    # 1ª passada só com termos fortes; genéricos são desempate de última hora.
+    for incluir in (False, True):
+        placar = _pontuar(incluir)
+        if placar:
+            return max(placar, key=lambda c: placar[c])
+    return "Outros"
 
 
 def affiliate_link_for(text: str) -> Optional[str]:

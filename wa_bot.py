@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v16.2-resumo-filtrado-2026-08-03"
+BUILD = "v16.3-nome-categoria-busca-2026-08-03"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -300,6 +300,27 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 "*assinar* · *cancelar* · *apagar meus dados* · "
                 "*privacidade* · *ajuda*")
 
+    # --- "meu nome é X" / "me chama de X" ----------------------------------
+    # v16.3. Nasceu do bug do "Feito", mas não é remendo: o usuário TEM que
+    # poder corrigir como o bot o chama, sem depender do dono do sistema mexer
+    # no banco. É a única informação que o bot repete em toda mensagem.
+    # Em Python e não no LLM: um nome trocado errado é pior que nome errado.
+    m = _RENOMEAR_RE.match(text.strip())
+    if m:
+        novo = m.group("nome").strip(" .!?,;\"'")[:60]
+        if _is_not_a_name(novo) or len(novo) < 2:
+            return (f"Esse não parece um nome — não vou te chamar de "
+                    f"_\"{novo}\"_. 😅 Manda de novo: *meu nome é ...*")
+        anterior = user.get("nome") or ""
+        db.update_user_fields(user["id"], nome=novo)
+        # nome corrigido no meio do cadastro conclui o passo
+        if user.get("onboarding_step") == "nome":
+            db.update_user_fields(user["id"], onboarding_step="interesses")
+            return _interesses_menu(novo.split()[0])
+        return (f"Pronto, agora é *{novo.split()[0]}*. "
+                f"{'Eu vinha te chamando de ' + anterior.split()[0] + ' — foi mal. ' if anterior and anterior.split()[0].lower() != novo.split()[0].lower() else ''}"
+                f"Anotado pra sempre. ✅")
+
     # --- admin: "ativar 5511999990000" -------------------------------------
     if ADMIN_PHONE and phone == ADMIN_PHONE and low.startswith("ativar"):
         target = re.sub(r"\D", "", text)
@@ -311,6 +332,14 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
 
     return None
 
+
+_RENOMEAR_RE = re.compile(
+    r"^\s*(?:meu\s+nome\s+(?:é|e|eh)|me\s+chama(?:r)?\s+de|"
+    r"pode\s+me\s+chamar\s+de|na\s+verdade\s+(?:meu\s+nome\s+(?:é|e)|"
+    r"me\s+chamo)|meu\s+nome\s+n[ãa]o\s+é\s+.*?[,;]\s*(?:é|e)|"
+    r"me\s+chamo|prefiro\s+ser\s+chamad[oa]\s+de|"
+    r"troca\s+meu\s+nome\s+(?:para|pra))\s+(?P<nome>.{2,60})$",
+    re.IGNORECASE)
 
 _LOOKS_LIKE_QUESTION = re.compile(
     r"(\?|^(quem|qual|quais|quando|onde|como|quanto|quantos|quantas|"
@@ -326,9 +355,28 @@ _SAUDACOES = {"oi", "ola", "olá", "opa", "eai", "eaí", "e ai", "e aí", "eii",
               "teste", "testando", "oii", "oiii", "olar", "helloo"}
 
 # palavras que NUNCA são nome (verbos/comandos comuns no início)
+#
+# v16.3 — ESTA LISTA CUSTOU CARO.
+# Em produção o usuário 23 estava cadastrado com o nome "Feito": ele respondeu
+# "feito" (dando baixa num lembrete) enquanto o onboarding esperava o nome, e
+# o validador deixou passar porque só conhecia saudação e verbo de pedido —
+# não conhecia as PRÓPRIAS PALAVRAS DE COMANDO do bot. A partir daí todo
+# resumo, todo alarme e todo bom-dia saíam com "Bom dia, Feito.".
+# Regra: se a palavra é um comando que o bot entende, ela não pode ser nome.
+_COMANDOS_DO_BOT = {"feito", "feita", "pronto", "pronta", "pago", "paga",
+                    "paguei", "resolvido", "resolvida", "concluido",
+                    "concluído", "concluida", "concluída", "ok", "okay",
+                    "adiar", "adia", "adiado", "cancelar", "cancela",
+                    "apagar", "apaga", "deletar", "remover", "listar",
+                    "lista", "itens", "status", "parar", "pausar", "sair",
+                    "assinar", "pagar", "comprar", "sim", "não", "nao",
+                    "nenhum", "nada", "tudo", "todos", "reset", "resetar"}
 _NAO_NOME_PALAVRAS = {"quero", "preciso", "pode", "queria", "gostaria",
-                      "me", "sim", "não", "nao", "ok", "legal", "bora",
-                      "vamos", "legal", "help", "ajuda", "menu", "start", "começar"}
+                      "me", "legal", "bora", "vamos", "help", "ajuda",
+                      "menu", "start", "começar", "comecar", "obrigado",
+                      "obrigada", "valeu", "vlw", "certo", "claro",
+                      "entendi", "aham", "uhum", "kkk", "kk", "haha",
+                      } | _COMANDOS_DO_BOT
 
 
 def _is_not_a_name(text: str) -> bool:
