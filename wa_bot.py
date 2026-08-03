@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v17.3-conserta-persona-2026-08-03"
+BUILD = "v17.4-alerta-so-de-falha-real-2026-08-03"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1275,7 +1275,17 @@ try:
             # sinal no meio do ruído.
             _AUTOCORRECAO = ("reconsultando", "remendado", "resgatei",
                              "atualizei em vez de duplicar", "descartada",
-                             "bloqueada")
+                             "bloqueada",
+                             # v17.4 — as auto-correções novas também são
+                             # SUCESSO, não falha. Sem isto o dono recebe um
+                             # ⚠️ a cada mensagem que o sistema arrumou
+                             # sozinho, e alerta que toca sempre é alerta que
+                             # ninguém lê — some com o sinal de verdade.
+                             "completei na mão", "completei na mao",
+                             "tirei", "parei de perguntar",
+                             "troquei por confirmação",
+                             "troquei por confirmacao",
+                             "data relativa calculada")
             if not any(p in falha_depois for p in _AUTOCORRECAO):
                 _alertar_dono(falha_depois, num, content)
         if reply:
