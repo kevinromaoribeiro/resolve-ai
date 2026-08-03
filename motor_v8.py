@@ -1179,7 +1179,23 @@ def _limpar_saida_busca(txt: str) -> str:
     """
     if not txt:
         return ""
-    t = _RE_MD_LINK.sub(r"\1", txt)      # [texto](url) -> texto
+    # 1) LINHA QUE SÓ EXISTIA PRA SEGURAR LINK MORRE INTEIRA.
+    # Tirar só a URL deixava o cadáver: "• ¡¡España, campeona del mundo!!
+    # 'Ha ganado el fútbol', Publicado en Sunday, July 19" — uma citação em
+    # espanhol pendurada no fim da resposta. Foi o que chegou no zap às 10:42.
+    linhas = []
+    for linha in txt.split("\n"):
+        tem_link = bool(_RE_MD_LINK.search(linha) or _RE_URL_CRU.search(linha))
+        if tem_link:
+            e_bullet = bool(re.match(r"^\s*[-*+•]\s", linha))
+            se_tirar = _RE_URL_CRU.sub("", _RE_MD_LINK.sub("", linha)).strip()
+            # bullet com link = citação. Sobra curta = a linha era o link.
+            if e_bullet or len(se_tirar) < 25:
+                continue
+        linhas.append(linha)
+    t = "\n".join(linhas)
+
+    t = _RE_MD_LINK.sub(r"\1", t)        # [texto](url) -> texto
     t = _RE_UTM.sub("", t)
     # "Veja mais em <url>" sem a url vira "Veja mais em" pendurado. Mata a
     # frase inteira, não só o link.
@@ -1195,7 +1211,40 @@ def _limpar_saida_busca(txt: str) -> str:
     t = re.sub(r"\(\s*\)|\[\s*\]", "", t)   # parênteses/colchete órfãos
     t = re.sub(r"[ \t]+\n", "\n", t)
     t = _RE_LINHAS_VAZIAS.sub("\n\n", t)
-    return t.strip(" \n·-—")
+    t = t.strip(" \n·-—")
+
+    # 2) TAMANHO É FUNÇÃO, NÃO PEDIDO.
+    # O prompt manda "máximo 3 linhas curtas" desde sempre. Em 03/08 o modelo
+    # devolveu três parágrafos sobre Bola de Ouro, premiação em dólar e
+    # artilheiro. No celular isso é uma parede de texto — e um mordomo que
+    # responde como enciclopédia deixa de parecer mordomo.
+    return _cortar_resposta_busca(t)
+
+
+LIMITE_RESPOSTA_BUSCA = 420     # ~4 linhas no celular
+_GANCHO_BUSCA = ("\n\nPosso te ajudar com o que eu faço melhor: guardar "
+                 "conta, consulta e lembrete. Quer anotar algo?")
+
+
+def _cortar_resposta_busca(t: str) -> str:
+    """Corta em fronteira de frase, nunca no meio da palavra, e devolve o
+    gancho do produto — que o modelo esquece quando se empolga."""
+    if not t:
+        return ""
+    corpo = t
+    if len(corpo) > LIMITE_RESPOSTA_BUSCA:
+        # tenta cortar no fim da última frase que cabe
+        pedaco = corpo[:LIMITE_RESPOSTA_BUSCA]
+        corte = max(pedaco.rfind(". "), pedaco.rfind(".\n"),
+                    pedaco.rfind("! "), pedaco.rfind("? "))
+        corpo = (pedaco[:corte + 1] if corte > 80
+                 else pedaco.rsplit(" ", 1)[0] + "…")
+    corpo = corpo.strip()
+    baixo = corpo.lower()
+    if not any(p in baixo for p in ("lembr", "anotar", "anoto", "guardar",
+                                    "guardo", "conta", "consulta")):
+        corpo += _GANCHO_BUSCA
+    return corpo
 
 
 def _resposta_nao_sei_do_mundo(nome: str) -> dict:

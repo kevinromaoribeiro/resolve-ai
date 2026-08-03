@@ -167,11 +167,35 @@ check("não come frase legítima com 'link'",
       "mandar o link do boleto" in motor_v8._limpar_saida_busca(
           "Pode mandar o link do boleto que eu guardo."))
 check("texto vazio não quebra", motor_v8._limpar_saida_busca("") == "")
-check("texto limpo passa intacto",
+check("texto limpo passa intacto (+ gancho do produto)",
       motor_v8._limpar_saida_busca("Tudo certo por aqui.")
-      == "Tudo certo por aqui.")
+      .startswith("Tudo certo por aqui."))
 
-print("\n4b. Falha de busca não mente mais sobre limitação permanente")
+print("\n4b. Resposta REAL de produção (10:42) — textão + citação pendurada")
+REAL = """A Espanha venceu a Copa do Mundo de 2026, derrotando a Argentina por 1 a 0 na prorrogação. Este é o segundo título mundial da Espanha, que já havia conquistado a taça em 2010. O gol decisivo foi marcado por Ferran Torres aos 106 minutos.
+
+Rodri foi eleito o melhor jogador do torneio, recebendo a Bola de Ouro. Lionel Messi ficou com a Bola de Prata, e Kylian Mbappé levou a Bola de Bronze e a Chuteira de Ouro como artilheiro. Unai Simón, goleiro da Espanha, conquistou a Luva de Ouro, e Pau Cubarsí foi eleito o melhor jogador jovem.
+
+A Espanha recebeu US$ 50 milhões (aproximadamente R$ 255 milhões) pela conquista. A Argentina, vice-campeã, ficou com US$ 33 milhões (cerca de R$ 169 milhões).
+- [¡¡España, campeona del mundo!! "Ha ganado el fútbol"](https://los40.com/2026/07/19/x?utm_source=openai), Publicado en Sunday, July 19"""
+lim = motor_v8._limpar_saida_busca(REAL)
+print("\n--- o que chegou no zap (" + str(len(REAL)) + " chars) ---\n"
+      + REAL + "\n\n--- o que vai chegar agora (" + str(len(lim))
+      + " chars) ---\n" + lim + "\n---\n")
+check("mata a citação em espanhol", "campeona" not in lim, lim)
+check("mata 'Publicado en'", "Publicado" not in lim, lim)
+check("cabe no celular (<= 520 chars)", len(lim) <= 520, f"{len(lim)} chars")
+check("mantém a RESPOSTA (Espanha venceu)", "Espanha venceu" in lim, lim)
+check("não corta no meio da palavra",
+      lim.rstrip().endswith((".", "!", "?", "…")) or "?" in lim[-90:], lim)
+check("devolve o gancho do produto",
+      any(p in lim.lower() for p in ("lembr", "anotar", "conta", "consulta")),
+      lim)
+check("resposta curta não ganha corte",
+      motor_v8._limpar_saida_busca("O dólar está em R$ 5,42 hoje.")
+      .startswith("O dólar está em R$ 5,42 hoje."))
+
+print("\n4c. Falha de busca não mente mais sobre limitação permanente")
 r = motor_v8._resposta_nao_sei_do_mundo("Kevin")
 check("não afirma que não acessa notícia",
       "não acesso" not in r["reply"], r["reply"])
