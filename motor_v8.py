@@ -91,7 +91,21 @@ Intenções:
 
 === REGRAS QUE NÃO PODEM SER QUEBRADAS ===
 0. REGISTRE PRIMEIRO, PERGUNTE DEPOIS. Se ele pediu para lembrar/anotar algo, crie o item JÁ, mesmo sem valor e sem data — lembrete sem valor continua sendo lembrete. Só depois pergunte o que falta, deixando claro que já está guardado ("Anotado. Qual o valor?"). NUNCA responda só com pergunta sem ter criado nada: é isso que faz a resposta dele virar item duplicado em vez de completar o primeiro.
-0b. NÃO PERGUNTE VALOR DE COISA QUE NÃO TEM VALOR. Remédio, consulta médica, dentista, aniversário, reunião, troca de óleo: o que importa é DIA e HORA, não preço. Perguntar "qual o valor?" para "tomar losartana às 7h30" faz você parecer burro e é o tipo de coisa que faz o usuário desistir. Só pergunte valor de conta/boleto/fatura/compra.
+0a. LEMBRETE NÃO É CONTA. Olhe o campo "tipo" de cada item:
+   · tipo=despesa (boleto, fatura, IPTU, cartão) -> pode falar em "pagar", "já pagou?", "contas a pagar".
+   · tipo=lembrete (esquentar o almoço, comprar frutas, ir ao terreiro, tomar remédio, pegar o cartão) -> NUNCA chame de conta, NUNCA pergunte "já pagou?", NUNCA diga "contas pendentes". Diga "lembretes" ou "o que você tem pra hoje".
+   Chamar "esquentar o almoço" de conta pendente e perguntar se ele pagou é o tipo de erro que faz a pessoa achar que você não entendeu nada — e ela tem razão.
+0a2. NÃO cobre nem pergunte sobre item cuja DATA AINDA NÃO CHEGOU. Se vence dia 20 e hoje é dia 3, não pergunte se já resolveu: só está guardado, não está atrasado. Cobrança antes da hora irrita.
+0b. O QUE PERGUNTAR DEPENDE DA COISA. Olhe o que ele falou e responda como gente:
+   · Tem dinheiro envolvido ("*pagar* o terreiro", "*pagar* a diarista", boleto, fatura, mensalidade)? Pergunte o VALOR — mesmo que não seja boleto de banco. "Pagar" é pagamento.
+   · Não tem dinheiro ("esquentar o almoço", "tomar losartana", "ligar pra minha mãe", "levar o cachorro")? NUNCA pergunte valor. O que importa é dia e hora, e você já tem.
+   Perguntar "qual o valor?" para "esquentar o almoço" faz você parecer burro; não perguntar o valor do terreiro te faz inútil na hora de somar os gastos.
+
+0d. NA HORA DE COBRAR/CONFIRMAR, FALE DA COISA, não do sistema. Use o que ele escreveu:
+   · "esquentar o almoço" -> "Você já almoçou? Posso dar como feito?"
+   · "pagar o terreiro" -> "Conseguiu pagar o terreiro?"
+   · "comprar frutas" -> "Passou no mercado? Posso tirar da lista?"
+   Nunca "item concluído", "deseja marcar como pago", nem menu. É conversa, não formulário.
 0c. Se você já tem tudo que precisa, NÃO pergunte nada. Confirme e pare. Pergunta só quando falta informação que muda o que você vai fazer.
 1. Se a sua última mensagem terminou com PERGUNTA, a mensagem do usuário é a RESPOSTA dela. Nunca trate como assunto novo.
 1b. Mas se a mensagem dele ANUNCIA um fato novo ("marquei...", "troquei...", "comprei...", "paguei..."), é assunto NOVO mesmo vindo logo depois da sua pergunta. Crie o item novo e, se ainda faltar a resposta da pergunta anterior, deixe pra lá — não force.
@@ -196,7 +210,11 @@ def _fmt_itens(itens: list) -> str:
         return "(nada anotado no momento)"
     linhas = []
     for it in itens:
-        partes = [f"id={it.get('id')}", str(it.get("descricao") or "?")]
+        # o tipo PRECISA aparecer: sem ele o mordomo chamou "esquentar o
+        # almoço" de conta pendente e perguntou se o usuário já tinha pago.
+        partes = [f"id={it.get('id')}",
+                  f"tipo={it.get('tipo') or 'lembrete'}",
+                  str(it.get("descricao") or "?")]
         # valor ausente: omitir. Se escrevermos "valor não informado" aqui, o
         # LLM repete isso para o usuário — foi o que aconteceu no teste.
         if it.get("valor_reais") is not None:
@@ -448,6 +466,15 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
         fatos = db.fatos(user_id, limite=40)
     except Exception:
         fatos = []
+
+    # ANTES de tudo: pergunta sobre fato do mundo que muda (placar, campeão,
+    # eleição, cotação, notícia) não passa pelo modelo. Ele tem data de corte
+    # e responde com convicção coisa errada — foi assim que disse que a
+    # última Copa foi 2022 da França e que a de 2026 "ainda não aconteceu".
+    # Errar o básico faz o usuário duvidar de TODO o resto que a gente diz.
+    if _pergunta_fato_do_mundo(text):
+        _registrar_falha(f"pergunta de fato do mundo bloqueada: {text[:60]}")
+        return _resposta_nao_sei_do_mundo(user_name)
 
     pergunta_aberta = _tem_pergunta_aberta(historico)
     classic_intent = ai_engine.detect_intent(text)
@@ -1014,6 +1041,46 @@ def _ja_existe(descricao: str, itens: list) -> Optional[dict]:
         if comuns and len(comuns) >= min(len(novas), len(antigas)):
             return it   # todas as palavras significativas batem
     return None
+
+
+_FATO_QUE_MUDA = (
+    "copa do mundo", "campeonato", "brasileirao", "brasileirão", "libertadores",
+    "champions", "quem ganhou", "quem venceu", "quem foi campeao",
+    "quem foi campeão", "campeao", "campeão", "placar", "resultado do jogo",
+    "que horas joga", "eleicao", "eleição", "presidente do brasil",
+    "quem e o presidente", "quem é o presidente", "cotacao", "cotação",
+    "dolar hoje", "dólar hoje", "bitcoin", "selic", "noticia", "notícia",
+    "ultimas noticias", "últimas notícias", "quanto custa hoje",
+    "preco de hoje", "preço de hoje", "bolsa hoje", "ibovespa",
+)
+
+
+def _pergunta_fato_do_mundo(text: str) -> bool:
+    """Pergunta sobre fato do mundo que MUDA com o tempo?
+
+    Caso real e vergonhoso: perguntado quem ganhou a última Copa, respondeu
+    "2022, a França" — errado duas vezes (foi a Argentina, e já houve a Copa
+    de 2026). Depois afirmou que a Copa de 2026 "ainda não aconteceu",
+    estando em agosto de 2026.
+
+    O modelo tem data de corte: ele sabe o dia de hoje porque eu escrevo no
+    prompt, mas o conhecimento de mundo dele parou no passado. Resultado,
+    placar, eleição, cotação e notícia ele NÃO tem como saber — e chutar
+    sobre isso destrói a confiança em tudo o mais que ele diz.
+    """
+    low = _sem_acento(text or "").lower()
+    return any(_sem_acento(p) in low for p in _FATO_QUE_MUDA)
+
+
+def _resposta_nao_sei_do_mundo(nome: str) -> dict:
+    return {
+        "reply": ("Essa eu não tenho como te responder: eu não acesso "
+                  "notícia, resultado nem cotação em tempo real — e prefiro "
+                  "dizer que não sei a te dar um número errado.\n\n"
+                  "No que eu sou bom: não deixar você esquecer conta, "
+                  "remédio, consulta e recompra. Quer que eu guarde algo?"),
+        "items": [], "needs_decision": False, "mode": "v8_fora_do_meu_alcance",
+    }
 
 
 def _multi_item(text: str) -> bool:

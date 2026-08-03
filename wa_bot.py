@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v13.0-alerta-dono-2026-08-01"
+BUILD = "v14.0-nao-chuta-fato-2026-08-03"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1148,7 +1148,16 @@ try:
 
         falha_depois = getattr(motor_v8, "ULTIMA_FALHA", "")
         if falha_depois and falha_depois != falha_antes:
-            _alertar_dono(falha_depois, num, content)
+            # Só alerta o que REALMENTE machucou o usuário. Reconsulta que
+            # deu certo, valor resgatado, duplicata evitada e pergunta
+            # bloqueada são o sistema se defendendo — o dono não precisa
+            # saber. Alertar auto-correção encheu o chat de ⚠️ e some com o
+            # sinal no meio do ruído.
+            _AUTOCORRECAO = ("reconsultando", "remendado", "resgatei",
+                             "atualizei em vez de duplicar", "descartada",
+                             "bloqueada")
+            if not any(p in falha_depois for p in _AUTOCORRECAO):
+                _alertar_dono(falha_depois, num, content)
         if reply:
             ok = send_whatsapp(reply["number"], reply["text"])
             if not ok:
