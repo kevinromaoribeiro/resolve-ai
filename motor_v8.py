@@ -388,8 +388,8 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
         return None
 
 
-def _preparar_item(novo: dict, ai_engine,
-                   texto_origem: str = "") -> Optional[dict]:
+def _preparar_item(novo: dict, ai_engine, texto_origem: str = "",
+                   n_itens: int = 1) -> Optional[dict]:
     """Normaliza um item vindo do LLM para o formato que o banco aceita.
 
     Um único lugar faz isso: quando havia duas cópias dessa lógica, uma delas
@@ -430,7 +430,12 @@ def _preparar_item(novo: dict, ai_engine,
         if adivinhado == "Outros" and texto_origem:
             # descrição muda ("Cartão de débito" sem contexto) — aí sim olha a
             # frase, mas só se ela não estiver falando de várias coisas.
-            if not re.search(r"\be\b|,|;|\n", texto_origem.strip()):
+            # CATEGORIA é mais frágil que data: numa frase com "e" ligando
+            # duas ações ("marca o veterinário E paga a luz"), a palavra-chave
+            # pode ser de qualquer metade — chutar é 50/50. Aqui eu prefiro
+            # "Outros" a errar. Data e hora não têm esse problema: expressão
+            # de tempo numa frase de um item só pertence àquele item.
+            if n_itens == 1 and not re.search(r"\be\b", texto_origem):
                 adivinhado = ai_engine.classify_category(texto_origem)
         novo["categoria"] = adivinhado
     novo.setdefault("hora_alvo", None)
@@ -456,8 +461,7 @@ def _preparar_item(novo: dict, ai_engine,
     # composta a data do vizinho não pode vazar pra cá.
     if texto_origem or novo.get("descricao"):
         calculada = ai_engine.extract_due_date(novo.get("descricao") or "")
-        if not calculada and texto_origem and not re.search(
-                r"\be\b|,|;|\n", texto_origem.strip()):
+        if not calculada and texto_origem and n_itens == 1:
             calculada = ai_engine.extract_due_date(texto_origem)
         atual = novo.get("data_vencimento")
         if calculada and not atual:
@@ -469,6 +473,42 @@ def _preparar_item(novo: dict, ai_engine,
             _registrar_falha(
                 f"data relativa calculada em Python: o LLM disse {atual} e a "
                 f"conta dá {calculada} — vale a minha")
+
+    # HORA: MESMA REGRA. E ESTA FALTAVA.
+    #
+    # Caso real (03/08, 15:16): "Preciso marcar médico, me lembra daqui 10min".
+    # O bot respondeu "Anotado. Vou te lembrar em 10 minutos." e gravou
+    # #76 "marcar médico" com data=NULL e hora=NULL. Ou seja: PROMETEU E NÃO
+    # VAI TOCAR NUNCA. É o pecado capital deste produto — "anotado" sem gravar.
+    #
+    # Eu tinha posto o cálculo de DATA em Python e esqueci a HORA. O
+    # `extract_due_time` já sabia resolver "daqui 10min" desde sempre; ninguém
+    # o chamava neste caminho.
+    if not novo.get("hora_alvo") and (texto_origem or novo.get("descricao")):
+        h = ai_engine.extract_due_time(novo.get("descricao") or "")
+        if not h and texto_origem and n_itens == 1:
+            h = ai_engine.extract_due_time(texto_origem)
+        if h:
+            novo["hora_alvo"] = h
+            _registrar_falha("hora calculada em Python — o LLM devolveu o "
+                             "item sem hora")
+
+    # HORA SEM DATA = HOJE (ou amanhã, se a hora já passou).
+    # Item com hora e sem data não entra no alarme com segurança: o disparo
+    # depende de `data_vencimento = hoje`. Sem data, o lembrete fica órfão.
+    if novo.get("hora_alvo") and not novo.get("data_vencimento"):
+        try:
+            hh, mm = str(novo["hora_alvo"]).split(":")[:2]
+            agora = tempo.agora()
+            alvo = agora.replace(hour=int(hh), minute=int(mm),
+                                 second=0, microsecond=0)
+            dia = agora.date() if alvo >= agora else (
+                agora + __import__("datetime").timedelta(days=1)).date()
+            novo["data_vencimento"] = dia.isoformat()
+            _registrar_falha("item tinha hora sem data — ancorei em "
+                             f"{dia.isoformat()} pra o alarme poder tocar")
+        except Exception:
+            pass
     novo.setdefault("link_afiliado",
                     ai_engine.affiliate_link_for(novo.get("descricao", "")))
     # data no passado dispara o alarme na hora e assusta o usuário
@@ -663,6 +703,25 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
     if data.get("concluir") in ids_validos:
         result["concluir"] = data["concluir"]
 
+    # SINÔNIMOS DE "FEITO" E DE "ADIAR", EM PYTHON.
+    # O usuário não fala o comando do manual. Ele diz "resolvi", "já fiz",
+    # "paguei", "deixa pra amanhã". Isso estava só no prompt e oscilava: às
+    # vezes o LLM dava baixa, às vezes criava um item novo "resolvi" — e o
+    # lembrete original continuava vivo, cobrando o cara de uma coisa que ele
+    # já tinha feito. Aqui a leitura é determinística e ganha do modelo.
+    if not result.get("concluir") and _e_conclusao_explicita(text):
+        ult = None
+        try:
+            ult = db.ultimo_item(user_id)
+        except Exception:
+            ult = None
+        if ult and ult.get("id") in ids_validos and ult.get("status") == "pendente":
+            result["concluir"] = ult["id"]
+            _registrar_falha(f"'{text.strip()[:30]}' lido como CONCLUSÃO em "
+                             f"Python — dei baixa no #{ult['id']}")
+            data["itens"] = []          # não cria item novo de "resolvi"
+            data.pop("item", None)
+
     # aceita "itens" (lista, formato atual) e "item" (singular, tolerância a
     # LLM que ignora o schema). Normaliza tudo para lista.
     novos = data.get("itens")
@@ -705,7 +764,8 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
     if (intent in ("registro", "resposta") and novos
             and not result.get("atualizar")):
         for novo in novos[:10]:
-            pronto = _preparar_item(novo, ai_engine, texto_origem=text)
+            pronto = _preparar_item(novo, ai_engine, texto_origem=text,
+                                    n_itens=len(novos[:10]))
             if pronto:
                 result["items"].append(pronto)
 
@@ -735,8 +795,10 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
                       "\"itens\" agora, como item NOVO."))
         if isinstance(corrigido, dict) and isinstance(corrigido.get("itens"), list) \
                 and corrigido["itens"]:
+            _n = len(corrigido["itens"][:10])   # a lista DESTE ramo, não `novos`
             for novo in corrigido["itens"][:10]:
-                pronto = _preparar_item(novo, ai_engine, texto_origem=text)
+                pronto = _preparar_item(novo, ai_engine, texto_origem=text,
+                                        n_itens=_n)
                 if pronto:
                     result["items"].append(pronto)
             if corrigido.get("reply"):
@@ -923,6 +985,109 @@ def _quebrar_loop(reply: str, items: list, ultima_bot: str) -> str:
     return _confirmacao_seca(items)
 
 
+# ---------------------------------------------------------------------------
+# COMO AS PESSOAS REALMENTE FALAM
+# ---------------------------------------------------------------------------
+# Ninguém decora comando. A pessoa não escreve "feito", escreve "resolvi",
+# "já paguei", "tá pago". Não escreve "adiar", escreve "deixa pra amanhã".
+# Enquanto isso viveu só no prompt, oscilava — e o pior caso não é o bot não
+# entender: é ele criar um item novo chamado "resolvi" e deixar o original
+# pendente, cobrando a pessoa de algo que ela já fez.
+
+_CONCLUSAO_RE = re.compile(
+    r"(?i)^\s*(?:ja\s+)?(?:"
+    r"feito|feita|pronto|prontinho|resolvi|resolvido|resolvida|"
+    r"paguei|pago|paga|quitei|quitado|"
+    r"comprei|comprado|peguei|busquei|fui|liguei|marquei|mandei|entreguei|"
+    r"fiz|conclui|conclu[íi]|finalizei|terminei|acabei|encerrei|"
+    r"dei\s+baixa|ta\s+feito|t[áa]\s+feito|ta\s+pago|t[áa]\s+pago|"
+    r"ja\s+foi|j[áa]\s+foi|ja\s+era|j[áa]\s+era|ja\s+fiz|j[áa]\s+fiz|"
+    r"ja\s+resolvi|j[áa]\s+resolvi|ja\s+paguei|j[áa]\s+paguei"
+    r")\b[\s.!,]*$")
+
+_ADIAMENTO_RE = re.compile(
+    r"(?i)\b(?:"
+    r"deixa\s+(?:pra|para)\s+(?:amanh[ãa]|depois|semana|outro\s+dia|segunda)|"
+    r"fica\s+(?:pra|para)\s+(?:amanh[ãa]|depois|semana|outro\s+dia)|"
+    r"empurra\s+(?:pra|para|um)|joga\s+(?:pra|para)\s+(?:amanh[ãa]|depois)|"
+    r"passa\s+(?:pra|para)\s+(?:amanh[ãa]|semana|depois)|"
+    r"mais\s+tarde|outro\s+dia|semana\s+que\s+vem|"
+    r"n[ãa]o\s+vai\s+dar\s+hoje|hoje\s+n[ãa]o\s+vai\s+dar"
+    r")\b")
+
+
+def _e_conclusao_explicita(text: str) -> bool:
+    """A mensagem é, sozinha, um 'já resolvi'? (frase curta e fechada)"""
+    t = (text or "").strip()
+    if len(t) > 40:          # frase longa carrega assunto novo junto
+        return False
+    return bool(_CONCLUSAO_RE.match(t))
+
+
+def _e_adiamento_explicito(text: str) -> bool:
+    """'deixa pra amanhã' é adiar, mesmo sem a palavra 'adiar'."""
+    return bool(_ADIAMENTO_RE.search(text or ""))
+
+
+# Faltou a hora? Não trave a conversa nem invente: OFEREÇA.
+HORA_MANHA = os.environ.get("HORA_PADRAO_MANHA", "08:00")
+HORA_NOITE = os.environ.get("HORA_PADRAO_NOITE", "20:00")
+
+
+def _oferecer_horario(reply: str, items: list) -> str:
+    """Item com DIA e sem HORA: pergunta manhã ou noite, com padrão explícito.
+
+    Pedido do Kevin: "se não mandar o horário, ele poderia dizer 'te lembro de
+    manhã ou à noite'". É melhor que as duas alternativas ruins: travar o
+    cadastro exigindo hora, ou escolher uma hora em silêncio e o aviso chegar
+    numa hora que não serve.
+    """
+    if not reply or not items:
+        return reply
+    sem_hora = [i for i in items
+                if i.get("data_vencimento") and not i.get("hora_alvo")]
+    if not sem_hora or len(sem_hora) != len(items):
+        return reply
+    if "?" in reply:                 # já tem pergunta; não empilha outra
+        return reply
+    return (f"{reply.rstrip()}\n\n"
+            f"Que horas te aviso? Responde *manhã* ({HORA_MANHA}) ou "
+            f"*noite* ({HORA_NOITE}) — ou me diz a hora exata.")
+
+
+# A resposta PROMETE um horário/dia que o item não tem?
+_PROMESSA_HORA_RE = re.compile(
+    r"(?i)(?:te\s+lembro|vou\s+te\s+lembrar|te\s+aviso|aviso\s+voc[êe])"
+    r"[^.!?\n]{0,60}?(?:\b[àa]s\s*\d{1,2}|\bem\s+\d+\s*(?:min|hora)|"
+    r"\bdaqui\s+a?\s*\d+|\bamanh[ãa]\b|\bhoje\b)")
+
+
+def _nao_prometer_o_que_nao_gravei(reply: str, items: list) -> str:
+    """Se eu disse 'te lembro às X' e o item não tem quando, eu confesso.
+
+    Caso real (03/08, 15:16): "me lembra daqui 10min" -> resposta "Anotado.
+    Vou te lembrar em 10 minutos." e item gravado com data=NULL, hora=NULL.
+    O alarme nunca ia tocar e a pessoa só descobriria depois de perder a
+    consulta. Prometer o que não está no banco é a única falha deste produto
+    que não tem conserto depois: quebra a confiança exatamente no momento em
+    que ela era necessária.
+    """
+    if not reply or not items:
+        return reply
+    if not _PROMESSA_HORA_RE.search(reply):
+        return reply
+    # basta UM item com quando definido pra promessa ter lastro
+    if any(i.get("hora_alvo") or i.get("data_vencimento") for i in items):
+        return reply
+    _registrar_falha("resposta prometeu horário e nenhum item tem quando — "
+                     "troquei a promessa por um pedido de horário")
+    desc = (items[0].get("descricao") or "isso").strip()
+    return (f"Guardei *{desc}* ✅ — mas ainda não consegui marcar a hora, "
+            f"então eu *não* vou conseguir te avisar.\n\n"
+            f"Me diz o quando: _\"hoje às 18h\"_, _\"amanhã de manhã\"_ ou "
+            f"_\"daqui 2 horas\"_.")
+
+
 def _polir_resposta(reply: str, items: list, ultima_bot: str = "",
                     texto_usuario: str = "") -> str:
     """Toda a faxina de resposta, num lugar só, na ordem que importa.
@@ -941,6 +1106,10 @@ def _polir_resposta(reply: str, items: list, ultima_bot: str = "",
     # a frase de enchimento deixa de estar no fim e escapa da regra.
     reply = tirar_enchimento(reply)
     reply = _confirmar_todos_os_itens(reply, items)
+    # nunca prometer aviso que o banco não sustenta
+    reply = _nao_prometer_o_que_nao_gravei(reply, items)
+    # tem dia mas não tem hora? oferece manhã/noite em vez de escolher sozinho
+    reply = _oferecer_horario(reply, items)
     # a pessoa disse "não tem valor"? então não pergunta de novo.
     reply = _nao_insistir(reply, items, texto_usuario)
     # por último: se mesmo assim eu ia repetir a última fala, corta o loop.

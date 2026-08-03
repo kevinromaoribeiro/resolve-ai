@@ -163,11 +163,22 @@ check("diz o que guardou", "pediatra" in pol, pol)
 check("usa 'Guardei:' e não 'Guardei também:'",
       "Guardei:" in pol and "também" not in pol, pol)
 
-print("\n3b. Resposta que já diz tudo não ganha bloco")
+print("\n3b. Resposta completa não ganha bloco de itens...")
 BOA = "Anotado! Te aviso do *pediatra* em 03/04/2027. 👍"
-check("resposta completa passa intacta",
-      motor_v8._polir_resposta(BOA, PED) == BOA,
-      motor_v8._polir_resposta(BOA, PED))
+saida = motor_v8._polir_resposta(BOA, PED)
+check("não repete o item", "Guardei" not in saida, saida)
+check("mantém o texto original", saida.startswith(BOA), saida)
+
+print("3b2. ...mas oferece a hora que falta (v17.6, pedido do Kevin)")
+# O item tem DIA e não tem HORA. Em vez de escolher um horário em silêncio
+# ou deixar o lembrete sem hora, o bot pergunta com padrão explícito.
+check("oferece manhã/noite", "manhã" in saida.lower() and "noite" in saida.lower(),
+      saida)
+
+PED_COM_HORA = [dict(PED[0], hora_alvo="10:00")]
+check("com hora definida, passa intacta",
+      motor_v8._polir_resposta(BOA, PED_COM_HORA) == BOA,
+      motor_v8._polir_resposta(BOA, PED_COM_HORA))
 
 print("\n3c. Sem itens, não inventa bloco")
 check("conversa pura passa intacta",
