@@ -35,6 +35,7 @@ CONTRATO: route(user_id, user_name, text, db, ai_engine, telefone="") -> dict|No
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Optional
 
@@ -473,7 +474,11 @@ def route(user_id, user_name, text, db, ai_engine, telefone: str = "",
     # última Copa foi 2022 da França e que a de 2026 "ainda não aconteceu".
     # Errar o básico faz o usuário duvidar de TODO o resto que a gente diz.
     if _pergunta_fato_do_mundo(text):
-        _registrar_falha(f"pergunta de fato do mundo bloqueada: {text[:60]}")
+        buscado = _responder_com_busca(text, user_name)
+        if buscado:
+            return {"reply": buscado, "items": [], "needs_decision": False,
+                    "mode": "v8_busca_web"}
+        # busca fora do ar: assume que não sabe. Nunca chuta.
         return _resposta_nao_sei_do_mundo(user_name)
 
     pergunta_aberta = _tem_pergunta_aberta(historico)
@@ -1070,6 +1075,50 @@ def _pergunta_fato_do_mundo(text: str) -> bool:
     """
     low = _sem_acento(text or "").lower()
     return any(_sem_acento(p) in low for p in _FATO_QUE_MUDA)
+
+
+_MODELO_BUSCA = os.environ.get("MODELO_BUSCA", "gpt-4o-search-preview")
+
+
+def _responder_com_busca(text: str, nome: str) -> Optional[str]:
+    """Vai na web e responde de verdade.
+
+    Uma A.I. tem que saber — e saber não é chutar de memória. O modelo normal
+    tem data de corte: perguntado sobre a Copa, respondeu Argentina, depois
+    França, depois Brasil. Aqui a pergunta vai para um modelo COM busca, que
+    olha a informação atual antes de falar.
+
+    Se a busca falhar, devolve None e o chamador assume o caminho honesto —
+    nunca voltamos a chutar.
+    """
+    try:
+        from litellm import completion
+    except Exception:
+        return None
+    try:
+        resp = completion(
+            model=_MODELO_BUSCA,
+            max_tokens=500,
+            messages=[
+                {"role": "system", "content": (
+                    "Você é o Resolve AI, um mordomo pessoal no WhatsApp. "
+                    "Responda a pergunta do usuário com informação ATUAL, "
+                    "buscando na web. Em português do Brasil.\n"
+                    "REGRAS: responda em no máximo 3 linhas curtas, direto ao "
+                    "ponto, sem citar fontes nem colar link. Negrito do "
+                    "WhatsApp é *asterisco simples*. Se a busca não trouxer "
+                    "certeza, diga que não achou — nunca invente.\n"
+                    "Depois da resposta, pule uma linha e puxe UMA frase curta "
+                    "para o que você faz: não deixar ele esquecer conta, "
+                    "remédio, consulta e recompra.")},
+                {"role": "user", "content": text},
+            ],
+        )
+        txt = (resp.choices[0].message.content or "").strip()
+        return txt or None
+    except Exception as e:
+        _registrar_falha(f"busca web indisponivel ({_MODELO_BUSCA}): {e!r}")
+        return None
 
 
 def _resposta_nao_sei_do_mundo(nome: str) -> dict:
