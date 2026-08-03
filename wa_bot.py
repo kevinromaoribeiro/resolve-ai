@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v16.8-faxina-nos-dois-caminhos-2026-08-03"
+BUILD = "v17.0-trial-14-dias-2026-08-03"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -64,7 +64,11 @@ EVOLUTION_INSTANCE = os.environ.get("EVOLUTION_INSTANCE", "resolveai")
 # Link de pagamento (Kirvano, Mercado Pago Assinaturas, Stripe Payment Link…)
 PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://SEU-LINK-DE-PAGAMENTO")
 PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL", "")
-TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "7"))
+# 14 dias, não 7. O produto só prova valor quando o usuário É LEMBRADO de algo
+# que ele tinha esquecido — e uma conta com vencimento mensal não cabe numa
+# janela de 7 dias. Trial curto demais cobra antes de a pessoa ter vivido o
+# momento pelo qual ela pagaria.
+TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "14"))
 # v6: teto de duração de áudio (custo Whisper) e link dos Termos/Privacidade
 AUDIO_MAX_SECONDS = int(os.environ.get("AUDIO_MAX_SECONDS", "120"))
 # v6.5: teto de envios por ciclo do cron (o resto vai no próximo, sem perda)
@@ -119,6 +123,9 @@ def _negado(request):
 PENDING: dict[str, dict] = {}
 # Confirmações pendentes de comandos destrutivos: phone -> 'cancelar'|'apagar'
 CONFIRM: dict[str, str] = {}
+# Trial vencido nesta mensagem: phone -> primeiro nome. A mensagem é
+# processada normalmente e o convite de assinatura é anexado no fim.
+TRIAL_VENCIDO: dict[str, str] = {}
 
 USE_CASES = {
     "1": ("contas", "💡 Contas de casa"),
@@ -300,6 +307,27 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 "*assinar* · *cancelar* · *apagar meus dados* · "
                 "*privacidade* · *ajuda*")
 
+    # --- "mais tempo": auto-extensão única do trial -------------------------
+    # A régua promete "responde *mais tempo* que eu libero". Promessa feita
+    # pelo bot que só o dono consegue cumprir é promessa quebrada — e no beta
+    # o custo de dar 7 dias a mais é zero perto de perder o feedback da
+    # pessoa. Uma vez por usuário, registrado no log de disparos.
+    if _MAIS_TEMPO_RE.match(text.strip()):
+        if (user.get("status") or "trial") != "trial":
+            return None            # assinante não precisa; deixa o motor falar
+        if db.dispatched_ever("extensao-trial", user["id"]):
+            faltam = db.trial_days_left(user, TRIAL_DAYS)
+            return (f"Já te dei uma extensão, {user['nome'].split()[0]} — "
+                    f"restam *{faltam} dia(s)*. Se precisar de mais, me fala "
+                    f"que eu aviso o Kevin. 🙂")
+        db.admin_extend_trial(user["id"], TRIAL_EXTENSAO_DIAS)
+        db.log_dispatch(user["id"], "extensao-trial")
+        faltam = db.trial_days_left(db.get_user(user["id"]), TRIAL_DAYS)
+        return (f"Feito. ✅ Liberei *+{TRIAL_EXTENSAO_DIAS} dias* pra você — "
+                f"agora são *{faltam} dia(s)* de teste.\n\n"
+                f"Aproveita pra me dar uma conta com vencimento: é quando eu "
+                f"te aviso sozinho que você vê pra que eu sirvo.")
+
     # --- "meu nome é X" / "me chama de X" ----------------------------------
     # v16.3. Nasceu do bug do "Feito", mas não é remendo: o usuário TEM que
     # poder corrigir como o bot o chama, sem depender do dono do sistema mexer
@@ -332,6 +360,16 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
 
     return None
 
+
+# Quantos dias a auto-extensão libera (1x por usuário).
+TRIAL_EXTENSAO_DIAS = int(os.environ.get("TRIAL_EXTENSAO_DIAS", "7"))
+
+_MAIS_TEMPO_RE = re.compile(
+    r"^\s*(?:mais\s+tempo|preciso\s+de\s+mais\s+tempo|"
+    r"me\s+d[áa]\s+mais\s+tempo|quero\s+mais\s+tempo|"
+    r"estender\s+(?:o\s+)?(?:teste|trial)|mais\s+dias|"
+    r"prorrogar(?:\s+o\s+(?:teste|trial))?)\s*[.!]?\s*$",
+    re.IGNORECASE)
 
 _RENOMEAR_RE = re.compile(
     r"^\s*(?:meu\s+nome\s+(?:é|e|eh)|me\s+chama(?:r)?\s+de|"
@@ -697,8 +735,20 @@ def handle_incoming(payload: dict) -> Optional[dict]:
                 (f"{first_name}, sua assinatura está cancelada. Quer voltar? "
                  f"Mande *assinar* que eu reativo tudo — seus dados estão "
                  f"guardados. 🙂")}
+    # TRIAL VENCIDO: GRAVA PRIMEIRO, COBRA DEPOIS.
+    #
+    # Aqui havia um `return _payment_msg(...)` ANTES de processar a mensagem.
+    # Efeito: no dia 15 a pessoa mandava "paguei a luz 180", recebia a régua de
+    # pagamento e o item NÃO era gravado — sem nenhum aviso. Ela achava que
+    # tinha anotado. É a falha silenciosa que a regra #5 existe pra matar, e
+    # acontecia justamente no dia em que a gente quer que ela veja valor.
+    #
+    # Agora a mensagem é processada normalmente (o item entra no banco) e o
+    # convite de assinatura é ANEXADO na resposta, no webhook. Ninguém perde
+    # nada por não ter pago ainda — perder dado de quem está decidindo assinar
+    # é o jeito mais rápido de garantir que ela não assine.
     if status == "trial" and db.trial_days_left(user, TRIAL_DAYS) <= 0:
-        return {"number": phone, "text": _payment_msg(first_name)}
+        TRIAL_VENCIDO[phone] = first_name
 
     # --- decisão pendente (menu 1/2) tem prioridade -----------------------
     if kind == "texto" and phone in PENDING:
@@ -1203,6 +1253,12 @@ try:
         # do motor v8, do ai_engine clássico ou do onboarding.
         if reply and reply.get("text"):
             reply["text"] = motor_v8.tirar_enchimento(reply["text"])
+
+        # Trial vencido: o item JÁ foi gravado acima. Agora sim o convite.
+        nome_venc = TRIAL_VENCIDO.pop(num, None) if num else None
+        if nome_venc and reply and reply.get("text"):
+            reply["text"] = (f"{reply['text'].rstrip()}\n\n"
+                             f"— — —\n{_payment_msg(nome_venc)}")
 
         falha_depois = getattr(motor_v8, "ULTIMA_FALHA", "")
         if falha_depois and falha_depois != falha_antes:

@@ -1,10 +1,10 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Resolve AI — Seu assistente de vida no WhatsApp</title>
-<meta name="description" content="Pare de gerenciar sua vida na memória. Mande no Zap — o Resolve AI lembra das contas, manutenções, consultas e compras por você. 7 dias grátis.">
+<meta name="description" content="Pare de gerenciar sua vida na memória. Mande no Zap — o Resolve AI lembra das contas, manutenções, consultas e compras por você. 14 dias grátis.">
 <style>
   :root{--slate:#0F172A;--slate2:#1E293B;--slate3:#334155;--emerald:#00A86B;
         --emerald-dk:#008556;--ink:#F8FAFC;--muted:#94A3B8;
@@ -158,7 +158,7 @@
   <div class="cta-zone">
     <h1>Sua cabeça não é lugar de guardar boleto.<br><em>Manda no Zap. Eu resolvo.</em></h1>
     <p class="lead">O Resolve AI é o assistente que mora no seu WhatsApp: lembra das contas, das manutenções, das consultas e das compras — antes de você precisar lembrar.</p>
-    <a class="btn big" href="#comecar" id="cta-hero">Começar meus 7 dias grátis</a>
+    <a class="btn big" href="#comecar" id="cta-hero">Começar meus 14 dias grátis</a>
     <div class="btn-sub">Sem cartão · Sem baixar app · Cancele com uma mensagem</div>
     <div class="proof">
       <div>⚡ <b>Responde em segundos</b></div>
@@ -224,7 +224,7 @@
   <h2>Menos que uma pizza por mês</h2>
   <p class="sub">Uma única multa de boleto evitada já paga meses de assinatura.</p>
   <div class="price-card">
-    <span class="tag">7 dias grátis · sem cartão</span>
+    <span class="tag">14 dias grátis · sem cartão</span>
     <div class="price">R$ 19,90<small>/mês</small></div>
     <div class="anual">ou <b>R$ 149/ano</b> (equivale a R$ 12,40/mês)</div>
     <ul class="inc">
@@ -235,7 +235,7 @@
       <li>Resumo semanal dos seus gastos</li>
       <li>Cancele com uma única mensagem</li>
     </ul>
-    <a class="btn big" id="cta-price" href="#">Começar meus 7 dias grátis</a>
+    <a class="btn big" id="cta-price" href="#">Começar meus 14 dias grátis</a>
     <div class="btn-sub">Você só decide se vale depois de usar.</div>
   </div>
 </section></div>
@@ -247,7 +247,7 @@
   <details><summary>Preciso baixar algum aplicativo?</summary>
     <p>Não. O Resolve AI funciona 100% dentro do WhatsApp que você já usa todos os dias. Basta mandar mensagem.</p></details>
   <details><summary>Preciso cadastrar cartão para testar?</summary>
-    <p>Não. Os 7 dias de teste são grátis e sem cartão. Se você não assinar, simplesmente para de funcionar — sem cobrança surpresa.</p></details>
+    <p>Não. Os 14 dias de teste são grátis e sem cartão. Se você não assinar, simplesmente para de funcionar — sem cobrança surpresa.</p></details>
   <details><summary>Meus dados ficam seguros?</summary>
     <p>Seus registros são armazenados de forma privada e usados apenas para te servir. Não vendemos seus dados e você pode pedir a exclusão de tudo a qualquer momento com uma mensagem.</p></details>
   <details><summary>O que acontece se eu mandar um áudio todo enrolado?</summary>
@@ -260,7 +260,7 @@
   <div class="final">
     <h2>Esvazie a cabeça. Eu seguro as pontas.</h2>
     <p class="sub">Comece agora — a primeira coisa que você mandar já fica organizada.</p>
-    <a class="btn big" id="cta-final" href="#">Começar meus 7 dias grátis</a>
+    <a class="btn big" id="cta-final" href="#">Começar meus 14 dias grátis</a>
   </div>
 </div>
 
@@ -271,7 +271,7 @@
 <script>
 /* ============ CONFIG: coloque aqui o número do bot (Evolution API) ======= */
 const WHATSAPP_NUMBER = "5511000000000"; // <-- TROCAR pelo chip do bot
-const WELCOME = encodeURIComponent("Oi! Quero começar meus 7 dias grátis do Resolve AI 🚀");
+const WELCOME = encodeURIComponent("Oi! Quero começar meus 14 dias grátis do Resolve AI 🚀");
 const WA_LINK = `https://wa.me/${WHATSAPP_NUMBER}?text=${WELCOME}`;
 ["cta-hero","cta-price","cta-final"].forEach(id=>{
   const el=document.getElementById(id); if(el) el.href = WA_LINK;

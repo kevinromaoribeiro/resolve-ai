@@ -230,14 +230,14 @@ def create_user(
         return int(cur.lastrowid)
 
 
-def trial_days_left_raw(user: dict, trial_days: int = 7) -> int:
+def trial_days_left_raw(user: dict, trial_days: int = 14) -> int:
     """Dias restantes do trial SEM clamp (negativo = expirado há N dias)."""
     created = datetime.strptime(user["data_criacao"], "%Y-%m-%d %H:%M:%S")
     elapsed = (tempo.agora() - created).days
     return trial_days - elapsed
 
 
-def trial_days_left(user: dict, trial_days: int = 7) -> int:
+def trial_days_left(user: dict, trial_days: int = 14) -> int:
     """Dias restantes do teste grátis (>= 0, para exibição)."""
     return max(0, trial_days_left_raw(user, trial_days))
 
@@ -275,7 +275,7 @@ def mark_nudge_sent(user_id: int, nudge_id: str) -> None:
     update_user_fields(user_id, trial_nudges_sent=",".join(sent))
 
 
-def active_trial_users(trial_days: int = 7) -> list[dict]:
+def active_trial_users(trial_days: int = 14) -> list[dict]:
     """Usuários em trial, já com onboarding concluído, dentro do prazo."""
     return [u for u in list_users()
             if (u.get("status") or "trial") == "trial"
@@ -302,7 +302,7 @@ def set_created_days_ago(user_id: int, days: int) -> None:
                      (when, user_id))
 
 
-def trial_ending_users(days_left: int = 1, trial_days: int = 7) -> list[dict]:
+def trial_ending_users(days_left: int = 1, trial_days: int = 14) -> list[dict]:
     """Usuários em trial cujo teste termina em exatamente N dias."""
     return [u for u in list_users()
             if (u.get("status") or "trial") == "trial"
@@ -710,7 +710,7 @@ def overdue_items_on(dia_iso: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def user_can_receive(user: dict, trial_days: int = 7) -> bool:
+def user_can_receive(user: dict, trial_days: int = 14) -> bool:
     """Usuário elegível a disparos proativos: ativo, ou trial ainda válido."""
     st = (user.get("status") or "trial")
     if st == "ativo":
@@ -720,7 +720,7 @@ def user_can_receive(user: dict, trial_days: int = 7) -> bool:
     return False
 
 
-def winback_candidates(trial_days: int = 7, days_after: int = 3) -> list[dict]:
+def winback_candidates(trial_days: int = 14, days_after: int = 3) -> list[dict]:
     """Trials expirados há exatamente N dias (para 1 única mensagem winback)."""
     return [u for u in list_users()
             if (u.get("status") or "trial") == "trial"

@@ -10,11 +10,11 @@ COMO EDITAR (sem quebrar nada):
 - NÃO apague as chaves (as palavras à esquerda dos ":"), os {campos} nem
   as vírgulas.
 - Os {campos} entre chaves são preenchidos automaticamente pelo motor
-  (ex.: {nome} vira o nome da pessoa, {trial_days} vira 7). Mantenha-os.
+  (ex.: {nome} vira o nome da pessoa, {trial_days} vira 14). Mantenha-os.
 - Depois de editar: suba este arquivo no GitHub (repo resolve-ai) e peça um
   redeploy no EasyPanel. Como aqui só tem texto, o risco de erro é mínimo.
 
-DICA: para trocar as sugestões dos primeiros 7 dias, edite USE_CASE_EXAMPLES.
+DICA: para trocar as sugestões do trial (14 dias), edite USE_CASE_EXAMPLES.
 """
 
 # ── Boas-vindas (primeira mensagem) ──────────────────────────────────────
@@ -45,18 +45,40 @@ INTERESSES_MSG = (
     "_(pode escolher vários — ou responder *pular*)_"
 )
 
-# ── Sugestões dos 7 dias (o que provar valor rápido) ─────────────────────
-# EDITE À VONTADE. Cada linha é um exemplo prático que aparece no onboarding
-# conforme os interesses que a pessoa escolheu.
+# ── Sugestões do trial (o que prova valor rápido) ────────────────────────
+# EDITE À VONTADE. Cada linha aparece no onboarding conforme os interesses
+# que a pessoa marcou no formulário da landing page.
+#
+# REGRA DE OURO DESTA LISTA (não é enfeite):
+# O momento em que a pessoa vira cliente NÃO é quando ela anota — é quando
+# ela é AVISADA de algo que tinha esquecido. Então toda sugestão aqui precisa:
+#   1. caber numa mensagem que ela consegue copiar e mandar AGORA;
+#   2. gerar uma DATA no banco (sem data, não existe aviso, não existe "aha");
+#   3. deixar claro o que eu faço que uma listinha não faz.
+# Sugestão que não gera data é sugestão que adia a conversão.
 USE_CASE_EXAMPLES = {
-    "contas": "💡 *Conta chegando?* Me manda a foto do boleto (ou digita _\"luz 187 vence dia 20\"_). Eu aviso 3 dias antes, 1 dia antes e no dia. Multa nunca mais.",
-    "mercado": "🛒 *Acabou algo em casa?* Fala _\"acabou o café\"_ que eu lembro na próxima compra e aviso quando for hora de repor.",
-    "carro": "🚗 *Cuida do carro?* Manda _\"troquei o óleo, 74.200 km\"_ — eu calculo a próxima troca e te aviso com folga. IPVA e seguro também.",
-    "saude": "🩺 *Tem consulta ou exame?* Fala _\"dermato dia 15/08 às 14h\"_ que eu te lembro na véspera e no dia. Remédio contínuo também.",
-    "datas": "🎂 *Data importante?* Diz _\"aniversário da minha mãe é 03/09\"_ — eu te aviso todo ano, com antecedência pra dar tempo do presente.",
-    "encomendas": "📦 *Esperando encomenda?* Fala _\"chega até sexta\"_ que eu fico de olho no prazo por você.",
-    "pet": "🐾 *Tem pet?* Manda _\"vacina da Mel dia 30\"_ — eu aviso antes, e lembro da ração quando estiver acabando.",
-    "burocracia": "📄 *Prazo ou documento?* Diz _\"IPVA vence 15/01\"_ ou _\"renovar CNH em março\"_ — eu te aviso com folga, sem susto.",
+    "contas": "💡 *Contas* — manda a foto do boleto, ou escreve _\"luz 187 vence dia 20\"_. Eu te cutuco *um dia antes*, no horário em que você consegue pagar. Não é lista: é o aviso chegando sozinho.",
+    "mercado": "🛒 *Mercado* — escreve _\"comprei café hoje\"_. Eu aprendo quanto tempo dura e te aviso *antes de acabar*. Você para de descobrir na hora do café.",
+    "carro": "🚗 *Carro* — manda _\"troquei o óleo hoje, 74.200 km\"_. Eu guardo os *dois gatilhos* (5.000 km ou 6 meses) e aviso no que vencer primeiro. Nenhuma agenda faz isso.",
+    "saude": "🩺 *Saúde* — escreve _\"dentista dia 15 às 14h\"_ ou _\"pediatra em 6 meses\"_. Consulta marcada com meio ano de antecedência é exatamente o que a cabeça não segura.",
+    "datas": "🎂 *Datas* — diz _\"aniversário da minha mãe é 03/09\"_. Eu aviso com *uma semana* de folga — tempo de comprar presente, não de pedir desculpa.",
+    "encomendas": "📦 *Encomendas* — escreve _\"encomenda chega até sexta\"_. Se passar do prazo, eu te lembro de cobrar. Prazo que ninguém acompanha é dinheiro parado.",
+    "pet": "🐾 *Pet* — manda _\"comprei ração de 15kg hoje\"_ e _\"vacina da Mel dia 30\"_. Eu calculo quando a ração acaba e aviso antes do pote raspar.",
+    "burocracia": "📄 *Documentos* — diz _\"IPVA vence 15/01\"_ ou _\"renovar CNH em março\"_. Prazo de documento é o que dá multa e você só lembra depois.",
+}
+
+# Frase única de reforço por interesse — usada nos toques da segunda semana.
+# Mais curta que a de cima: aqui a pessoa já conhece o bot, o que falta é
+# ela usar a função que ainda não experimentou.
+USE_CASE_REFORCO = {
+    "contas": "me manda a próxima conta que chegar — quero te provar o aviso de véspera",
+    "mercado": "me diz uma coisa que você compra todo mês, que eu passo a avisar",
+    "carro": "me fala o km atual do carro, que eu já calculo a próxima revisão",
+    "saude": "tem consulta marcada? me passa a data que eu seguro pra você",
+    "datas": "me dá 3 aniversários de uma vez — eu cuido deles todo ano",
+    "encomendas": "tem encomenda a caminho? me fala o prazo",
+    "pet": "quando você comprou a última ração? eu calculo a próxima",
+    "burocracia": "tem documento vencendo esse ano? IPVA, CNH, seguro?",
 }
 
 # Abertura das sugestões — CTA forte pra AGIR já (prova de valor no minuto 1)

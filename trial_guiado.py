@@ -38,6 +38,9 @@ import tempo
 PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://SEU-LINK-DE-PAGAMENTO")
 PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL", "")
 INACTIVE_HOURS = 24   # só toca quem não fala há 24h+
+# Dia em que a régua fecha e pede a assinatura. Trial de 14 dias -> D13,
+# para a mensagem de conversão chegar ANTES do prazo acabar, não depois.
+DIA_FECHAMENTO = int(os.environ.get("TRIAL_DIA_FECHAMENTO", "13"))
 
 
 # ── Sugestões por interesse (CTA único, prova de valor no minuto 1) ──────
@@ -138,7 +141,7 @@ def run_trial_nudges() -> list[dict]:
         first = _first_name(user)
 
         # ÚLTIMO DIA do trial: CONVERSÃO com tom de mordomo. Sempre manda.
-        if dia >= 6 and not db.nudge_already_sent(user, "d6_fim"):
+        if dia >= DIA_FECHAMENTO and not db.nudge_already_sent(user, "d6_fim"):
             n_itens = len(db.list_items(user["id"]))
             palavra = "coisa" if n_itens == 1 else "coisas"
             prova = (f"Nesses dias, já tirei *{n_itens} {palavra}* da sua "
@@ -147,14 +150,17 @@ def run_trial_nudges() -> list[dict]:
             if PAYMENT_LINK_ANUAL:
                 planos += (f"\n\n*2* — Anual, R$ 149,90/ano _(2 meses grátis)_\n"
                            f"{PAYMENT_LINK_ANUAL}")
-            msg = (f"{first}, adorei o nosso tempo juntos. 🤝 Queria seguir "
-                   f"sendo o seu mordomo por muito mais tempo — aliviando a "
-                   f"sua cabeça e te lembrando das coisas pra você nunca mais "
-                   f"tomar susto ou multa.\n\n{prova}Mas por hoje o seu teste "
+            msg = (f"{first}, foram duas semanas boas. 🤝 Eu nunca fiz nada "
+                   f"por você — quem paga, compra e resolve continua sendo "
+                   f"você. O que eu fiz foi *não deixar passar*.\n\n"
+                   f"{prova}Mas por hoje o seu teste "
                    f"chega ao fim. Pra continuar comigo, é só escolher:\n\n"
                    f"{planos}\n\n"
-                   f"Toca no plano que preferir e pronto. 💛 Se precisar de um "
-                   f"tempo, sem problema: guardo tudo por 30 dias te esperando.")
+                   f"Toca no plano que preferir e pronto. 💛\n\n"
+                   f"E se você ainda não teve tempo de me testar direito, "
+                   f"responde *mais tempo* que eu falo com o Kevin e libero "
+                   f"alguns dias a mais. Não quero que você decida sem ter "
+                   f"visto o que eu faço. Nada some: seus itens ficam aqui.")
             dispatches.append(_mk(user, "trial_d6", msg))
             db.mark_nudge_sent(user["id"], "d6_fim")
             continue
@@ -221,6 +227,74 @@ def run_trial_nudges() -> list[dict]:
                        f"mostrei o melhor. Testa agora: {cta}")
             dispatches.append(_mk(user, "trial_d5", msg))
             db.mark_nudge_sent(user["id"], "d5")
+            continue
+
+        # ── SEGUNDA SEMANA (trial de 14 dias) ────────────────────────────
+        # O trial virou 14 dias porque conta de luz, consulta e revisão não
+        # cabem numa janela de 7 — a pessoa saía sem nunca ter vivido o
+        # momento pelo qual pagaria. Mas esticar o prazo sem esticar a régua
+        # deixaria os dias 6–13 em SILÊNCIO, que é pior que trial curto:
+        # sete dias sem o bot falar ensinam que dá pra viver sem ele.
+        # Continua valendo a trava do _is_cold: quem está usando hoje não
+        # recebe nada.
+
+        # D7: MARCO — uma semana. Prova concreta do que já foi entregue.
+        if dia == 7 and not db.nudge_already_sent(user, "d7"):
+            n_disp = db.dispatch_count("hora", user["id"]) + \
+                db.dispatch_count("vencimento", user["id"])
+            if n_disp:
+                msg = (f"{first}, uma semana comigo. Nesse tempo eu já te "
+                       f"avisei *{n_disp} vez(es)* de coisa que você não "
+                       f"precisou lembrar sozinho. 🧠 Essa é a conta que "
+                       f"importa.")
+            else:
+                chave, cta = _sugestao_para(user)
+                msg = (f"{first}, faz uma semana e eu ainda não te avisei de "
+                       f"nada — porque você ainda não me deu uma data. É aí "
+                       f"que eu sou bom. Testa: {cta}")
+            dispatches.append(_mk(user, "trial_d7", msg))
+            db.mark_nudge_sent(user["id"], "d7")
+            continue
+
+        # D9: ANTECIPAÇÃO — o diferencial que nenhuma agenda tem.
+        if dia == 9 and not db.nudge_already_sent(user, "d9"):
+            msg = (f"{first}, um truque que quase ninguém usa: me conta o que "
+                   f"você compra sempre — *ração, filtro, remédio de uso "
+                   f"contínuo, troca de óleo*. Eu calculo quando vai acabar e "
+                   f"te aviso ANTES, sem você pedir. 🔄\n\n"
+                   f"Manda um: _\"comprei ração de 15kg hoje\"_.")
+            dispatches.append(_mk(user, "trial_d9", msg))
+            db.mark_nudge_sent(user["id"], "d9")
+            continue
+
+        # D11: DINHEIRO — mostra o retrovisor de gastos que ela nem sabia ter.
+        if dia == 11 and not db.nudge_already_sent(user, "d11"):
+            gasto = db.month_spend(user["id"])
+            if gasto > 0:
+                v = f"{gasto:,.2f}".replace(",", "X").replace(".", ",") \
+                                   .replace("X", ".")
+                msg = (f"{first}, sem você fazer planilha nenhuma, eu já sei "
+                       f"que você gastou *R$ {v}* esse mês. 💸 Pergunta "
+                       f"_\"quanto eu gastei?\"_ quando quiser — eu separo por "
+                       f"categoria na hora.")
+            else:
+                msg = (f"{first}, além de lembrar, eu somo. Manda os gastos "
+                       f"do jeito que vierem — _\"mercado 180\"_, _\"uber "
+                       f"32\"_ — e depois pergunta *quanto eu gastei*. Sai "
+                       f"tudo separado por categoria, sem planilha. 💸")
+            dispatches.append(_mk(user, "trial_d11", msg))
+            db.mark_nudge_sent(user["id"], "d11")
+            continue
+
+        # D12: AVISO HONESTO — dois dias antes, sem susto e sem pressão.
+        if dia == 12 and not db.nudge_already_sent(user, "d12"):
+            msg = (f"{first}, seu teste termina em 2 dias. Sem susto: eu aviso "
+                   f"antes, não depois. 🙂\n\n"
+                   f"Se ainda não deu pra testar direito, responde *mais "
+                   f"tempo* que eu resolvo. Prefiro que você decida tendo "
+                   f"visto o serviço funcionando.")
+            dispatches.append(_mk(user, "trial_d12", msg))
+            db.mark_nudge_sent(user["id"], "d12")
             continue
 
     return dispatches
