@@ -1915,6 +1915,64 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
                       "por_usuario_dia": MAX_PROATIVAS_POR_USUARIO_DIA},
         })
 
+    @app.post("/painel/resgatar")
+    async def painel_resgatar(request: Request):
+        """Reprocessa uma mensagem que o webhook PERDEU.
+
+        Em 04/08 a sessão do WhatsApp ficou fora por 3h. Três pessoas entraram
+        pela landing nesse intervalo: as mensagens chegaram no aparelho, mas o
+        webhook nunca disparou — então elas não existem no banco, não têm
+        trial, e ficaram sem resposta nenhuma. Do lado delas, o produto
+        simplesmente não funciona.
+
+        Aqui a mensagem original é injetada como se o webhook tivesse rodado
+        na hora: mesmo parser, mesmo onboarding, mesmo trial. Não é um "enviar
+        mensagem avulsa" — é reexecutar o fluxo que faltou, o que também evita
+        que a pessoa fique num estado meio-criado.
+
+        Uso: {"telefone": "5511...", "texto": "...", "nome_push": "..."}
+        """
+        from fastapi.responses import JSONResponse
+        if not _painel_autorizado(request):
+            return _negado(request)
+        try:
+            body = await request.json()
+            tel = re.sub(r"\D", "", str(body.get("telefone") or ""))
+            texto = (body.get("texto") or "").strip()
+            if not tel or not texto:
+                return JSONResponse({"ok": False,
+                                     "erro": "telefone e texto são obrigatórios"},
+                                    status_code=400)
+            payload = {"data": {"messages": {
+                "key": {"remoteJid": f"{tel}@s.whatsapp.net",
+                        "fromMe": False, "id": f"resgate-{tel}"},
+                "pushName": body.get("nome_push") or "",
+                "message": {"conversation": texto}}}}
+            try:
+                db.log_message(None, tel, "in", "texto", texto)
+            except Exception:
+                pass
+            reply = handle_incoming(payload)
+            if not reply or not (reply.get("text") or "").strip():
+                return JSONResponse({"ok": False, "enviado": False,
+                                     "motivo": "motor não gerou resposta"})
+            reply["text"] = motor_v8.tirar_enchimento(reply["text"])
+            enviado = send_whatsapp(reply["number"], reply["text"])
+            try:
+                db.log_message(None, reply["number"],
+                               "out" if enviado else "out_falhou",
+                               "texto", reply["text"])
+            except Exception:
+                pass
+            return JSONResponse({"ok": True, "enviado": bool(enviado),
+                                 "resposta": reply["text"]})
+        except Exception as e:
+            import logging
+            logging.getLogger("resolveai").warning("[resgate] falhou",
+                                                   exc_info=True)
+            return JSONResponse({"ok": False, "erro": str(e)},
+                                status_code=400)
+
     @app.post("/painel/acao")
     async def painel_acao(request: Request):
         """Ações de admin do painel: estender trial, bloquear, ativar, etc.
