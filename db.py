@@ -794,6 +794,59 @@ def log_message(user_id, telefone, direcao, tipo, preview):
         pass
 
 
+def pulso_envio(horas: int = 24) -> dict:
+    """Termômetro anti-bloqueio: o quanto o número está "falando" sozinho.
+
+    Existe porque em 04/08 a Meta restringiu o número e não havia como saber
+    que a gente estava perto do limite — só dava pra descobrir batendo nele.
+    O que a Meta lê é RITMO: mensagens por minuto e proporção do que o bot
+    inicia contra o que ele responde. Então é isso que se mede.
+    """
+    corte = (tempo.agora() - timedelta(hours=horas)).strftime(
+        "%Y-%m-%d %H:%M:%S")
+    hoje = tempo.hoje().isoformat()
+    with get_conn() as conn:
+        def _um(q, *a):
+            r = conn.execute(q, a).fetchone()
+            return (r[0] if r and r[0] is not None else 0)
+
+        # pico de saídas num mesmo MINUTO (a assinatura que derruba)
+        pico = _um("""SELECT MAX(c) FROM (
+                        SELECT COUNT(*) c FROM msg_log
+                        WHERE direcao='out' AND ts >= ?
+                        GROUP BY substr(ts,1,16))""", corte)
+        saidas = _um("SELECT COUNT(*) FROM msg_log WHERE direcao='out' "
+                     "AND ts >= ?", corte)
+        entradas = _um("SELECT COUNT(*) FROM msg_log WHERE direcao='in' "
+                       "AND ts >= ?", corte)
+        proativas = _um("SELECT COUNT(*) FROM dispatches WHERE sent_at >= ? "
+                        "AND kind NOT IN ('admin-report')", corte)
+        pior_user = conn.execute(
+            """SELECT user_id, COUNT(*) c FROM dispatches
+               WHERE substr(sent_at,1,10)=? AND kind NOT IN ('admin-report')
+               GROUP BY user_id ORDER BY c DESC LIMIT 1""", (hoje,)).fetchone()
+    # Bot que só responde é seguro; bot que só inicia é broadcaster.
+    razao = round(proativas / entradas, 2) if entradas else (
+        999 if proativas else 0)
+    if pico >= 10 or razao >= 3:
+        risco = "🔴 alto"
+    elif pico >= 6 or razao >= 1.5:
+        risco = "🟡 atenção"
+    else:
+        risco = "🟢 ok"
+    return {
+        "janela_horas": horas,
+        "pico_por_minuto": pico,
+        "saidas": saidas,
+        "entradas": entradas,
+        "proativas": proativas,
+        "razao_proativa_por_recebida": razao,
+        "usuario_mais_notificado": (dict(zip(("user_id", "n"), pior_user))
+                                    if pior_user else None),
+        "risco": risco,
+    }
+
+
 def painel_metricas() -> dict:
     """Snapshot de métricas para o dashboard em tempo real."""
     with get_conn() as conn:

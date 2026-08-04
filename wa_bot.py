@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v18.0-sem-link-sem-rajada-2026-08-04"
+BUILD = "v18.1-freio-anti-bloqueio-2026-08-04"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -71,8 +71,29 @@ PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL", "")
 TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "14"))
 # v6: teto de duração de áudio (custo Whisper) e link dos Termos/Privacidade
 AUDIO_MAX_SECONDS = int(os.environ.get("AUDIO_MAX_SECONDS", "120"))
-# v6.5: teto de envios por ciclo do cron (o resto vai no próximo, sem perda)
-DISPATCH_MAX_PER_CYCLE = int(os.environ.get("DISPATCH_MAX_PER_CYCLE", "60"))
+# ---------------------------------------------------------------------------
+# FREIO ANTI-BLOQUEIO (v18.1)
+# ---------------------------------------------------------------------------
+# Em 04/08 a Meta restringiu o número por 3h: "atividade pode caracterizar
+# envio de spam, mensagens automáticas ou em massa". O gatilho não foi o
+# conteúdo — foi o RITMO. Às 07:59 saíram 4 mensagens em um minuto.
+#
+# E o pior nem tinha acontecido ainda: com DISPATCH_MAX_PER_CYCLE=60 e o cron
+# rodando a cada 60s, a configuração PERMITIA 60 mensagens num único minuto.
+# Com 20 usuários e alarmes coincidindo às 8h isso acontece sozinho. Nenhuma
+# pessoa manda 60 mensagens em um minuto — é essa assinatura que a Meta lê, e
+# ela não sabe nem se importa que sejam lembretes úteis.
+#
+# Três freios independentes, porque um só sempre tem um caso que escapa:
+#   1. teto por ciclo      — quantas saem de uma vez
+#   2. espaçamento         — quanto tempo entre uma e outra (com variação:
+#                            intervalo exato também é assinatura de robô)
+#   3. teto por usuário/dia— um caso extremo não estoura a conta sozinho
+DISPATCH_MAX_PER_CYCLE = int(os.environ.get("DISPATCH_MAX_PER_CYCLE", "5"))
+ENVIO_INTERVALO_MIN = float(os.environ.get("ENVIO_INTERVALO_MIN", "8"))
+ENVIO_INTERVALO_MAX = float(os.environ.get("ENVIO_INTERVALO_MAX", "15"))
+MAX_PROATIVAS_POR_USUARIO_DIA = int(
+    os.environ.get("MAX_PROATIVAS_POR_USUARIO_DIA", "6"))
 TERMS_URL = os.environ.get(
     "TERMS_URL",
     "https://resolveai.ia.br/termos.html")
@@ -1156,6 +1177,9 @@ def dispatch_proactive() -> int:
     n_resumo = len(result.get("resumo_dispatches", []))
     log.info("[cron] motor rodou: %d alarme(s) de hora, %d resumo(s), "
              "%d total pra enviar", n_alarm, n_resumo, len(all_dispatches))
+    import random
+    import time
+    primeiro = True
     for d in all_dispatches[:DISPATCH_MAX_PER_CYCLE]:
         number = re.sub(r"\D", "", d["telefone"])
         if not number:
@@ -1171,6 +1195,25 @@ def dispatch_proactive() -> int:
             except Exception:
                 log.warning("[cron] falhei ao registrar dedup", exc_info=True)
             continue
+
+        # FREIO 3: teto diário por usuário.
+        # Uma pessoa com 12 lembretes no mesmo dia não pode virar 12 vibrações
+        # — nem pra ela, nem pro número. O que não couber hoje sai amanhã: o
+        # dedup é por item, então nada se perde.
+        if _proativas_hoje(d["user_id"]) >= MAX_PROATIVAS_POR_USUARIO_DIA:
+            log.info("[cron] teto diário atingido p/ user %s — adiado",
+                     d["user_id"])
+            continue
+
+        # FREIO 2: espaçamento com variação.
+        # Intervalo EXATO também é assinatura de robô, por isso o random.
+        # O sleep é seguro: dispatch_proactive roda em thread separada
+        # (asyncio.to_thread), não trava o event loop do FastAPI.
+        if not primeiro:
+            time.sleep(random.uniform(ENVIO_INTERVALO_MIN,
+                                      ENVIO_INTERVALO_MAX))
+        primeiro = False
+
         ok = send_whatsapp(number, d["message"])
         log.info("[cron] envio p/ …%s (%s): %s", number[-4:],
                  d.get("kind", "?"), "OK" if ok else "FALHOU")
@@ -1182,6 +1225,25 @@ def dispatch_proactive() -> int:
             except Exception:
                 pass  # log falhar não pode derrubar o envio
     return sent
+
+
+def _proativas_hoje(user_id: int) -> int:
+    """Quantas mensagens PROATIVAS este usuário já recebeu hoje.
+
+    Conta só o que o bot iniciou — resposta a mensagem dele não entra, porque
+    responder quem te procurou é o comportamento mais seguro que existe aos
+    olhos da Meta e não faz sentido racionar.
+    """
+    try:
+        hoje = tempo.hoje().isoformat()
+        with db.get_conn() as conn:
+            r = conn.execute(
+                "SELECT COUNT(*) FROM dispatches WHERE user_id=? "
+                "AND substr(sent_at,1,10)=? AND kind NOT IN "
+                "('admin-report','extensao-trial')", (user_id, hoje)).fetchone()
+        return int(r[0]) if r else 0
+    except Exception:
+        return 0            # na dúvida, não bloqueia o envio
 
 
 # ---------------------------------------------------------------------------
@@ -1213,6 +1275,14 @@ try:
                 # Sem isto aqui só dava pra saber logando no painel.
                 "trial_days": TRIAL_DAYS,
                 "extensao_dias": TRIAL_EXTENSAO_DIAS,
+                # Termômetro anti-bloqueio. Sem isto só dava pra descobrir
+                # que estava no limite depois de a Meta restringir o número.
+                "envio": (db.pulso_envio()
+                          if hasattr(db, "pulso_envio") else None),
+                "freio": {"max_por_ciclo": DISPATCH_MAX_PER_CYCLE,
+                          "intervalo_s": f"{ENVIO_INTERVALO_MIN:.0f}-"
+                                         f"{ENVIO_INTERVALO_MAX:.0f}",
+                          "max_por_usuario_dia": MAX_PROATIVAS_POR_USUARIO_DIA},
                 "memoria": hasattr(db, "lembrar_fato"),
                 "contexto": hasattr(db, "conversa_recente"),
                 "painel": "protegido" if PAINEL_TOKEN else "SEM TOKEN",
