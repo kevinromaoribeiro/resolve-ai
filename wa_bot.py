@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v18.2-dash-mobile-2026-08-04"
+BUILD = "v18.3-dash-mobile-e-resumo-8h-2026-08-04"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1160,6 +1160,82 @@ def maybe_admin_report() -> bool:
     return False
 
 
+DASH_URL_BASE = os.environ.get("DASH_URL_BASE", "").rstrip("/")
+
+
+def relatorio_matinal() -> bool:
+    """O dash resumido no WhatsApp, todo dia às 8h. 1x por dia.
+
+    Painel que depende de você lembrar de abrir é painel que você não olha.
+    Aqui vem o essencial já mastigado, na mesma tela onde você já está — e o
+    link do dash completo pra quando algum número chamar atenção.
+
+    Ordem proposital: primeiro o que pode estar QUEBRADO (conexão, risco do
+    número), depois o que decide o negócio (engajamento), e só então o
+    movimento do dia. Número bonito não pode enterrar problema.
+    """
+    if not ADMIN_PHONE:
+        return False
+    now = tempo.agora()
+    if now.hour < 8 or now.hour >= 12:
+        return False
+    admin = (db.get_user_by_phone(re.sub(r"\D", "", ADMIN_PHONE))
+             if hasattr(db, "get_user_by_phone") else None)
+    admin_id = admin["id"] if admin else 0
+    if db.dispatched_today("dash-manha", admin_id):
+        return False
+    try:
+        m = db.painel_metricas()
+        serie = db.serie_diaria(2)
+        eng = db.engajamento()
+        env = db.pulso_envio()
+        fin = db.financeiro(TRIAL_DAYS)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning("[dash-manha] falhou",
+                                               exc_info=True)
+        return False
+    ontem = serie[0] if len(serie) > 1 else {}
+    wa = _instance_state()
+
+    linhas = [f"☀️ *Resolve AI* — {now.strftime('%d/%m')}", ""]
+    # 1. o que pode estar quebrado
+    linhas.append(f"{'🟢' if wa == 'open' else '🔴'} WhatsApp: "
+                  f"{'conectado' if wa == 'open' else wa.upper() + ' — REESCANEIE O QR'}")
+    linhas.append(f"{env['risco']} Número: pico {env['pico_por_minuto']}/min "
+                  f"· {env['proativas']} proativas em 24h")
+    if ontem.get("falhas"):
+        linhas.append(f"⚠️ *{ontem['falhas']} falha(s) de envio* ontem")
+    linhas.append("")
+    # 2. o que decide o negócio
+    linhas.append(f"{eng['veredito']}")
+    linhas.append(f"*{eng['por_pessoa_dia']}* demandas por pessoa/dia "
+                  f"_(7d · {eng['pessoas']} pessoa(s))_")
+    linhas.append("")
+    # 3. movimento
+    linhas.append(f"*Ontem:* {ontem.get('novos', 0)} novo(s) · "
+                  f"{ontem.get('recebidas', 0)} mensagem(ns) · "
+                  f"{ontem.get('itens', 0)} item(ns) guardado(s)")
+    linhas.append(f"*Base:* {m['total_users']} pessoa(s) · "
+                  f"{fin['em_teste']} em teste · {fin['assinantes']} pagando")
+    if fin["decidem_ate_3_dias"]:
+        quem = ", ".join(
+            f"{x['nome'].split()[0]} ({'hoje' if x['dias'] == 0 else str(x['dias']) + 'd'})"
+            for x in fin["decidem_ate_3_dias"][:4])
+        linhas.append(f"⏳ *Decidem em até 3 dias:* {quem}")
+    if fin["assinantes"]:
+        linhas.append(f"💰 MRR estimado: R$ {fin['mrr_estimado']:.2f}"
+                      .replace(".", ","))
+    if DASH_URL_BASE and PAINEL_TOKEN:
+        linhas.append("")
+        linhas.append(f"📊 Dash completo: {DASH_URL_BASE}/dash?k={PAINEL_TOKEN}")
+
+    if send_whatsapp(re.sub(r"\D", "", ADMIN_PHONE), "\n".join(linhas)):
+        db.log_dispatch(admin_id, "dash-manha")
+        return True
+    return False
+
+
 def dispatch_proactive() -> int:
     """Roda o motor proativo, envia e REGISTRA cada disparo (dedup)."""
     import logging
@@ -1240,7 +1316,8 @@ def _proativas_hoje(user_id: int) -> int:
             r = conn.execute(
                 "SELECT COUNT(*) FROM dispatches WHERE user_id=? "
                 "AND substr(sent_at,1,10)=? AND kind NOT IN "
-                "('admin-report','extensao-trial')", (user_id, hoje)).fetchone()
+                "('admin-report','dash-manha','extensao-trial')",
+                (user_id, hoje)).fetchone()
         return int(r[0]) if r else 0
     except Exception:
         return 0            # na dúvida, não bloqueia o envio
@@ -1407,6 +1484,7 @@ try:
         db.registrar_cron_ping()
         sent = dispatch_proactive()
         maybe_admin_report()
+        relatorio_matinal()
         return {"sent": sent}
 
     # -----------------------------------------------------------------------
@@ -1436,6 +1514,7 @@ try:
                 if enviados:
                     log.info("[cron-interno] %d disparo(s)", enviados)
                 await asyncio.to_thread(maybe_admin_report)
+                await asyncio.to_thread(relatorio_matinal)
             except Exception:
                 log.warning("[cron-interno] ciclo falhou", exc_info=True)
             await asyncio.sleep(CRON_INTERNO_SEGUNDOS)
