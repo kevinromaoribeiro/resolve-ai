@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v18.3-dash-mobile-e-resumo-8h-2026-08-04"
+BUILD = "v18.4-liquido-e-dono-fora-2026-08-04"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1187,7 +1187,7 @@ def relatorio_matinal() -> bool:
     try:
         m = db.painel_metricas()
         serie = db.serie_diaria(2)
-        eng = db.engajamento()
+        eng = db.engajamento(excluir_telefones=[ADMIN_PHONE, MASTER_PHONE])
         env = db.pulso_envio()
         fin = db.financeiro(TRIAL_DAYS)
     except Exception:
@@ -1223,9 +1223,12 @@ def relatorio_matinal() -> bool:
             f"{x['nome'].split()[0]} ({'hoje' if x['dias'] == 0 else str(x['dias']) + 'd'})"
             for x in fin["decidem_ate_3_dias"][:4])
         linhas.append(f"⏳ *Decidem em até 3 dias:* {quem}")
-    if fin["assinantes"]:
-        linhas.append(f"💰 MRR estimado: R$ {fin['mrr_estimado']:.2f}"
-                      .replace(".", ","))
+    if fin["assinantes"] or fin["custo_total"]:
+        linhas.append(f"💰 Bruto R$ {fin['bruto']:.2f} · "
+                      f"*Líquido R$ {fin['liquido']:.2f}*".replace(".", ","))
+        if fin.get("breakeven_assinantes"):
+            linhas.append(f"_empata com {fin['breakeven_assinantes']} "
+                          f"assinante(s)_")
     if DASH_URL_BASE and PAINEL_TOKEN:
         linhas.append("")
         linhas.append(f"📊 Dash completo: {DASH_URL_BASE}/dash?k={PAINEL_TOKEN}")
@@ -1777,12 +1780,26 @@ async function carrega(){
  const f2=d.financeiro;
  let dec=(f2.decidem_ate_3_dias||[]).map(x=>
    `<tr><td>${x.nome}</td><td>${x.dias===0?'hoje':'em '+x.dias+'d'}</td></tr>`).join('');
+ const R=v=>'R$ '+Number(v||0).toFixed(2).replace('.',',');
+ const cs=f2.custos||{};
  h+=card('Dinheiro',
   `<div class="grid">
-     ${kpi('Assinantes',f2.assinantes,'pagando')}
-     ${kpi('MRR estimado','R$ '+f2.mrr_estimado.toFixed(2).replace('.',','),'× R$ '+f2.preco.toFixed(2).replace('.',','))}
+     ${kpi('Bruto',R(f2.bruto),f2.assinantes+' × '+R(f2.preco))}
+     `+`<div class="kpi"><div class="l">Líquido — seu bolso</div>
+        <div class="v" style="color:${f2.liquido>=0?'#22c55e':'#ef4444'}">${R(f2.liquido)}</div>
+        <div class="u">− ${R(f2.custo_total)} de custo</div></div>`+`
    </div>
-   <div class="grid" style="margin-top:10px">
+   <table style="margin-top:11px">
+     <tr><td class="muted">Fixos (VPS, domínio…)</td><td>− ${R(cs.fixos)}</td></tr>
+     <tr><td class="muted">IA (${f2.msgs_30d.recebidas} msgs/30d)</td><td>− ${R(cs.llm)}</td></tr>
+     <tr><td class="muted">Envio (${f2.msgs_30d.enviadas} msgs/30d)</td><td>− ${R(cs.envio)}</td></tr>
+     <tr><td class="muted">Taxa de pagamento</td><td>− ${R(cs.taxa_pagamento)}</td></tr>
+     <tr><td class="muted">Imposto</td><td>− ${R(cs.imposto)}</td></tr>
+   </table>
+   ${f2.breakeven_assinantes!=null?`<div class="muted" style="font-size:12px;margin-top:9px">
+     Empata com <b style="color:#e6edf7">${f2.breakeven_assinantes}</b> assinante(s) ·
+     custo por assinante ${R(f2.custo_por_assinante)}</div>`:''}
+   <div class="grid" style="margin-top:12px">
      ${kpi('Em teste',f2.em_teste,'ainda decidindo')}
      ${kpi('Conversão',f2.conversao_pct==null?'—':f2.conversao_pct+'%',
            f2.ja_decidiram+' já decidiram')}
@@ -1868,7 +1885,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
             "metricas": m,
             "serie": db.serie_diaria(7),
             "envio": db.pulso_envio(),
-            "engajamento": db.engajamento(),
+            "engajamento": db.engajamento(excluir_telefones=[ADMIN_PHONE, MASTER_PHONE]),
             "financeiro": db.financeiro(TRIAL_DAYS),
             "usuarios": db.admin_list_users(),
             "freio": {"ciclo": DISPATCH_MAX_PER_CYCLE,

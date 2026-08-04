@@ -12,6 +12,7 @@ Zero dependências externas: apenas stdlib (sqlite3, datetime).
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from datetime import datetime, date, timedelta
 import tempo
@@ -884,36 +885,84 @@ def serie_diaria(dias: int = 7) -> list[dict]:
     return saida
 
 
-def engajamento() -> dict:
+def engajamento(excluir_telefones: Optional[list] = None) -> dict:
     """A métrica que decide se isto é um negócio: DESPEJOS POR PESSOA POR DIA.
 
     Não é quantos lembretes o bot disparou — é quantas vezes a pessoa
     espontaneamente jogou algo na cabeça dele. Abaixo de 1x/dia não virou
     hábito, e produto de hábito que não vira hábito não retém.
+
+    O DONO NÃO ENTRA NA CONTA. Ele testa o dia inteiro, sabe onde apertar e
+    nunca vai cancelar — contar as mensagens dele infla a métrica exatamente
+    na direção em que a gente quer acreditar. É a armadilha clássica de
+    fundador: medir o próprio uso e chamar de tração.
+
+    (Para RISCO DE BLOQUEIO é o contrário: lá as mensagens do dono contam,
+    porque a Meta não sabe quem é o dono. Ver `pulso_envio`.)
     """
     hoje = tempo.hoje()
     ini = (hoje - timedelta(days=6)).isoformat()
+    fora = {re.sub(r"\D", "", t) for t in (excluir_telefones or []) if t}
     with get_conn() as conn:
+        ids_fora = set()
+        if fora:
+            for row in conn.execute("SELECT id, telefone FROM users"):
+                if re.sub(r"\D", "", row["telefone"] or "") in fora:
+                    ids_fora.add(row["id"])
+        filtro = ""
+        args: list = [ini]
+        if ids_fora:
+            filtro = " AND m.user_id NOT IN (%s)" % ",".join("?" * len(ids_fora))
+            args += list(ids_fora)
         r = conn.execute(
-            """SELECT COUNT(*) n, COUNT(DISTINCT user_id) u
-               FROM msg_log WHERE direcao='in' AND substr(ts,1,10) >= ?
-                 AND user_id IS NOT NULL""", (ini,)).fetchone()
+            f"""SELECT COUNT(*) n, COUNT(DISTINCT m.user_id) u
+                FROM msg_log m WHERE m.direcao='in'
+                  AND substr(m.ts,1,10) >= ? AND m.user_id IS NOT NULL{filtro}
+            """, args).fetchone()
         n, u = (int(r[0]), int(r[1])) if r else (0, 0)
         top = conn.execute(
-            """SELECT u.nome, COUNT(*) c FROM msg_log m
-               JOIN users u ON u.id = m.user_id
-               WHERE m.direcao='in' AND substr(m.ts,1,10) >= ?
-               GROUP BY m.user_id ORDER BY c DESC LIMIT 5""",
-            (ini,)).fetchall()
+            f"""SELECT u.nome, COUNT(*) c FROM msg_log m
+                JOIN users u ON u.id = m.user_id
+                WHERE m.direcao='in' AND substr(m.ts,1,10) >= ?{filtro}
+                GROUP BY m.user_id ORDER BY c DESC LIMIT 5""",
+            args).fetchall()
+        # quanto do tráfego era do próprio dono — pro tamanho do viés ficar visível
+        rt = conn.execute(
+            """SELECT COUNT(*) FROM msg_log WHERE direcao='in'
+               AND substr(ts,1,10) >= ? AND user_id IS NOT NULL""",
+            (ini,)).fetchone()
+        total = int(rt[0]) if rt else 0
     por_dia = round(n / (u * 7), 2) if u else 0.0
     return {"despejos_7d": n, "pessoas": u, "por_pessoa_dia": por_dia,
+            "dono_excluido": bool(ids_fora),
+            "mensagens_do_dono_7d": max(0, total - n),
             "veredito": ("🟢 virou hábito" if por_dia >= 2 else
                          "🟡 no limite" if por_dia >= 1 else
-                         "🔴 não virou hábito"),
+                         "🔴 não virou hábito" if u else
+                         "⚪ sem usuário real ainda"),
             "top": [{"nome": t[0], "n": t[1]} for t in top]}
 
 
 PRECO_MENSAL = float(os.environ.get("PRECO_MENSAL", "19.90"))
+
+# ── CUSTOS (edite no EasyPanel, não no código) ───────────────────────────
+# Deixados prontos mesmo antes de existir pagamento, porque no dia em que o
+# primeiro pagante entrar você vai querer saber o que sobra — e é justamente
+# aí que ninguém para pra montar planilha.
+#
+# FIXOS: não mudam com o número de usuários.
+CUSTO_VPS_MES = float(os.environ.get("CUSTO_VPS_MES", "0"))
+CUSTO_WHATSAPP_MES = float(os.environ.get("CUSTO_WHATSAPP_MES", "0"))
+CUSTO_DOMINIO_MES = float(os.environ.get("CUSTO_DOMINIO_MES", "0"))
+CUSTO_OUTROS_MES = float(os.environ.get("CUSTO_OUTROS_MES", "0"))
+# VARIÁVEIS: crescem com o uso. O de LLM é o que assusta em escala — o
+# usuário mais engajado é o mais caro, que é a pior curva de custo possível.
+CUSTO_LLM_POR_MSG = float(os.environ.get("CUSTO_LLM_POR_MSG", "0.02"))
+CUSTO_MSG_ENVIADA = float(os.environ.get("CUSTO_MSG_ENVIADA", "0"))
+# % que a plataforma de pagamento retém (Kirvano/Stripe/Mercado Pago)
+TAXA_PAGAMENTO_PCT = float(os.environ.get("TAXA_PAGAMENTO_PCT", "0"))
+# imposto sobre o faturamento (MEI/Simples). 0 até formalizar.
+IMPOSTO_PCT = float(os.environ.get("IMPOSTO_PCT", "0"))
 
 
 def financeiro(trial_days: int = 14) -> dict:
@@ -955,10 +1004,49 @@ def financeiro(trial_days: int = 14) -> dict:
 
     decidiram = len(ativos) + len(expirados) + len(cancelados)
     conversao = round(len(ativos) / decidiram * 100, 1) if decidiram else None
+
+    # ── BRUTO → LÍQUIDO ─────────────────────────────────────────────────
+    bruto = round(len(ativos) * PRECO_MENSAL, 2)
+    # tráfego dos últimos 30 dias projeta o custo variável do mês
+    ini30 = (hoje - timedelta(days=29)).isoformat()
+    with get_conn() as conn:
+        def _um(q, *a):
+            r = conn.execute(q, a).fetchone()
+            return int(r[0]) if r and r[0] is not None else 0
+        msgs_in = _um("SELECT COUNT(*) FROM msg_log WHERE direcao='in' "
+                      "AND substr(ts,1,10) >= ?", ini30)
+        msgs_out = _um("SELECT COUNT(*) FROM msg_log WHERE direcao='out' "
+                       "AND substr(ts,1,10) >= ?", ini30)
+
+    fixos = round(CUSTO_VPS_MES + CUSTO_WHATSAPP_MES + CUSTO_DOMINIO_MES
+                  + CUSTO_OUTROS_MES, 2)
+    # cada mensagem recebida vira ~1 chamada de LLM
+    custo_llm = round(msgs_in * CUSTO_LLM_POR_MSG, 2)
+    custo_envio = round(msgs_out * CUSTO_MSG_ENVIADA, 2)
+    variaveis = round(custo_llm + custo_envio, 2)
+    taxa = round(bruto * TAXA_PAGAMENTO_PCT / 100, 2)
+    imposto = round(bruto * IMPOSTO_PCT / 100, 2)
+    custo_total = round(fixos + variaveis + taxa + imposto, 2)
+    liquido = round(bruto - custo_total, 2)
+    # quantos assinantes só pra empatar
+    margem_unit = PRECO_MENSAL * (1 - (TAXA_PAGAMENTO_PCT + IMPOSTO_PCT) / 100)
+    custo_por_user = (variaveis / len(ativos)) if ativos else 0
+    contrib = margem_unit - custo_por_user
+    breakeven = (int(-(-fixos // contrib)) if contrib > 0 and fixos else
+                 (0 if not fixos else None))
+
     return {
         "aviso": "MRR é ESTIMATIVA — não há integração de pagamento ligada",
         "assinantes": len(ativos),
-        "mrr_estimado": round(len(ativos) * PRECO_MENSAL, 2),
+        "mrr_estimado": bruto,
+        "bruto": bruto,
+        "liquido": liquido,
+        "custo_total": custo_total,
+        "custos": {"fixos": fixos, "llm": custo_llm, "envio": custo_envio,
+                   "taxa_pagamento": taxa, "imposto": imposto},
+        "msgs_30d": {"recebidas": msgs_in, "enviadas": msgs_out},
+        "custo_por_assinante": round(custo_por_user, 2),
+        "breakeven_assinantes": breakeven,
         "preco": PRECO_MENSAL,
         "em_teste": len(trial),
         "decidem_ate_3_dias": sorted(vencendo, key=lambda x: x["dias"]),

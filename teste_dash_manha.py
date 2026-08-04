@@ -87,7 +87,7 @@ for rotulo, trecho in [
     ("movimento de ontem", "Ontem:"),
     ("base", "Base:"),
     ("quem decide em 3d", "Decidem em até 3 dias"),
-    ("MRR", "MRR estimado"),
+    ("bruto e líquido", "Líquido"),
     ("link do dash", "/dash?k="),
 ]:
     check(f"tem {rotulo}", trecho in msg, msg[:60])
