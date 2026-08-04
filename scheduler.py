@@ -221,6 +221,7 @@ def check_overdue(ref: Optional[date] = None) -> list[dict]:
     """Cobrança única D+1 e arquivamento com aviso em D+15 (não-recorrentes)."""
     ref = ref or tempo.hoje()
     dispatches: list[dict] = []
+    pendentes: dict = {}          # user_id -> [(item, atraso, primeiro_nome)]
     for item in db.overdue_items(days_ago=OVERDUE_NUDGE_DAYS, ref=ref):
         if "(lembrete de demonstração)" in (item.get("descricao") or ""):
             continue
@@ -242,16 +243,66 @@ def check_overdue(ref: Optional[date] = None) -> list[dict]:
                                 f"aberto, me manda de novo que eu reagendo. 🗂️")})
         elif atraso >= OVERDUE_NUDGE_DAYS:
             if not db.dispatched_ever_item("vencido", item["id"]):
-                valor = (f" (R$ {item['valor_reais']:.2f})".replace(".", ",")
-                         if item.get("valor_reais") else "")
-                dispatches.append({
-                    "user_id": item["user_id"], "telefone": item["telefone"],
-                    "item_id": item["id"], "kind": "vencido",
-                    "message": (f"{first}, *{item['descricao']}*{valor} venceu "
-                                f"{'ontem' if atraso == 1 else f'há {atraso} dias'} "
-                                f"e não vi a baixa. Já pagou? Responda *pago* — "
-                                f"ou *adiar* se precisar de fôlego.")})
+                pendentes.setdefault(item["user_id"], []).append((item, atraso,
+                                                                  first))
+
+    # UMA MENSAGEM POR PESSOA, NÃO UMA POR ITEM.
+    #
+    # Em 04/08 às 07:59–08:00 o Kevin recebeu QUATRO mensagens em um minuto,
+    # uma por item vencido. No WhatsApp isso não é diligência, é rajada: o
+    # celular vibra quatro vezes e a pessoa arquiva a conversa. O bot que
+    # existe pra tirar peso da cabeça vira mais uma fonte de barulho.
+    #
+    # Agora os vencidos de cada pessoa saem juntos, numa lista, com UMA
+    # vibração. E o dedup continua por item — nenhum some.
+    for uid, grupo in pendentes.items():
+        item0, _, first = grupo[0]
+        if len(grupo) == 1:
+            it, atraso, _ = grupo[0]
+            quando = "ontem" if atraso == 1 else f"há {atraso} dias"
+            msg = (f"{first}, *{it['descricao']}*{_valor_txt(it)} venceu "
+                   f"{quando} e não vi a baixa.\n\n"
+                   f"{_pergunta_baixa(it)} — ou *adiar* se precisar de fôlego.")
+        else:
+            linhas = []
+            for it, atraso, _ in grupo[:8]:
+                quando = "ontem" if atraso == 1 else f"há {atraso} dias"
+                linhas.append(f"• *{it['descricao']}*{_valor_txt(it)} "
+                              f"— venceu {quando}")
+            extra = (f"\n• _+{len(grupo) - 8} outro(s)_"
+                     if len(grupo) > 8 else "")
+            msg = (f"{first}, {len(grupo)} coisas venceram e eu não vi a "
+                   f"baixa:\n\n" + "\n".join(linhas) + extra +
+                   f"\n\nResponde *feito* + o nome do que já resolveu, ou "
+                   f"*adiar* + o nome pra eu empurrar.")
+        # um disparo por item no log (dedup preservado), uma mensagem só
+        for i, (it, _, _) in enumerate(grupo):
+            dispatches.append({
+                "user_id": uid, "telefone": it["telefone"],
+                "item_id": it["id"], "kind": "vencido",
+                # só o primeiro carrega texto; os outros são registro de dedup
+                "message": msg if i == 0 else "",
+            })
     return dispatches
+
+
+def _valor_txt(it: dict) -> str:
+    if not it.get("valor_reais"):
+        return ""
+    return f" ({_brl(it['valor_reais'])})"
+
+
+def _pergunta_baixa(it: dict) -> str:
+    """"Já pagou?" só faz sentido quando existe dinheiro no item.
+
+    Em 04/08 o bot perguntou "Já pagou?" sobre *definir próxima pós
+    graduação*. Não há o que pagar — a pergunta expõe que ele não entende o
+    que guardou.
+    """
+    tem_dinheiro = (it.get("valor_reais")
+                    or it.get("tipo") in ("despesa", "documento"))
+    return ("Já pagou? Responda *pago*" if tem_dinheiro
+            else "Já resolveu? Responda *feito*")
 
 
 def check_time_alarms(ref: Optional[datetime] = None) -> list[dict]:

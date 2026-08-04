@@ -71,6 +71,20 @@ db.add_item(uid, "lembrete", "Saúde", "Dentista",
 db.add_item(uid, "despesa", "Alimentação", "Mercado", valor_reais=210.0)
 db.add_item(uid, "despesa", "Pet", "Petshop", valor_reais=132.9)
 
+
+def _registrado_em(item_id, dia):
+    """Backdata o data_criacao. Sem isto, o teste só passa se rodar no dia
+    03/08: as despesas nascem com a data de HOJE e caem fora da janela de
+    7 dias que termina na segunda de referência. Bug do teste, não do código
+    — mas um teste que só passa num dia do ano é um teste que mente."""
+    with db.get_conn() as conn:
+        conn.execute("UPDATE items SET data_criacao=? WHERE id=?",
+                     (f"{dia.isoformat()} 10:00:00", item_id))
+
+
+for _id in [i["id"] for i in db.list_items(uid, tipo="despesa")]:
+    _registrado_em(_id, SEG)
+
 d = scheduler.check_weekly_summary(ref=SEG_8H)
 check("dispara 1 resumo", len(d) == 1, f"veio {len(d)}")
 msg = d[0]["message"] if d else ""

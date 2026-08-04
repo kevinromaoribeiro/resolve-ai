@@ -431,7 +431,31 @@ def classify_category(text: str) -> str:
     return "Outros"
 
 
+# LINK DE AFILIADO: DESLIGADO POR PADRÃO.
+#
+# Em 04/08, às 08:00, o bot mandou pro Kevin um link do Mercado Livre com tag
+# de afiliado — "Resolver em 1 clique (reposição com o melhor preço)". Isso
+# contraria duas coisas decididas:
+#   1. o guardrail do produto: ele LEMBRA, ORGANIZA e REGISTRA. Não vende.
+#   2. a decisão de não ligar afiliado antes de ter retenção provada.
+#
+# E há um agravante de confiança: no minuto em que aparece link de compra, o
+# usuário passa a se perguntar "ele me lembrou porque eu preciso, ou porque
+# ele ganha?". Perde-se a certeza — e um produto de confiança sem certeza
+# vira produto de conveniência, onde o grátis ganha.
+#
+# Fica atrás de flag. Para religar: AFILIADOS_ATIVOS=1 no ambiente.
+AFILIADOS_ATIVOS = os.environ.get("AFILIADOS_ATIVOS", "0").strip() in (
+    "1", "true", "True", "sim")
+
+
 def affiliate_link_for(text: str) -> Optional[str]:
+    if not AFILIADOS_ATIVOS:
+        return None
+    return _affiliate_link_for(text)
+
+
+def _affiliate_link_for(text: str) -> Optional[str]:
     low = text.lower()
     for kw, query in REPLENISHABLE_KEYWORDS.items():
         if kw in low:

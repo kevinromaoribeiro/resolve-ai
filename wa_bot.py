@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v17.9-feito-da-baixa-2026-08-03"
+BUILD = "v18.0-sem-link-sem-rajada-2026-08-04"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1160,6 +1160,16 @@ def dispatch_proactive() -> int:
         number = re.sub(r"\D", "", d["telefone"])
         if not number:
             log.warning("[cron] disparo sem número: %s", d.get("message", "")[:40])
+            continue
+        # Disparo SEM texto é só registro de dedup (vários itens vencidos
+        # agrupados numa mensagem só). Marca como enviado e não vibra o
+        # celular de novo.
+        if not (d.get("message") or "").strip():
+            try:
+                db.log_dispatch(d["user_id"], d.get("kind", "outro"),
+                                d.get("item_id"))
+            except Exception:
+                log.warning("[cron] falhei ao registrar dedup", exc_info=True)
             continue
         ok = send_whatsapp(number, d["message"])
         log.info("[cron] envio p/ …%s (%s): %s", number[-4:],
