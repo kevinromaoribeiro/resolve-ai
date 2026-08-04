@@ -847,6 +847,129 @@ def pulso_envio(horas: int = 24) -> dict:
     }
 
 
+def serie_diaria(dias: int = 7) -> list[dict]:
+    """Últimos N dias: usuários novos, demandas recebidas, itens e falhas.
+
+    O painel antigo só mostrava HOJE. Um número solto não diz se está subindo
+    ou caindo — e a única pergunta que importa no beta é justamente essa:
+    as pessoas estão usando MAIS ou MENOS a cada dia?
+    """
+    hoje = tempo.hoje()
+    saida = []
+    with get_conn() as conn:
+        def _um(q, *a):
+            r = conn.execute(q, a).fetchone()
+            return int(r[0]) if r and r[0] is not None else 0
+        for i in range(dias - 1, -1, -1):
+            d = (hoje - timedelta(days=i)).isoformat()
+            saida.append({
+                "dia": d,
+                "rotulo": d[8:10] + "/" + d[5:7],
+                "novos": _um("SELECT COUNT(*) FROM users WHERE "
+                             "substr(data_criacao,1,10)=?", d),
+                "recebidas": _um("SELECT COUNT(*) FROM msg_log WHERE "
+                                 "direcao='in' AND substr(ts,1,10)=?", d),
+                "enviadas": _um("SELECT COUNT(*) FROM msg_log WHERE "
+                                "direcao='out' AND substr(ts,1,10)=?", d),
+                "falhas": _um("SELECT COUNT(*) FROM msg_log WHERE "
+                              "direcao='out_falhou' AND substr(ts,1,10)=?", d),
+                "itens": _um("SELECT COUNT(*) FROM items WHERE "
+                             "substr(data_criacao,1,10)=?", d),
+                "disparos": _um("SELECT COUNT(*) FROM dispatches WHERE "
+                                "substr(sent_at,1,10)=?", d),
+                "ativos": _um("SELECT COUNT(DISTINCT user_id) FROM msg_log "
+                              "WHERE direcao='in' AND substr(ts,1,10)=? "
+                              "AND user_id IS NOT NULL", d),
+            })
+    return saida
+
+
+def engajamento() -> dict:
+    """A métrica que decide se isto é um negócio: DESPEJOS POR PESSOA POR DIA.
+
+    Não é quantos lembretes o bot disparou — é quantas vezes a pessoa
+    espontaneamente jogou algo na cabeça dele. Abaixo de 1x/dia não virou
+    hábito, e produto de hábito que não vira hábito não retém.
+    """
+    hoje = tempo.hoje()
+    ini = (hoje - timedelta(days=6)).isoformat()
+    with get_conn() as conn:
+        r = conn.execute(
+            """SELECT COUNT(*) n, COUNT(DISTINCT user_id) u
+               FROM msg_log WHERE direcao='in' AND substr(ts,1,10) >= ?
+                 AND user_id IS NOT NULL""", (ini,)).fetchone()
+        n, u = (int(r[0]), int(r[1])) if r else (0, 0)
+        top = conn.execute(
+            """SELECT u.nome, COUNT(*) c FROM msg_log m
+               JOIN users u ON u.id = m.user_id
+               WHERE m.direcao='in' AND substr(m.ts,1,10) >= ?
+               GROUP BY m.user_id ORDER BY c DESC LIMIT 5""",
+            (ini,)).fetchall()
+    por_dia = round(n / (u * 7), 2) if u else 0.0
+    return {"despejos_7d": n, "pessoas": u, "por_pessoa_dia": por_dia,
+            "veredito": ("🟢 virou hábito" if por_dia >= 2 else
+                         "🟡 no limite" if por_dia >= 1 else
+                         "🔴 não virou hábito"),
+            "top": [{"nome": t[0], "n": t[1]} for t in top]}
+
+
+PRECO_MENSAL = float(os.environ.get("PRECO_MENSAL", "19.90"))
+
+
+def financeiro(trial_days: int = 14) -> dict:
+    """Dinheiro — com um aviso grande colado.
+
+    NÃO EXISTE INTEGRAÇÃO DE PAGAMENTO. O status "ativo" é posto na mão pelo
+    comando de admin, e o Kirvano nunca foi ligado. Então:
+
+      • MRR aqui é ESTIMATIVA (assinantes × preço), não caixa recebido.
+      • "Inadimplente" no sentido de assinou-e-não-pagou NÃO EXISTE ainda:
+        sem cobrança recorrente, ninguém pode ficar devendo.
+      • O que dá pra medir de verdade é o FUNIL: quem está no teste, quem
+        está prestes a decidir, e quem saiu sem assinar.
+
+    Chamar estimativa de faturamento num painel é o jeito mais rápido de
+    tomar decisão com número que não existe. Por isso cada campo aqui diz o
+    que é.
+    """
+    hoje = tempo.hoje()
+    users = list_users()
+    ativos, trial, cancelados, bloqueados = [], [], [], []
+    for u in users:
+        st = (u.get("status") or "trial")
+        (ativos if st == "ativo" else
+         cancelados if st == "cancelado" else
+         bloqueados if st == "bloqueado" else trial).append(u)
+
+    # quem decide nos próximos dias = pipeline real
+    vencendo, expirados = [], []
+    for u in trial:
+        if (u.get("onboarding_step") or "done") != "done":
+            continue
+        faltam = trial_days_left_raw(u, trial_days)
+        alvo = {"id": u["id"], "nome": u.get("nome"), "dias": faltam}
+        if 0 <= faltam <= 3:
+            vencendo.append(alvo)
+        elif faltam < 0:
+            expirados.append(alvo)
+
+    decidiram = len(ativos) + len(expirados) + len(cancelados)
+    conversao = round(len(ativos) / decidiram * 100, 1) if decidiram else None
+    return {
+        "aviso": "MRR é ESTIMATIVA — não há integração de pagamento ligada",
+        "assinantes": len(ativos),
+        "mrr_estimado": round(len(ativos) * PRECO_MENSAL, 2),
+        "preco": PRECO_MENSAL,
+        "em_teste": len(trial),
+        "decidem_ate_3_dias": sorted(vencendo, key=lambda x: x["dias"]),
+        "saiu_sem_assinar": len(expirados),
+        "cancelados": len(cancelados),
+        "bloqueados": len(bloqueados),
+        "conversao_pct": conversao,
+        "ja_decidiram": decidiram,
+    }
+
+
 def painel_metricas() -> dict:
     """Snapshot de métricas para o dashboard em tempo real."""
     with get_conn() as conn:

@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v18.1-freio-anti-bloqueio-2026-08-04"
+BUILD = "v18.2-dash-mobile-2026-08-04"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1590,6 +1590,213 @@ async function testarMotor() {{
 </script>
 </body></html>"""
         return HTMLResponse(html)
+
+    @app.get("/dash")
+    def dash(request: Request):
+        """Dashboard MOBILE. Abra no celular e salve na tela de início.
+
+        O /painel antigo continua existindo (tela grande, ações de admin).
+        Este aqui é feito pra uma mão só: números grandes, rolagem curta, e
+        no topo as três perguntas que importam no beta —
+        está conectado? · as pessoas estão usando? · o número está em risco?
+        """
+        from fastapi.responses import HTMLResponse
+        if not _painel_autorizado(request):
+            return _negado(request)
+        tok = (request.query_params.get("k") or "")
+        html = """<!doctype html><html lang="pt-BR"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Resolve AI</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🟢</text></svg>">
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:#0b1220;color:#e6edf7;
+ font:15px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+ padding:14px 14px calc(28px + env(safe-area-inset-bottom))}
+h1{font-size:17px;margin:0 0 2px;font-weight:700}
+.sub{color:#8296b3;font-size:12px;margin-bottom:14px}
+.card{background:#131d31;border:1px solid #1f2c47;border-radius:14px;
+ padding:14px;margin-bottom:10px}
+.card h2{font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+ color:#8296b3;margin:0 0 10px;font-weight:700}
+.big{font-size:30px;font-weight:800;line-height:1}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.kpi{background:#131d31;border:1px solid #1f2c47;border-radius:14px;padding:13px}
+.kpi .l{font-size:11px;color:#8296b3;margin-bottom:5px}
+.kpi .v{font-size:25px;font-weight:800;line-height:1}
+.kpi .u{font-size:11px;color:#8296b3;margin-top:3px}
+.st{display:flex;align-items:center;gap:9px;font-weight:600;font-size:15px}
+.dot{width:11px;height:11px;border-radius:50%;flex:none}
+.ok{background:#22c55e;box-shadow:0 0 9px #22c55e}
+.warn{background:#f59e0b;box-shadow:0 0 9px #f59e0b}
+.bad{background:#ef4444;box-shadow:0 0 9px #ef4444}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{color:#8296b3;font-weight:600;text-align:right;padding:5px 3px;
+ font-size:10.5px;text-transform:uppercase;letter-spacing:.05em}
+th:first-child,td:first-child{text-align:left}
+td{padding:6px 3px;text-align:right;border-top:1px solid #1c2740}
+.hoje td{background:#16233b;font-weight:700}
+.bar{height:5px;background:#1f2c47;border-radius:3px;overflow:hidden;margin-top:6px}
+.bar>i{display:block;height:100%;background:#22c55e}
+.muted{color:#8296b3}
+.tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;
+ background:#1f2c47;color:#a9bcd8}
+.err{color:#ef4444;font-weight:700}
+footer{color:#54627a;font-size:11px;text-align:center;margin-top:16px}
+</style></head><body>
+<h1>Resolve AI</h1>
+<div class="sub" id="hora">carregando…</div>
+<div id="app"></div>
+<footer id="rodape"></footer>
+<script>
+const K=new URLSearchParams(location.search).get('k')||'';
+const $=s=>document.querySelector(s);
+const n=v=>(v==null?'—':v);
+function card(t,c){return `<div class="card"><h2>${t}</h2>${c}</div>`}
+function kpi(l,v,u){return `<div class="kpi"><div class="l">${l}</div>
+ <div class="v">${n(v)}</div>${u?`<div class="u">${u}</div>`:''}</div>`}
+async function carrega(){
+ let d;
+ try{ const r=await fetch('/api/pulso?k='+encodeURIComponent(K),{cache:'no-store'});
+      if(!r.ok){$('#app').innerHTML=card('Erro','Token invalido. Confira o link.');return}
+      d=await r.json(); }
+ catch(e){ $('#hora').textContent='sem conexao — tentando de novo…'; return }
+ $('#hora').textContent=d.hora+' · atualiza sozinho';
+ const m=d.metricas, e=d.envio, g=d.engajamento, s=d.serie;
+ const hj=s[s.length-1]||{};
+ const conn=d.conectado?'ok':'bad';
+ const risco=(e.risco||'').includes('alto')?'bad':(e.risco||'').includes('aten')?'warn':'ok';
+ const hab=(g.veredito||'').includes('🟢')?'ok':(g.veredito||'').includes('🟡')?'warn':'bad';
+ const cron=d.cron_min==null?'bad':(d.cron_min<=3?'ok':'warn');
+ let h='';
+ // 1. esta no ar?
+ h+=card('Está no ar?',
+  `<div class="st"><span class="dot ${conn}"></span>WhatsApp: ${d.conectado?'conectado':d.whatsapp}</div>
+   <div class="st" style="margin-top:9px"><span class="dot ${cron}"></span>
+   Motor: ${d.cron_min==null?'nunca rodou':'última checagem há '+d.cron_min+' min'}</div>`);
+ // 2. as pessoas estao usando?
+ h+=card('As pessoas estão usando?',
+  `<div class="st"><span class="dot ${hab}"></span>${g.veredito}</div>
+   <div class="big" style="margin:10px 0 2px">${g.por_pessoa_dia}</div>
+   <div class="muted" style="font-size:12px">demandas por pessoa por dia (7d) — abaixo de 1 não virou hábito</div>
+   <div class="bar"><i style="width:${Math.min(100,g.por_pessoa_dia/3*100)}%"></i></div>`);
+ // 3. o numero esta em risco?
+ h+=card('O número está em risco?',
+  `<div class="st"><span class="dot ${risco}"></span>${e.risco}</div>
+   <div class="grid3" style="margin-top:10px">
+     ${kpi('Pico/min',e.pico_por_minuto,'limite ~6')}
+     ${kpi('Proativas',e.proativas,'em 24h')}
+     ${kpi('Razão',e.razao_proativa_por_recebida,'ideal &lt;1.5')}
+   </div>
+   <div class="muted" style="font-size:11px;margin-top:9px">
+     freio: ${d.freio.ciclo}/ciclo · ${d.freio.intervalo} entre envios · ${d.freio.por_usuario_dia}/pessoa/dia</div>`);
+ // 4. dinheiro — com o aviso do que e estimativa
+ const f2=d.financeiro;
+ let dec=(f2.decidem_ate_3_dias||[]).map(x=>
+   `<tr><td>${x.nome}</td><td>${x.dias===0?'hoje':'em '+x.dias+'d'}</td></tr>`).join('');
+ h+=card('Dinheiro',
+  `<div class="grid">
+     ${kpi('Assinantes',f2.assinantes,'pagando')}
+     ${kpi('MRR estimado','R$ '+f2.mrr_estimado.toFixed(2).replace('.',','),'× R$ '+f2.preco.toFixed(2).replace('.',','))}
+   </div>
+   <div class="grid" style="margin-top:10px">
+     ${kpi('Em teste',f2.em_teste,'ainda decidindo')}
+     ${kpi('Conversão',f2.conversao_pct==null?'—':f2.conversao_pct+'%',
+           f2.ja_decidiram+' já decidiram')}
+   </div>
+   <div class="grid" style="margin-top:10px">
+     ${kpi('Saiu sem assinar',f2.saiu_sem_assinar,'trial expirou')}
+     ${kpi('Cancelados',f2.cancelados)}
+   </div>
+   ${dec?`<div style="margin-top:12px"><div class="l" style="font-size:11px;color:#8296b3;margin-bottom:5px">DECIDEM ATÉ 3 DIAS</div><table>${dec}</table></div>`:''}
+   <div class="muted" style="font-size:11px;margin-top:11px;
+     border-top:1px solid #1c2740;padding-top:9px">
+     ⚠️ ${f2.aviso}. Assinatura é marcada na mão pelo comando <b>ativar</b>.</div>`);
+ // numeros de hoje
+ h+=`<div class="grid">
+   ${kpi('Usuários',m.total_users,`${m.trial} em teste · ${m.ativos} pagando`)}
+   ${kpi('Novos hoje',hj.novos||0)}
+   ${kpi('Demandas hoje',hj.recebidas||0,'mensagens que entraram')}
+   ${kpi('Itens hoje',hj.itens||0,'guardados no banco')}
+ </div>`;
+ const f=hj.falhas||0;
+ h+=`<div class="grid">
+   ${kpi('Avisos enviados',hj.disparos||0,'hoje')}
+   `+`<div class="kpi"><div class="l">Falhas de envio</div>
+     <div class="v ${f?'err':''}">${f}</div><div class="u">hoje</div></div>`+`
+ </div>`;
+ // 7 dias
+ let linhas=s.map((r,i)=>`<tr class="${i===s.length-1?'hoje':''}">
+   <td>${r.rotulo}</td><td>${r.novos}</td><td>${r.ativos}</td>
+   <td>${r.recebidas}</td><td>${r.itens}</td>
+   <td class="${r.falhas?'err':''}">${r.falhas}</td></tr>`).join('');
+ h+=card('Últimos 7 dias',
+  `<table><tr><th>Dia</th><th>Novos</th><th>Ativos</th><th>Msgs</th>
+   <th>Itens</th><th>Falhas</th></tr>${linhas}</table>`);
+ // quem usa
+ if(g.top&&g.top.length){
+   h+=card('Quem mais usa (7d)', '<table>'+g.top.map(t=>
+     `<tr><td>${t.nome}</td><td>${t.n} msgs</td></tr>`).join('')+'</table>');
+ }
+ // base
+ const us=(d.usuarios||[]).slice(0,20).map(u=>`<tr><td>${u.nome}</td>
+   <td><span class="tag">${u.status||'trial'}</span></td>
+   <td>${u.n_pendentes}/${u.n_itens}</td>
+   <td>${u.dias_trial_restantes}d</td></tr>`).join('');
+ h+=card('Base',`<table><tr><th>Nome</th><th>Status</th><th>Pend/Total</th>
+   <th>Trial</th></tr>${us||'<tr><td class="muted">ninguém ainda</td></tr>'}</table>`);
+ $('#app').innerHTML=h;
+ $('#rodape').textContent=d.build;
+}
+carrega(); setInterval(carrega,20000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()});
+</script></body></html>"""
+        return HTMLResponse(html)
+
+    @app.get("/api/pulso")
+    def api_pulso(request: Request):
+        """Todos os números do dashboard num JSON só.
+
+        Separar dados de tela existe por um motivo prático: o painel antigo
+        montava HTML no servidor, então cada atualização baixava a página
+        inteira. No celular, em 4G, isso é lento e gasta dado. Aqui a tela
+        carrega uma vez e só busca números a cada 20s.
+        """
+        from fastapi.responses import JSONResponse
+        if not _painel_autorizado(request):
+            return _negado(request)
+        m = db.painel_metricas()
+        wa = _instance_state()
+        ultimo = db.ultimo_cron_ping()
+        cron_min = None
+        if ultimo:
+            try:
+                cron_min = int((tempo.agora() - datetime.fromisoformat(
+                    ultimo)).total_seconds() // 60)
+            except Exception:
+                cron_min = None
+        return JSONResponse({
+            "build": BUILD,
+            "hora": tempo.agora().strftime("%d/%m %H:%M"),
+            "whatsapp": wa,
+            "conectado": wa == "open",
+            "cron_min": cron_min,
+            "trial_days": TRIAL_DAYS,
+            "metricas": m,
+            "serie": db.serie_diaria(7),
+            "envio": db.pulso_envio(),
+            "engajamento": db.engajamento(),
+            "financeiro": db.financeiro(TRIAL_DAYS),
+            "usuarios": db.admin_list_users(),
+            "freio": {"ciclo": DISPATCH_MAX_PER_CYCLE,
+                      "intervalo": f"{ENVIO_INTERVALO_MIN:.0f}-"
+                                   f"{ENVIO_INTERVALO_MAX:.0f}s",
+                      "por_usuario_dia": MAX_PROATIVAS_POR_USUARIO_DIA},
+        })
 
     @app.post("/painel/acao")
     async def painel_acao(request: Request):
