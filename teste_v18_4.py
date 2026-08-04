@@ -20,6 +20,13 @@ import tempfile
 
 os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "t184.db")
 # custos de exemplo pra conferir a aritmética
+# zera TUDO primeiro: o default de CUSTO_CLAUDE_MES é 100, e um teste que
+# depende de default silencioso quebra na primeira vez que alguém muda o
+# default — foi exatamente o que aconteceu aqui.
+for _v in ("CUSTO_CLAUDE_MES", "CUSTO_OPENAI_MES", "CUSTO_WASENDER_MES",
+           "CUSTO_VPS_MES", "CUSTO_DOMINIO_MES", "CUSTO_CHIP_MES",
+           "CUSTO_OUTROS_MES", "CUSTO_MSG_ENVIADA"):
+    os.environ[_v] = "0"
 os.environ["CUSTO_VPS_MES"] = "40"
 os.environ["CUSTO_DOMINIO_MES"] = "5"
 os.environ["CUSTO_LLM_POR_MSG"] = "0.02"
@@ -133,7 +140,9 @@ check("break-even > assinantes atuais",
       f"{f['breakeven_assinantes']} vs {f['assinantes']}")
 
 print("\nB3. Sem custo configurado, líquido = bruto")
-for k in ("CUSTO_VPS_MES", "CUSTO_DOMINIO_MES", "CUSTO_LLM_POR_MSG",
+for k in ("CUSTO_CLAUDE_MES", "CUSTO_OPENAI_MES", "CUSTO_WASENDER_MES",
+          "CUSTO_VPS_MES", "CUSTO_DOMINIO_MES", "CUSTO_CHIP_MES",
+          "CUSTO_OUTROS_MES", "CUSTO_LLM_POR_MSG", "CUSTO_MSG_ENVIADA",
           "TAXA_PAGAMENTO_PCT", "IMPOSTO_PCT"):
     os.environ[k] = "0"
 import importlib          # noqa: E402

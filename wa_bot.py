@@ -46,7 +46,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v18.4-liquido-e-dono-fora-2026-08-04"
+BUILD = "v18.5-todos-os-custos-2026-08-04"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1790,15 +1790,16 @@ async function carrega(){
         <div class="u">− ${R(f2.custo_total)} de custo</div></div>`+`
    </div>
    <table style="margin-top:11px">
-     <tr><td class="muted">Fixos (VPS, domínio…)</td><td>− ${R(cs.fixos)}</td></tr>
+     ${(f2.fixos_detalhe||[]).map(x=>
+       `<tr><td class="muted">${x.nome}</td><td>− ${R(x.valor)}</td></tr>`).join('')}
      <tr><td class="muted">IA (${f2.msgs_30d.recebidas} msgs/30d)</td><td>− ${R(cs.llm)}</td></tr>
-     <tr><td class="muted">Envio (${f2.msgs_30d.enviadas} msgs/30d)</td><td>− ${R(cs.envio)}</td></tr>
-     <tr><td class="muted">Taxa de pagamento</td><td>− ${R(cs.taxa_pagamento)}</td></tr>
-     <tr><td class="muted">Imposto</td><td>− ${R(cs.imposto)}</td></tr>
+     ${cs.envio>0?`<tr><td class="muted">Envio (${f2.msgs_30d.enviadas} msgs/30d)</td><td>− ${R(cs.envio)}</td></tr>`:''}
+     ${cs.taxa_pagamento>0?`<tr><td class="muted">Taxa de pagamento</td><td>− ${R(cs.taxa_pagamento)}</td></tr>`:''}
+     ${cs.imposto>0?`<tr><td class="muted">Imposto</td><td>− ${R(cs.imposto)}</td></tr>`:''}
+     <tr><td><b>Custo total</b></td><td><b>− ${R(f2.custo_total)}</b></td></tr>
    </table>
    ${f2.breakeven_assinantes!=null?`<div class="muted" style="font-size:12px;margin-top:9px">
-     Empata com <b style="color:#e6edf7">${f2.breakeven_assinantes}</b> assinante(s) ·
-     custo por assinante ${R(f2.custo_por_assinante)}</div>`:''}
+     Empata com <b style="color:#e6edf7">${f2.breakeven_assinantes}</b> assinante(s)</div>`:''}
    <div class="grid" style="margin-top:12px">
      ${kpi('Em teste',f2.em_teste,'ainda decidindo')}
      ${kpi('Conversão',f2.conversao_pct==null?'—':f2.conversao_pct+'%',
@@ -1812,6 +1813,26 @@ async function carrega(){
    <div class="muted" style="font-size:11px;margin-top:11px;
      border-top:1px solid #1c2740;padding-top:9px">
      ⚠️ ${f2.aviso}. Assinatura é marcada na mão pelo comando <b>ativar</b>.</div>`);
+ // 5. margem por cliente
+ const mg=f2.margem||{};
+ h+=card('Margem por cliente',
+  `<div class="st"><span class="dot ${mg.margem_contribuicao>0?(mg.margem_liquida_cliente>=0?'ok':'warn'):'bad'}"></span>${mg.leitura||''}</div>
+   <table style="margin-top:11px">
+     <tr><td class="muted">Preço</td><td>${R(mg.preco)}</td></tr>
+     <tr><td class="muted">− taxa e imposto</td><td>${R(mg.receita_liquida_unit)}</td></tr>
+     <tr><td class="muted">− custo variável dele</td><td>− ${R(mg.custo_variavel_cliente)}</td></tr>
+     <tr><td><b>= Margem de contribuição</b></td>
+         <td><b style="color:${mg.margem_contribuicao>0?'#22c55e':'#ef4444'}">${R(mg.margem_contribuicao)}</b>
+         <span class="muted">(${mg.margem_contribuicao_pct}%)</span></td></tr>
+     ${mg.fixo_rateado!=null?`<tr><td class="muted">− fixo rateado</td><td>− ${R(mg.fixo_rateado)}</td></tr>
+     <tr><td><b>= Sobra por cliente</b></td>
+         <td><b style="color:${mg.margem_liquida_cliente>=0?'#22c55e':'#ef4444'}">${R(mg.margem_liquida_cliente)}</b></td></tr>`
+     :'<tr><td class="muted" colspan="2">sem assinante ainda — rateio do fixo indisponível</td></tr>'}
+   </table>
+   <div class="muted" style="font-size:11px;margin-top:9px">
+     <b>Contribuição</b> = o que cada cliente novo acrescenta.
+     <b>Sobra</b> = o que fica depois de dividir o fixo. Negativa no começo é
+     falta de volume, não produto ruim — desde que a contribuição seja positiva.</div>`);
  // numeros de hoje
  h+=`<div class="grid">
    ${kpi('Usuários',m.total_users,`${m.trial} em teste · ${m.ativos} pagando`)}

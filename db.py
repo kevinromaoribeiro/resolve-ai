@@ -945,24 +945,52 @@ def engajamento(excluir_telefones: Optional[list] = None) -> dict:
 
 PRECO_MENSAL = float(os.environ.get("PRECO_MENSAL", "19.90"))
 
-# ── CUSTOS (edite no EasyPanel, não no código) ───────────────────────────
-# Deixados prontos mesmo antes de existir pagamento, porque no dia em que o
-# primeiro pagante entrar você vai querer saber o que sobra — e é justamente
-# aí que ninguém para pra montar planilha.
+# ═══════════════════════════════════════════════════════════════════════
+# CUSTOS — TODOS, exceto as horas do Kevin (decisão dele)
+# ═══════════════════════════════════════════════════════════════════════
+# Ajuste no EasyPanel, nunca aqui. Cada linha é nomeada porque "outros: 200"
+# é o jeito mais rápido de perder o controle de onde o dinheiro vai.
 #
-# FIXOS: não mudam com o número de usuários.
+# ── FIXOS: pagos todo mês, independem de ter 2 ou 200 usuários ──────────
+# Ferramenta de desenvolvimento (Claude). Kevin informou ~R$100/mês.
+# Sim, entra na conta: sem ela o produto não existe e não evolui.
+CUSTO_CLAUDE_MES = float(os.environ.get("CUSTO_CLAUDE_MES", "100"))
+# Piso/assinatura da OpenAI, se houver. O consumo por mensagem vai embaixo.
+CUSTO_OPENAI_MES = float(os.environ.get("CUSTO_OPENAI_MES", "0"))
+# Gateway do WhatsApp (WasenderAPI) — mensalidade.
+CUSTO_WASENDER_MES = float(os.environ.get("CUSTO_WASENDER_MES", "0"))
+# Servidor na nuvem onde roda o bot (o VPS do 177.153.58.163).
 CUSTO_VPS_MES = float(os.environ.get("CUSTO_VPS_MES", "0"))
-CUSTO_WHATSAPP_MES = float(os.environ.get("CUSTO_WHATSAPP_MES", "0"))
+# Domínio resolveai.ia.br (Registro.br é anual — divida por 12 aqui).
 CUSTO_DOMINIO_MES = float(os.environ.get("CUSTO_DOMINIO_MES", "0"))
+# Chip dedicado do número do bot (linha + plano).
+CUSTO_CHIP_MES = float(os.environ.get("CUSTO_CHIP_MES", "0"))
+# Qualquer outra assinatura recorrente.
 CUSTO_OUTROS_MES = float(os.environ.get("CUSTO_OUTROS_MES", "0"))
-# VARIÁVEIS: crescem com o uso. O de LLM é o que assusta em escala — o
-# usuário mais engajado é o mais caro, que é a pior curva de custo possível.
+
+# ── VARIÁVEIS: crescem com o uso ───────────────────────────────────────
+# Cada mensagem recebida vira ~1 chamada de LLM (gpt-4o-mini + Whisper/visão
+# quando é áudio ou foto). É o custo que assusta em escala, porque o usuário
+# MAIS ENGAJADO é o MAIS CARO — a pior curva de custo que existe.
 CUSTO_LLM_POR_MSG = float(os.environ.get("CUSTO_LLM_POR_MSG", "0.02"))
+# Custo por mensagem ENVIADA. Zero no Wasender; ~R$0,035 na API oficial.
 CUSTO_MSG_ENVIADA = float(os.environ.get("CUSTO_MSG_ENVIADA", "0"))
-# % que a plataforma de pagamento retém (Kirvano/Stripe/Mercado Pago)
+
+# ── SOBRE O FATURAMENTO ────────────────────────────────────────────────
+# % retido pela plataforma de pagamento (Kirvano/Stripe/Mercado Pago).
 TAXA_PAGAMENTO_PCT = float(os.environ.get("TAXA_PAGAMENTO_PCT", "0"))
-# imposto sobre o faturamento (MEI/Simples). 0 até formalizar.
+# Imposto sobre faturamento (MEI/Simples). 0 até formalizar.
 IMPOSTO_PCT = float(os.environ.get("IMPOSTO_PCT", "0"))
+
+_FIXOS = [
+    ("Claude (dev)", "CUSTO_CLAUDE_MES"),
+    ("OpenAI (assinatura)", "CUSTO_OPENAI_MES"),
+    ("WasenderAPI", "CUSTO_WASENDER_MES"),
+    ("Servidor (VPS)", "CUSTO_VPS_MES"),
+    ("Domínio", "CUSTO_DOMINIO_MES"),
+    ("Chip do bot", "CUSTO_CHIP_MES"),
+    ("Outros", "CUSTO_OUTROS_MES"),
+]
 
 
 def financeiro(trial_days: int = 14) -> dict:
@@ -1018,8 +1046,10 @@ def financeiro(trial_days: int = 14) -> dict:
         msgs_out = _um("SELECT COUNT(*) FROM msg_log WHERE direcao='out' "
                        "AND substr(ts,1,10) >= ?", ini30)
 
-    fixos = round(CUSTO_VPS_MES + CUSTO_WHATSAPP_MES + CUSTO_DOMINIO_MES
-                  + CUSTO_OUTROS_MES, 2)
+    fixos_itens = [{"nome": nome, "valor": float(globals().get(var, 0) or 0)}
+                   for nome, var in _FIXOS]
+    fixos_itens = [x for x in fixos_itens if x["valor"] > 0]
+    fixos = round(sum(x["valor"] for x in fixos_itens), 2)
     # cada mensagem recebida vira ~1 chamada de LLM
     custo_llm = round(msgs_in * CUSTO_LLM_POR_MSG, 2)
     custo_envio = round(msgs_out * CUSTO_MSG_ENVIADA, 2)
@@ -1028,14 +1058,47 @@ def financeiro(trial_days: int = 14) -> dict:
     imposto = round(bruto * IMPOSTO_PCT / 100, 2)
     custo_total = round(fixos + variaveis + taxa + imposto, 2)
     liquido = round(bruto - custo_total, 2)
-    # quantos assinantes só pra empatar
-    margem_unit = PRECO_MENSAL * (1 - (TAXA_PAGAMENTO_PCT + IMPOSTO_PCT) / 100)
-    custo_por_user = (variaveis / len(ativos)) if ativos else 0
-    contrib = margem_unit - custo_por_user
+
+    # ── MARGEM POR CLIENTE ──────────────────────────────────────────────
+    # Duas contas diferentes, e confundir as duas leva a decisão errada:
+    #
+    # MARGEM DE CONTRIBUIÇÃO = preço − taxa − imposto − custo variável dele.
+    #   É o que CADA cliente novo acrescenta. Se for positiva, crescer ajuda;
+    #   se for negativa, cada cliente novo aumenta o prejuízo e escalar é a
+    #   pior coisa a fazer.
+    #
+    # MARGEM LÍQUIDA = margem de contribuição − fixo rateado.
+    #   É o que sobra de verdade hoje. Ela é negativa no começo por definição
+    #   (poucos clientes dividindo o mesmo fixo) e isso NÃO significa que o
+    #   negócio é ruim — significa que ainda falta volume.
+    n = len(ativos)
+    var_por_cliente = round(variaveis / n, 2) if n else round(
+        variaveis / max(1, len(users)), 2)
+    desconto_pct = (TAXA_PAGAMENTO_PCT + IMPOSTO_PCT) / 100
+    receita_liq_unit = round(PRECO_MENSAL * (1 - desconto_pct), 2)
+    contrib = round(receita_liq_unit - var_por_cliente, 2)
+    fixo_rateado = round(fixos / n, 2) if n else None
+    margem_cliente = round(contrib - fixo_rateado, 2) if n else None
     breakeven = (int(-(-fixos // contrib)) if contrib > 0 and fixos else
                  (0 if not fixos else None))
 
     return {
+        "margem": {
+            "preco": PRECO_MENSAL,
+            "receita_liquida_unit": receita_liq_unit,
+            "custo_variavel_cliente": var_por_cliente,
+            "margem_contribuicao": contrib,
+            "margem_contribuicao_pct": (round(contrib / PRECO_MENSAL * 100, 1)
+                                        if PRECO_MENSAL else 0),
+            "fixo_rateado": fixo_rateado,
+            "margem_liquida_cliente": margem_cliente,
+            "leitura": ("🔴 cada cliente novo AUMENTA o prejuízo — não escale"
+                        if contrib <= 0 else
+                        "🟢 cada cliente novo ajuda — falta volume pro fixo"
+                        if (margem_cliente is None or margem_cliente < 0) else
+                        "🟢 lucrativo por cliente"),
+        },
+        "fixos_detalhe": fixos_itens,
         "aviso": "MRR é ESTIMATIVA — não há integração de pagamento ligada",
         "assinantes": len(ativos),
         "mrr_estimado": bruto,
@@ -1045,7 +1108,7 @@ def financeiro(trial_days: int = 14) -> dict:
         "custos": {"fixos": fixos, "llm": custo_llm, "envio": custo_envio,
                    "taxa_pagamento": taxa, "imposto": imposto},
         "msgs_30d": {"recebidas": msgs_in, "enviadas": msgs_out},
-        "custo_por_assinante": round(custo_por_user, 2),
+        "custo_por_assinante": var_por_cliente,
         "breakeven_assinantes": breakeven,
         "preco": PRECO_MENSAL,
         "em_teste": len(trial),
