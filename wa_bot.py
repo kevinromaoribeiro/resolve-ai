@@ -924,6 +924,7 @@ def _travar_acao_destrutiva(texto: str, v8: dict) -> dict:
     conclusao E sozinha na mensagem. "Feito" logo apos criar item vira
     confirmacao de cadastro, nao baixa.
     """
+    import logging as _lg   # wa_bot nao importa logging no topo
     if not isinstance(v8, dict):
         return v8
     t = (texto or "").strip()
@@ -934,7 +935,7 @@ def _travar_acao_destrutiva(texto: str, v8: dict) -> dict:
         v8.pop("concluir", None)
         v8["reply"] = ("Adiado. \u23f0 Me diz pra quando: *1 hora*, "
                        "*amanh\u00e3* ou uma data.")
-        logging.getLogger("resolveai").warning(
+        _lg.getLogger("resolveai").warning(
             "[trava] usuario pediu ADIAR e o motor tentou CONCLUIR")
         return v8
 
@@ -942,7 +943,7 @@ def _travar_acao_destrutiva(texto: str, v8: dict) -> dict:
     if v8.get("concluir") and t and not _CONCLUIR_RE.match(t):
         v8 = dict(v8)
         v8.pop("concluir", None)
-        logging.getLogger("resolveai").warning(
+        _lg.getLogger("resolveai").warning(
             "[trava] motor tentou CONCLUIR sem palavra clara do usuario: %r",
             t[:60])
     return v8
