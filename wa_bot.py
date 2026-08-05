@@ -47,7 +47,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v19.0-meta-cloud-api-2026-08-05"
+BUILD = "v19.1-meta-cloud-api-2026-08-05"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1385,7 +1385,7 @@ try:
         faz a Meta recusar a URL com um erro generico que nao diz o motivo.
         E a pegadinha mais comum do setup.
         """
-        from fastapi.responses import PlainTextResponse
+        from fastapi.responses import PlainTextResponse, JSONResponse
         q = request.query_params
         challenge = meta_cloud.verificar_handshake(
             q.get("hub.mode", ""), q.get("hub.verify_token", ""),
