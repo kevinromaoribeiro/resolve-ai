@@ -1,4 +1,4 @@
-﻿"""
+"""
 wa_bot.py — Gateway real de WhatsApp do RESOLVE AI via Evolution API (QR Code).
 
 Arquitetura:
@@ -38,7 +38,8 @@ import db
 import textos
 import ai_engine
 import scheduler
-import wasender  # camada WasenderAPI (substitui envio/webhook/mídia da Evolution/Whapi)
+import canal as wasender  # camada de canal: Meta oficial OU WasenderAPI (ver canal.py)
+import meta_cloud  # handshake e assinatura do webhook da Meta
 import motor_v8  # mordomo híbrido: entende linguagem natural fora do script
 
 db.init_db()
@@ -46,7 +47,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v18.5-todos-os-custos-2026-08-04"
+BUILD = "v19.0-meta-cloud-api-2026-08-05"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1376,9 +1377,46 @@ try:
             return JSONResponse(status_code=500, content=body)
         return body
 
+    @app.get("/webhook")
+    async def webhook_handshake(request: Request):
+        """Handshake que a Meta faz UMA vez ao cadastrar a URL do webhook.
+
+        Precisa devolver o hub.challenge como TEXTO PURO — devolver JSON aqui
+        faz a Meta recusar a URL com um erro generico que nao diz o motivo.
+        E a pegadinha mais comum do setup.
+        """
+        from fastapi.responses import PlainTextResponse
+        q = request.query_params
+        challenge = meta_cloud.verificar_handshake(
+            q.get("hub.mode", ""), q.get("hub.verify_token", ""),
+            q.get("hub.challenge", ""))
+        if challenge is None:
+            return JSONResponse(status_code=403, content={"erro": "token invalido"})
+        return PlainTextResponse(challenge)
+
     @app.post("/webhook")
     async def webhook(request: Request):
-        raw = await request.json()
+        corpo_bruto = await request.body()
+
+        # ASSINATURA. O webhook ficou aberto na porta 8000 enquanto era so o
+        # dono testando: qualquer um com o IP podia forjar mensagem em nome
+        # de qualquer usuario. Na Cloud API isso nao se repete.
+        # So exige assinatura no canal oficial — no Wasender esse cabecalho
+        # nao existe e exigir quebraria o fallback.
+        if getattr(wasender, "OFICIAL", False):
+            if not meta_cloud.assinatura_valida(
+                    corpo_bruto, request.headers.get("x-hub-signature-256", "")):
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[webhook] assinatura INVALIDA — payload descartado")
+                return JSONResponse(status_code=403,
+                                    content={"erro": "assinatura invalida"})
+
+        import json as _json
+        try:
+            raw = _json.loads(corpo_bruto or b"{}")
+        except Exception:
+            return {"ignored": True}
         # Traduz o payload da WasenderAPI para o formato que handle_incoming entende.
         payload = wasender.to_evolution_shape(raw)
         if not payload:
