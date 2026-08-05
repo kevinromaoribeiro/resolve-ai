@@ -45,13 +45,13 @@ MAX_LINHAS_LISTA = 10       # limite do WhatsApp
 # ===========================================================================
 BOAS_VINDAS = (
     "Oi, {nome}! \U0001F44B Eu sou o *Resolve AI*.\n\n"
-    "Eu guardo suas contas, consultas e prazos — e te aviso *antes*, "
+    "Eu guardo suas contas, consultas e prazos \u2014 e te aviso *antes*, "
     "sozinho, aqui no Zap.\n\n"
-    "\U0001F381 Seus *{dias} dias gratis* ja comecaram. Sem cartao, sem pegadinha.\n\n"
-    "Vamos direto ao ponto: *me manda uma coisa que voce nao pode esquecer.*\n\n"
-    "Pode ser a foto de um boleto, um audio, ou so uma linha:\n"
+    "\U0001F381 Seus *{dias} dias gr\u00e1tis* j\u00e1 come\u00e7aram. Sem cart\u00e3o, sem pegadinha.\n\n"
+    "Vamos direto ao ponto: *me manda uma coisa que voc\u00ea n\u00e3o pode esquecer.*\n\n"
+    "Pode ser a foto de um boleto, um \u00e1udio, ou s\u00f3 uma linha:\n"
     "_\"luz 187 vence dia 20\"_\n"
-    "_\"dentista dia 15 as 14h\"_"
+    "_\"dentista dia 15 \u00e0s 14h\"_"
 )
 
 RODAPE_LEGAL = (
@@ -62,11 +62,11 @@ RODAPE_LEGAL = (
 # --- a demonstracao: o coracao deste arquivo ------------------------------
 DEMO = (
     "\u23F0 *Olha eu aqui.*\n\n"
-    "Do nada, sem voce pedir:\n"
+    "Do nada, sem voc\u00ea pedir:\n"
     "*{descricao}*{quando}\n\n"
-    "Isso foi so uma amostra, pra voce ver como e. "
-    "O aviso de verdade chega {aviso_real} — na hora que ainda da pra resolver.\n\n"
-    "E isso que eu faco todo dia, no automatico. \U0001F91D"
+    "Isso foi s\u00f3 uma amostra, pra voc\u00ea ver como \u00e9. "
+    "O aviso de verdade chega {aviso_real} \u2014 na hora que ainda d\u00e1 pra resolver.\n\n"
+    "\u00c9 isso que eu fa\u00e7o todo dia, no autom\u00e1tico. \U0001F91D"
 )
 
 # --- fim do trial: quem usou e quem nao usou nao merecem a mesma coisa ----
@@ -282,12 +282,23 @@ def marcar_demo_enviada(user_id: int) -> None:
         log.warning("[demo] falha ao marcar enviada", exc_info=True)
 
 
+def _data_br(iso: str) -> str:
+    """2026-08-05 -> 05/08.
+
+    Data crua em ISO na cara do usuario e feio, e foi exatamente o que
+    apareceu no primeiro teste real no WhatsApp.
+    """
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", str(iso or ""))
+    return f"{m.group(3)}/{m.group(2)}" if m else str(iso or "")
+
+
 def texto_demo(descricao: str, quando: str = "") -> str:
     """Monta a mensagem da amostra.
 
     Sem data a frase muda: prometer "aviso de verdade" para um item sem
     data seria mentira, e mentira no minuto 2 custa o cliente.
     """
+    quando = _data_br(quando)
     if quando:
         return DEMO.format(descricao=descricao, quando=f" — {quando}",
                            aviso_real=f"*{quando}*")
