@@ -40,6 +40,7 @@ import ai_engine
 import scheduler
 import canal as wasender  # camada de canal: Meta oficial OU WasenderAPI (ver canal.py)
 import meta_cloud  # handshake e assinatura do webhook da Meta
+import botoes  # botao de resposta rapida (decidido em Python, nao no LLM)
 import motor_v8  # mordomo híbrido: entende linguagem natural fora do script
 
 db.init_db()
@@ -47,7 +48,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v19.1-meta-cloud-api-2026-08-05"
+BUILD = "v19.2-botoes-2026-08-05"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -1491,7 +1492,10 @@ try:
             if not any(p in falha_depois for p in _AUTOCORRECAO):
                 _alertar_dono(falha_depois, num, content)
         if reply:
-            ok = send_whatsapp(reply["number"], reply["text"])
+            # Botao de resposta rapida quando o texto pedir. Cai pra texto
+            # puro sozinho se o interativo falhar — ver botoes.py.
+            ok = botoes.enviar_resposta(reply["number"], reply["text"],
+                                        send_whatsapp)
             if not ok:
                 # Antes o retorno era ignorado: o painel registrava "enviada"
                 # mesmo quando a API recusava, escondendo falhas de credencial
