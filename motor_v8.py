@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 motor_v8.py — Camada de entendimento natural ("mordomo").
 ==========================================================
@@ -304,6 +304,58 @@ def _tem_pergunta_aberta(msgs: list) -> bool:
 ULTIMA_FALHA: str = ""
 
 
+def _primeiro_json(bruto: str):
+    """Extrai o PRIMEIRO objeto JSON completo do texto — e ignora o resto.
+
+    POR QUE ISTO EXISTE (05/08, quebrou usuario real):
+    o modelo devolve o JSON certo e CONTINUA escrevendo depois dele —
+    explicacao, um segundo objeto, o que der. O json.loads() estoura com
+    "Extra data: line 1 column 237" e a pessoa recebe mensagem de erro por
+    ter escrito "Lembre-me do vencimento da minha fatura dia 14/8", que e
+    uma frase perfeitamente normal.
+
+    A varredura conta chaves respeitando string e escape, entao nao se
+    perde com { } dentro de texto (ex.: descricao com chave literal).
+    """
+    if not bruto:
+        return None
+    ini = bruto.find("{")
+    if ini < 0:
+        return None
+    nivel = 0
+    dentro_str = False
+    escapou = False
+    for i in range(ini, len(bruto)):
+        c = bruto[i]
+        if escapou:
+            escapou = False
+            continue
+        if c == "\\":
+            escapou = True
+            continue
+        if c == '"':
+            dentro_str = not dentro_str
+            continue
+        if dentro_str:
+            continue
+        if c == "{":
+            nivel += 1
+        elif c == "}":
+            nivel -= 1
+            if nivel == 0:
+                trecho = bruto[ini:i + 1]
+                try:
+                    return json.loads(trecho, strict=False)
+                except json.JSONDecodeError:
+                    try:
+                        return json.loads(
+                            trecho.replace("{{", "{").replace("}}", "}"),
+                            strict=False)
+                    except json.JSONDecodeError:
+                        return None
+    return None
+
+
 def _registrar_falha(motivo: str) -> None:
     """Guarda o último motivo de o mordomo ter desistido.
 
@@ -377,8 +429,14 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
                     data = json.loads(remendo, strict=False)
                     _registrar_falha("json veio com chave dupla — remendado")
                 except json.JSONDecodeError:
-                    _registrar_falha(f"json invalido ({e}) :: {bruto[:400]}")
-                    continue
+                    # Ultima tentativa: o modelo escreveu texto DEPOIS do
+                    # JSON ("Extra data"). Pega so o primeiro objeto.
+                    data = _primeiro_json(bruto)
+                    if data is None:
+                        _registrar_falha(
+                            f"json invalido ({e}) :: {bruto[:400]}")
+                        continue
+                    _registrar_falha("json com texto extra — recortado")
             if data.get("reply") and data.get("intent"):
                 return data
             _registrar_falha(f"json sem reply/intent :: {bruto[:400]}")
