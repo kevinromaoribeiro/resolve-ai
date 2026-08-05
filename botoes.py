@@ -60,6 +60,16 @@ MAX_CORPO = 1024
 # Regra: leia uma conversa antes de escrever regex.
 _REGRAS = [
     (
+        "alarme_na_hora",
+        # "\u23f0 DC, chegou a hora: *Comprar racao* — voce me pediu pra
+        #  avisar as 17:30. Responda *feito* que eu dou baixa, ou *adiar 1h*."
+        # E o disparo MAIS importante do produto: e o momento em que a
+        # pessoa sente o valor. Sair so como texto obrigava a digitar.
+        re.compile(r"chegou a hora|responda\s+\*?feito|me pediu pra avisar", re.I),
+        [("Feito", "Feito"), ("Adiar 1h", "adiar 1h"),
+         ("Adiar amanh\u00e3", "adiar")],
+    ),
+    (
         "escolher_periodo",
         # "Que horas te aviso? Responde *manh\u00e3* (08:00) ou *noite* (20:00)"
         re.compile(r"que horas te aviso|responde\s+\*?manh", re.I),
