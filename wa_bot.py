@@ -49,7 +49,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v20.2-onboarding-2026-08-05"
+BUILD = "v20.3-correcao-e-botao-no-alarme-2026-08-05"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -896,6 +896,56 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     return {"number": phone, "text": result["reply"]}
 
 
+_JANELA_CORRECAO_SEG = 300   # 5 min: depois disso e assunto novo
+
+
+def _norm_desc(s: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s or "").lower())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9 ]+", "", s).strip()
+
+
+def _item_recente_igual(user_id: int, descricao: str):
+    """Id do item com a MESMA descricao criado nos ultimos 5 min — ou None."""
+    import datetime as _dt
+    import logging as _lg
+    alvo = _norm_desc(descricao)
+    if len(alvo) < 3:
+        return None
+    try:
+        with db.get_conn() as conn:
+            linhas = conn.execute(
+                "SELECT id, descricao, data_criacao FROM items "
+                "WHERE user_id=? AND status='pendente' "
+                "ORDER BY id DESC LIMIT 5", (user_id,)).fetchall()
+        agora = tempo.agora()
+        for iid, desc, criado in linhas:
+            if _norm_desc(desc) != alvo:
+                continue
+            try:
+                c = _dt.datetime.fromisoformat(str(criado).replace(" ", "T"))
+            except Exception:
+                continue
+            if (agora - c).total_seconds() <= _JANELA_CORRECAO_SEG:
+                return iid
+    except Exception:
+        _lg.getLogger("resolveai").warning(
+            "[correcao] falha ao procurar item recente", exc_info=True)
+    return None
+
+
+def _enviar_com_botao(number: str, texto: str) -> bool:
+    """Envia disparo proativo tentando botao antes do texto puro.
+
+    O alarme ("chegou a hora... Responda feito") saia so como texto: o
+    usuario lia "responda feito" e tinha que digitar. Agora, se ele estiver
+    dentro da janela de 24h, recebe os botoes; fora dela, cai pra texto
+    igual antes. botoes.enviar_resposta ja faz esse fallback sozinho.
+    """
+    return botoes.enviar_resposta(number, texto, send_whatsapp)
+
+
 def _meu_item(user_id: int, item_id) -> bool:
     """O item pertence a este usuario?
 
@@ -989,6 +1039,23 @@ def _aplicar_v8(user_id: int, v8: dict) -> None:
     falhou_gravar = []
     for item in v8.get("items", []):
         try:
+            # CORRECAO EM CIMA DA HORA (05/08, com o proprio dono):
+            # audio 1 -> "descer em Utinga 19:50" -> item criado
+            # audio 2 -> corrige pra 18:50        -> criava um SEGUNDO item
+            # A pessoa acha que corrigiu, o banco fica com dois, e o bot
+            # pergunta "terminou?" porque pra ele sao dois assuntos.
+            _rec = _item_recente_igual(user_id, item.get("descricao") or "")
+            if _rec:
+                _campos = {k: v for k, v in {
+                    "data_vencimento": item.get("data_vencimento"),
+                    "hora_alvo": item.get("hora_alvo"),
+                    "valor_reais": item.get("valor_reais"),
+                }.items() if v not in (None, "")}
+                if _campos:
+                    db.atualizar_item(_rec, **_campos)
+                    log_.info("[v8] CORRECAO: item %s atualizado (%s)",
+                              _rec, _campos)
+                    continue
             db.add_item(user_id=user_id, tipo=item.get("tipo", "lembrete"),
                         categoria=item.get("categoria", "Outros"),
                         descricao=(item.get("descricao") or "item")[:120],
@@ -1246,7 +1313,7 @@ def maybe_admin_report() -> bool:
            f"{disparos} disparo(s)\n"
            f"Base: {ativos} pagante(s) · {trials} em trial\n"
            f"MRR: R$ {ativos*19.90:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    if send_whatsapp(re.sub(r"\D", "", ADMIN_PHONE), msg):
+    if _enviar_com_botao(re.sub(r"\D", "", ADMIN_PHONE), msg):
         db.log_dispatch(admin_id, "admin-report")
         return True
     return False
@@ -1325,7 +1392,7 @@ def relatorio_matinal() -> bool:
         linhas.append("")
         linhas.append(f"📊 Dash completo: {DASH_URL_BASE}/dash?k={PAINEL_TOKEN}")
 
-    if send_whatsapp(re.sub(r"\D", "", ADMIN_PHONE), "\n".join(linhas)):
+    if _enviar_com_botao(re.sub(r"\D", "", ADMIN_PHONE), "\n".join(linhas)):
         db.log_dispatch(admin_id, "dash-manha")
         return True
     return False
@@ -1346,7 +1413,7 @@ def dispatch_proactive() -> int:
                 jornada.marcar_demo_enviada(_d["user_id"])
                 continue
             _txt = jornada.texto_demo(_d["descricao"], _d.get("quando") or "")
-            if send_whatsapp(_u["telefone"], _txt):
+            if _enviar_com_botao(_u["telefone"], _txt):
                 try:
                     db.log_message(_u["id"], _u["telefone"], "out", "texto", _txt)
                 except Exception:
