@@ -353,7 +353,7 @@ def texto_demo(descricao: str, quando: str = "") -> str:
         return DEMO.format(
             descricao=descricao,
             quando=f" \u2014 {_data_br(quando)}" if quando else "",
-            aviso_real="*na proxima vez que voce marcar uma data*")
+            aviso_real="*na pr\u00f3xima vez que voc\u00ea marcar uma data*")
     quando = _data_br(quando)
     if quando:
         return DEMO.format(descricao=descricao, quando=f" — {quando}",
