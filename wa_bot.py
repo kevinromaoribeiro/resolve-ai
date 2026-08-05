@@ -48,7 +48,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v19.2-botoes-2026-08-05"
+BUILD = "v19.3-auditoria-2026-08-05"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -886,6 +886,56 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     return {"number": phone, "text": result["reply"]}
 
 
+def _meu_item(user_id: int, item_id) -> bool:
+    """O item pertence a este usuario?
+
+    O `item_id` que chega aqui foi escrito pelo LLM, e texto de usuario
+    (inclusive texto DENTRO de uma foto) influencia o que o LLM escreve.
+    Sem esta checagem, uma injecao de prompt marca como concluido o
+    lembrete de remedio de outra pessoa. As funcoes de mutacao do db.py
+    nao recebem user_id, entao a trava fica aqui — na fronteira exata em
+    que dado de LLM vira escrita.
+    """
+    try:
+        with db.get_conn() as conn:
+            dono = conn.execute("SELECT user_id FROM items WHERE id=?",
+                                (int(item_id),)).fetchone()
+        return bool(dono) and int(dono[0]) == int(user_id)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[dono] falha ao conferir item %s", item_id, exc_info=True)
+        return False   # na duvida, NAO escreve
+
+
+def _ja_processada(msg_id: str) -> bool:
+    """True se esta mensagem ja foi processada antes.
+
+    A Meta REENVIA o webhook quando nao recebe 200 rapido. Como o motor
+    chama LLM antes de responder, timeout nao e hipotetico — e reenvio
+    significa item duplicado no banco e mensagem paga cobrada duas vezes.
+    """
+    if not msg_id:
+        return False
+    try:
+        with db.get_conn() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS msgs_vistas ("
+                         "msg_id TEXT PRIMARY KEY, ts TEXT)")
+            ja = conn.execute("SELECT 1 FROM msgs_vistas WHERE msg_id=?",
+                              (msg_id,)).fetchone()
+            if ja:
+                return True
+            conn.execute("INSERT INTO msgs_vistas (msg_id, ts) VALUES (?,?)",
+                         (msg_id, tempo.agora().isoformat()))
+            # nao deixa a tabela crescer pra sempre
+            conn.execute("DELETE FROM msgs_vistas WHERE msg_id NOT IN ("
+                         "SELECT msg_id FROM msgs_vistas "
+                         "ORDER BY ts DESC LIMIT 5000)")
+        return False
+    except Exception:
+        return False   # dedup e otimizacao: nunca pode impedir atendimento
+
+
 def _aplicar_v8(user_id: int, v8: dict) -> None:
     """Grava no banco o que o mordomo decidiu.
 
@@ -905,16 +955,24 @@ def _aplicar_v8(user_id: int, v8: dict) -> None:
     atualizar = v8.get("atualizar")
     if isinstance(atualizar, dict) and atualizar.get("id"):
         try:
-            ok = db.atualizar_item(int(atualizar["id"]),
-                                   **(atualizar.get("campos") or {}))
-            log_.info("[v8] atualizar item %s -> %s", atualizar["id"], ok)
+            if not _meu_item(user_id, atualizar["id"]):
+                log_.error("[v8] BLOQUEADO: item %s nao pertence ao user %s",
+                           atualizar["id"], user_id)
+            else:
+                ok = db.atualizar_item(int(atualizar["id"]),
+                                       **(atualizar.get("campos") or {}))
+                log_.info("[v8] atualizar item %s -> %s", atualizar["id"], ok)
         except Exception:
             log_.warning("[v8] falha ao atualizar item", exc_info=True)
 
     if v8.get("concluir"):
         try:
-            db.atualizar_item(int(v8["concluir"]), status="concluido")
-            log_.info("[v8] concluir item %s", v8["concluir"])
+            if not _meu_item(user_id, v8["concluir"]):
+                log_.error("[v8] BLOQUEADO: concluir item %s de outro dono "
+                           "(user %s)", v8["concluir"], user_id)
+            else:
+                db.atualizar_item(int(v8["concluir"]), status="concluido")
+                log_.info("[v8] concluir item %s", v8["concluir"])
         except Exception:
             log_.warning("[v8] falha ao concluir item", exc_info=True)
 
@@ -1335,7 +1393,8 @@ def _proativas_hoje(user_id: int) -> int:
 try:
     from fastapi import FastAPI, Request
 
-    app = FastAPI(title="Resolve AI · WhatsApp Gateway")
+    app = FastAPI(title="Resolve AI · WhatsApp Gateway",
+                  docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/health")
     async def health(request: Request):
@@ -1448,6 +1507,13 @@ try:
         # foto do diagnóstico ANTES de processar: se mudar, o motor falhou
         # nesta mensagem e o dono precisa saber na hora.
         falha_antes = getattr(motor_v8, "ULTIMA_FALHA", "")
+
+        _mid = ((payload.get("data") or {}).get("key") or {}).get("id") or ""
+        if _ja_processada(_mid):
+            import logging
+            logging.getLogger("resolveai").info(
+                "[webhook] reenvio da Meta ignorado (msg ja processada)")
+            return {"ok": True, "duplicada": True}
 
         reply = handle_incoming(payload)
 
