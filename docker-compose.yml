@@ -1,34 +1,53 @@
-# RESOLVE AI — infraestrutura enxuta (WasenderAPI)
-# Agora a mensageria é a WasenderAPI (nuvem), então NÃO subimos mais Evolution
-# nem Postgres localmente. Só o bot FastAPI. Libera RAM na VPS.
+# RESOLVE AI — infraestrutura enxuta
+# Mensageria: Cloud API oficial da Meta (canal.py decide) com WasenderAPI de reserva.
 # Comando:  docker compose up -d --build
 #
-# ATENÇÃO: variável que não aparece aqui com ${PLACEHOLDER} NÃO chega no
-# container, mesmo estando salva no Ambiente do EasyPanel. Já queimamos horas
-# com isso (WASENDER_API_KEY chegava vazia e o bot rodava sem autenticação).
+# ATENCAO: variavel que nao aparece aqui com ${PLACEHOLDER} NAO chega no
+# container, mesmo estando salva no Ambiente do EasyPanel. Ja queimamos horas
+# com isso (WASENDER_API_KEY chegava vazia e o bot rodava sem autenticacao).
 # Ao criar env nova: declare AQUI e salve no EasyPanel.
+#
+# SEM container_name de proposito: o Traefik do EasyPanel procura o servico
+# pelo nome que ele mesmo gera (resolveai_bot). Fixar o nome aqui como
+# "resolveai-bot" fazia o dominio HTTPS devolver 502 — o proxy batia num
+# nome que nao existia. Custou o webhook da Meta nao subir.
 services:
   bot:
     build: .
-    container_name: resolveai-bot
     restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
-      # --- WasenderAPI (mensageria) ---
+      # --- Canal: meta | wasender | auto (auto usa a Meta se houver token) ---
+      - CANAL=${CANAL:-auto}
+      # --- Cloud API oficial da Meta ---
+      - META_TOKEN=${META_TOKEN}
+      - META_PHONE_NUMBER_ID=${META_PHONE_NUMBER_ID}
+      - META_WABA_ID=${META_WABA_ID}
+      - META_APP_SECRET=${META_APP_SECRET}
+      - META_VERIFY_TOKEN=${META_VERIFY_TOKEN}
+      - META_API_VERSION=${META_API_VERSION:-v23.0}
+      # --- WasenderAPI (reserva) ---
       - WASENDER_API_KEY=${WASENDER_API_KEY}
       - WASENDER_URL=${WASENDER_URL:-https://www.wasenderapi.com}
       # --- App ---
       - ADMIN_PHONE=${ADMIN_PHONE}
       - MASTER_PHONE=${MASTER_PHONE}
-      - TRIAL_DAYS=${TRIAL_DAYS:-7}
+      - TRIAL_DAYS=${TRIAL_DAYS:-14}
       - AUDIO_MAX_SECONDS=${AUDIO_MAX_SECONDS:-120}
       - TERMS_URL=${TERMS_URL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - PAYMENT_LINK=${PAYMENT_LINK}
       - PAYMENT_LINK_ANUAL=${PAYMENT_LINK_ANUAL}
+      # --- Freios anti-bloqueio ---
+      - DISPATCH_MAX_PER_CYCLE=${DISPATCH_MAX_PER_CYCLE:-5}
+      - ENVIO_INTERVALO_MIN=${ENVIO_INTERVALO_MIN:-8}
+      - ENVIO_INTERVALO_MAX=${ENVIO_INTERVALO_MAX:-15}
+      - MAX_PROATIVAS_POR_USUARIO_DIA=${MAX_PROATIVAS_POR_USUARIO_DIA:-6}
       # --- Painel (fail-closed: sem token, painel fechado) ---
       - PAINEL_TOKEN=${PAINEL_TOKEN}
+      - DASH_URL_BASE=${DASH_URL_BASE}
+      - CUSTO_CLAUDE_MES=${CUSTO_CLAUDE_MES:-100}
       - DB_PATH=/app/data/resolve_ai.db
     volumes:
       - ./data:/app/data
