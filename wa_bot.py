@@ -49,7 +49,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v20.0-jornada-2026-08-05"
+BUILD = "v20.1-correcoes-2026-08-05"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -995,9 +995,20 @@ def _aplicar_v8(user_id: int, v8: dict) -> None:
             # pra sentir o produto uma vez — e o trial tem 14 dias.
             # agendar_demo() so aceita o PRIMEIRO item de cada pessoa.
             try:
+                # id do item recem-criado: sem ele a demo nao consegue
+                # checar se a pessoa ja concluiu antes dos 90s
+                _iid = None
+                try:
+                    with db.get_conn() as _c:
+                        _r = _c.execute(
+                            "SELECT id FROM items WHERE user_id=? "
+                            "ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
+                    _iid = _r[0] if _r else None
+                except Exception:
+                    pass
                 jornada.agendar_demo(
                     user_id, (item.get("descricao") or "isso")[:120],
-                    item.get("data_vencimento") or "")
+                    item.get("data_vencimento") or "", _iid)
             except Exception:
                 log_.warning("[demo] falha ao agendar", exc_info=True)
         except Exception as e:
