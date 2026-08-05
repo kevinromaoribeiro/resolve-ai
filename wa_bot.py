@@ -49,7 +49,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v20.1-correcoes-2026-08-05"
+BUILD = "v20.2-onboarding-2026-08-05"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -193,10 +193,19 @@ def _parse_interesses(text: str) -> list[str]:
 
 
 def _onboarding_done_msg(first_name: str, keys: list[str]) -> str:
-    chosen = keys or ["contas", "mercado", "datas"]
-    exemplos = "\n".join(textos.USE_CASE_EXAMPLES[k] for k in chosen[:4])
-    return (textos.SUGESTOES_ABERTURA.format(nome=first_name, trial_days=TRIAL_DAYS)
-            + exemplos + textos.SUGESTOES_RODAPE)
+    """Primeira mensagem de quem chega pela landing.
+
+    ANTES: despejava SUGESTOES_ABERTURA + ate 4 blocos de exemplo +
+    RODAPE — mais de mil caracteres de cardapio, como PRIMEIRA mensagem,
+    sem nenhuma pergunta. Resultado medido em 05/08: 8 cadastros, 1 item
+    (e o item era do dono). Cardapio sem garcom ninguem pede.
+
+    AGORA: uma unica acao concreta, com exemplo pronto pra copiar. As 8
+    sugestoes nao sumiram — viraram a lista de jornada.SUGESTOES, que o
+    usuario abre quando quiser, e a regua do trial_guiado continua
+    puxando as que ele nao usou.
+    """
+    return jornada.BOAS_VINDAS.format(nome=first_name, dias=TRIAL_DAYS)
 
 
 def _payment_msg(first_name: str) -> str:
