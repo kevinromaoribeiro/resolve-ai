@@ -218,10 +218,11 @@ def _conn():
 
 _DDL = ("CREATE TABLE IF NOT EXISTS demos ("
         "user_id INTEGER PRIMARY KEY, descricao TEXT, "
-        "quando TEXT, criado_em TEXT, enviado_em TEXT)")
+        "quando TEXT, criado_em TEXT, enviado_em TEXT, item_id INTEGER)")
 
 
-def agendar_demo(user_id: int, descricao: str, quando: str = "") -> bool:
+def agendar_demo(user_id: int, descricao: str, quando: str = "",
+                 item_id=None) -> bool:
     """Agenda o aviso de amostra. So UMA vez por usuario, no primeiro item.
 
     Tabela criada aqui de proposito: e um recurso isolado e nao vale uma
@@ -234,10 +235,14 @@ def agendar_demo(user_id: int, descricao: str, quando: str = "") -> bool:
             if conn.execute("SELECT 1 FROM demos WHERE user_id=?",
                             (user_id,)).fetchone():
                 return False   # cada pessoa so se impressiona uma vez
+            try:
+                conn.execute("ALTER TABLE demos ADD COLUMN item_id INTEGER")
+            except Exception:
+                pass   # ja existe — banco antigo migra sozinho
             conn.execute("INSERT INTO demos (user_id, descricao, quando, "
-                         "criado_em) VALUES (?,?,?,?)",
+                         "criado_em, item_id) VALUES (?,?,?,?,?)",
                          (user_id, (descricao or "")[:120], quando or "",
-                          tempo.agora().isoformat()))
+                          tempo.agora().isoformat(), item_id))
         log.info("[demo] agendada para user %s em %ds", user_id, SEGUNDOS_DEMO)
         return True
     except Exception:
@@ -252,23 +257,67 @@ def demos_prontas() -> list:
     try:
         with _conn() as conn:
             conn.execute(_DDL)
+            try:
+                conn.execute("ALTER TABLE demos ADD COLUMN item_id INTEGER")
+            except Exception:
+                pass
             linhas = conn.execute(
-                "SELECT user_id, descricao, quando, criado_em FROM demos "
-                "WHERE enviado_em IS NULL").fetchall()
+                "SELECT user_id, descricao, quando, criado_em, item_id "
+                "FROM demos WHERE enviado_em IS NULL").fetchall()
         agora = tempo.agora()
         prontas = []
-        for uid, desc, quando, criado in linhas:
+        for uid, desc, quando, criado, item_id in linhas:
             try:
                 c = dt.datetime.fromisoformat(criado)
             except Exception:
                 continue
-            if (agora - c).total_seconds() >= SEGUNDOS_DEMO:
-                prontas.append({"user_id": uid, "descricao": desc,
-                                "quando": quando})
+            if (agora - c).total_seconds() < SEGUNDOS_DEMO:
+                continue
+            # Item ja concluido? Cancela a amostra.
+            # Em 05/08 o usuario deu baixa em "comer" as 15:00 e recebeu a
+            # demonstracao daquele mesmo item as 15:02. Mostrar amostra de
+            # algo que a pessoa acabou de resolver passa a impressao de que
+            # o bot nao acompanha — e a primeira impressao e essa.
+            if item_id and _ja_concluido(item_id):
+                marcar_demo_enviada(uid)
+                log.info("[demo] cancelada: item %s ja concluido", item_id)
+                continue
+            prontas.append({"user_id": uid, "descricao": desc,
+                            "quando": quando})
         return prontas
     except Exception:
         log.warning("[demo] falha ao listar", exc_info=True)
         return []
+
+
+def _ja_concluido(item_id) -> bool:
+    """O item ja foi resolvido? Entao nao ha o que demonstrar."""
+    try:
+        with _conn() as conn:
+            r = conn.execute("SELECT status FROM items WHERE id=?",
+                             (int(item_id),)).fetchone()
+        return bool(r) and str(r[0]).lower() in ("concluido", "concluído",
+                                                 "arquivado", "cancelado")
+    except Exception:
+        return False   # na duvida, mostra a amostra
+
+
+def _ja_passou(iso: str) -> bool:
+    """A data e hoje ou ja passou?
+
+    Prometer "o aviso de verdade chega 05/08" no dia 05/08 nao faz sentido
+    e foi o que apareceu no primeiro teste real.
+    """
+    import datetime as dt
+    import tempo
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", str(iso or ""))
+    if not m:
+        return False
+    try:
+        d = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        return d <= tempo.hoje()
+    except Exception:
+        return False
 
 
 def marcar_demo_enviada(user_id: int) -> None:
@@ -298,6 +347,13 @@ def texto_demo(descricao: str, quando: str = "") -> str:
     Sem data a frase muda: prometer "aviso de verdade" para um item sem
     data seria mentira, e mentira no minuto 2 custa o cliente.
     """
+    if _ja_passou(quando):
+        # data de hoje ou passada: a amostra vira a propria confirmacao,
+        # sem prometer um aviso futuro que nao vai existir.
+        return DEMO.format(
+            descricao=descricao,
+            quando=f" \u2014 {_data_br(quando)}" if quando else "",
+            aviso_real="*na proxima vez que voce marcar uma data*")
     quando = _data_br(quando)
     if quando:
         return DEMO.format(descricao=descricao, quando=f" — {quando}",
