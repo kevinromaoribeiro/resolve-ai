@@ -51,31 +51,44 @@ MAX_CORPO = 1024
 # Os titulos usam as MESMAS palavras que o motor ja entende digitadas. Assim
 # o clique entra pelo caminho ja testado, sem criar um segundo caminho de
 # interpretacao que ninguem lembraria de manter.
+# ATENCAO antes de mexer aqui:
+# Estas regras foram reescritas em 05/08 contra o texto REAL do bot, lido
+# numa conversa de verdade no WhatsApp. A primeira versao usava frases que
+# eu SUPUS que o bot escrevia ("Guardei:", "de manha ou a noite") e nenhum
+# botao apareceu pro usuario — o bot na verdade escreve "Anotado." e
+# "Que horas te aviso? Responde manha (08:00) ou noite (20:00)".
+# Regra: leia uma conversa antes de escrever regex.
 _REGRAS = [
     (
+        "escolher_periodo",
+        # "Que horas te aviso? Responde *manh\u00e3* (08:00) ou *noite* (20:00)"
+        re.compile(r"que horas te aviso|responde\s+\*?manh", re.I),
+        [("Manh\u00e3 (08:00)", "manh\u00e3"), ("Noite (20:00)", "noite")],
+    ),
+    (
+        "confirmar_agendamento",
+        # "Correto? Vou te avisar amanh\u00e3, dia 06/08, sobre isso."
+        re.compile(r"correto\?", re.I),
+        [("Isso mesmo", "sim"), ("Mudar a data", "mudar a data")],
+    ),
+    (
         "confirmar_baixa",
-        re.compile(r"posso dar como feito|voc[\u00ea e] j[\u00e1a] (pagou|fez|resolveu)", re.I),
+        re.compile(r"posso dar como feito|voc\u00ea j\u00e1 (pagou|fez|resolveu)", re.I),
         [("Feito", "Feito"), ("Ainda n\u00e3o", "Ainda n\u00e3o")],
     ),
     (
-        "escolher_periodo",
-        re.compile(r"de manh[\u00e3a].{0,20}(ou|/).{0,20}(\u00e0|a)?\s*noite", re.I),
-        [("Manh\u00e3 (8h)", "de manh\u00e3"), ("Noite (20h)", "\u00e0 noite")],
-    ),
-    (
-        "pedir_data",
-        re.compile(r"pra quando|qual (a |e a )?data|que dia (\u00e9|e|seria)", re.I),
-        [("Hoje", "hoje"), ("Amanh\u00e3", "amanh\u00e3"), ("Outro dia", "outro dia")],
-    ),
-    (
-        "item_guardado",
-        re.compile(r"^guardei\s*:", re.I | re.M),
-        [("Feito", "Feito"), ("Adiar", "adiar"), ("Ver tudo", "meus lembretes")],
-    ),
-    (
         "cobranca_vencimento",
-        re.compile(r"vence (hoje|amanh[\u00e3a])|est[\u00e1a] vencid|venceu (hoje|ontem)", re.I),
-        [("J\u00e1 paguei", "j\u00e1 paguei"), ("Adiar", "adiar"), ("Ainda n\u00e3o", "Ainda n\u00e3o")],
+        re.compile(r"vence (hoje|amanh\u00e3)|est\u00e1 vencid|venceu (hoje|ontem)", re.I),
+        [("J\u00e1 paguei", "j\u00e1 paguei"), ("Adiar", "adiar"),
+         ("Ainda n\u00e3o", "Ainda n\u00e3o")],
+    ),
+    (
+        "item_anotado",
+        # O bot confirma com "Anotado." — nunca com "Guardei:". Fica por
+        # ULTIMO porque "Anotado" vem junto com as perguntas acima, e a
+        # pergunta e sempre mais util que o menu.
+        re.compile(r"^\s*(\U0001F4CC\s*)?anotado[.:]", re.I | re.M),
+        [("Feito", "Feito"), ("Adiar", "adiar"), ("Ver tudo", "meus lembretes")],
     ),
 ]
 
