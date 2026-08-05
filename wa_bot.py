@@ -41,6 +41,7 @@ import scheduler
 import canal as wasender  # camada de canal: Meta oficial OU WasenderAPI (ver canal.py)
 import meta_cloud  # handshake e assinatura do webhook da Meta
 import botoes  # botao de resposta rapida (decidido em Python, nao no LLM)
+import jornada  # jornada: demo de 90s, lista de sugestoes, copy de cobranca
 import motor_v8  # mordomo híbrido: entende linguagem natural fora do script
 
 db.init_db()
@@ -48,7 +49,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v19.3-auditoria-2026-08-05"
+BUILD = "v20.0-jornada-2026-08-05"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -988,6 +989,17 @@ def _aplicar_v8(user_id: int, v8: dict) -> None:
                         recorrencia=item.get("recorrencia"),
                         status=item.get("status", "pendente"),
                         link_afiliado=item.get("link_afiliado"))
+            # DEMONSTRACAO DE 90 SEGUNDOS.
+            # O aha deste produto nao e registrar, e SER AVISADO. Sem isto,
+            # quem cadastra uma conta que vence dia 20 espera duas semanas
+            # pra sentir o produto uma vez — e o trial tem 14 dias.
+            # agendar_demo() so aceita o PRIMEIRO item de cada pessoa.
+            try:
+                jornada.agendar_demo(
+                    user_id, (item.get("descricao") or "isso")[:120],
+                    item.get("data_vencimento") or "")
+            except Exception:
+                log_.warning("[demo] falha ao agendar", exc_info=True)
         except Exception as e:
             log_.warning("[v8] falha ao criar item", exc_info=True)
             falhou_gravar.append(f"{item.get('descricao')}: {e!r}")
@@ -1303,6 +1315,26 @@ def dispatch_proactive() -> int:
     """Roda o motor proativo, envia e REGISTRA cada disparo (dedup)."""
     import logging
     log = logging.getLogger("resolveai")
+
+    # Demos de 90s vencidas. Fica ANTES do motor proativo de proposito: a
+    # amostra e o unico disparo com hora marcada em segundos, e atrasar ela
+    # quebra a promessa de "olha eu aqui" no minuto 2.
+    try:
+        for _d in jornada.demos_prontas():
+            _u = db.get_user(_d["user_id"])
+            if not _u:
+                jornada.marcar_demo_enviada(_d["user_id"])
+                continue
+            _txt = jornada.texto_demo(_d["descricao"], _d.get("quando") or "")
+            if send_whatsapp(_u["telefone"], _txt):
+                try:
+                    db.log_message(_u["id"], _u["telefone"], "out", "texto", _txt)
+                except Exception:
+                    pass
+            jornada.marcar_demo_enviada(_d["user_id"])
+    except Exception:
+        log.warning("[demo] falha ao disparar amostra", exc_info=True)
+
     result = scheduler.run_proactive_engine()
     sent = 0
     all_dispatches = (result.get("alarm_dispatches", [])
