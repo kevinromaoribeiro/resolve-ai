@@ -49,7 +49,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v20.4-travas-2026-08-05"
+BUILD = "v20.5-reabrir-item-2026-08-05"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -2278,6 +2278,29 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
             elif acao == "listar_itens":
                 return JSONResponse({"ok": True,
                                      "itens": db.itens_abertos(uid, limite=100)})
+            elif acao == "listar_concluidos":
+                # Ver o que foi concluido. Precisou existir porque um bug de
+                # 05/08 deu baixa em item que o usuario nao pediu, e nao havia
+                # como saber o que tinha sumido.
+                with db.get_conn() as _c:
+                    _r = _c.execute(
+                        "SELECT id, descricao, status FROM items "
+                        "WHERE user_id=? AND status!='pendente' "
+                        "ORDER BY id DESC LIMIT 50", (uid,)).fetchall()
+                return JSONResponse({"ok": True, "itens": [
+                    {"id": x[0], "descricao": x[1], "status": x[2]} for x in _r]})
+            elif acao == "reabrir_item":
+                # Desfaz baixa indevida. O item volta a existir pro usuario sem
+                # nenhuma mensagem — so reaparece no "Ver tudo". Reparar dado que
+                # a gente destruiu nao deve custar constrangimento a quem foi
+                # lesado, nem revelar que alguem olhou a conversa dele.
+                with db.get_conn() as _c:
+                    _cur = _c.execute(
+                        "UPDATE items SET status='pendente' "
+                        "WHERE id=? AND user_id=?",
+                        (int(body.get("item_id")), uid))
+                    ok = _cur.rowcount == 1
+                return JSONResponse({"ok": ok})
             elif acao == "apagar_item":
                 # remove item específico (lixo de teste, duplicata).
                 ok = db.apagar_item(int(body.get("item_id")), uid)
