@@ -738,13 +738,11 @@ def handle_incoming(payload: dict) -> Optional[dict]:
                 primeira = f"\n\nPra já começar: {cta}"
             except Exception:
                 primeira = ""
+        # Boas-vindas da landing: UMA acao concreta em vez de apresentacao
+        # + LGPD + cardapio. Ver jornada.BOAS_VINDAS.
         return {"number": phone, "text":
-                (f"Oi {fn}! 🟢 Que bom te ver aqui. Eu sou o *Resolve AI* — "
-                 f"vou tirar da sua cabeça contas, lembretes, consultas e "
-                 f"compras.\n\nVocê tem *{TRIAL_DAYS} dias grátis*, sem "
-                 f"cartão. 🔒 Seus dados são só pra te atender — nada é "
-                 f"vendido. Ao continuar você aceita os Termos: {TERMS_URL}"
-                 f"{primeira}")}
+                jornada.BOAS_VINDAS.format(nome=fn, dias=TRIAL_DAYS)
+                + "\n\n" + jornada.RODAPE_LEGAL.format(termos=TERMS_URL)}
 
     if is_new:
         # Sem payload da landing: fluxo normal de onboarding (pergunta nome etc.)
@@ -884,6 +882,14 @@ def handle_incoming(payload: dict) -> Optional[dict]:
                 "[v8] erro no motor_v8.route", exc_info=True)
             v8 = None
         if v8 is not None:
+            # TRAVA DETERMINISTICA (05/08, perda de dado real):
+            #   usuario tocou "Adiar" -> bot respondeu "Concluido."
+            #   Fabio digitou "Feito" querendo dizer "acabei de listar"
+            #   -> o bot deu baixa e a lista sumiu do "Ver tudo".
+            # Concluir e ADIAR sao acoes destrutivas/irreversiveis pra quem
+            # esta usando. Quem decide isso e Python lendo a palavra do
+            # usuario, nao o LLM interpretando intencao.
+            v8 = _travar_acao_destrutiva(content if kind == "texto" else "", v8)
             _aplicar_v8(user["id"], v8)
             if v8.get("needs_decision"):
                 PENDING[phone] = v8.get("pending_payload")
@@ -894,6 +900,52 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     if result["needs_decision"]:
         PENDING[phone] = result["pending_payload"]
     return {"number": phone, "text": result["reply"]}
+
+
+_ADIAR_RE = re.compile(
+    r"^\s*(adiar|adia|adiar\s*1h|adiar\s*amanh[aã]|depois|mais tarde|"
+    r"deixa pra (depois|amanh[aã])|empurra|remarcar)\b", re.I)
+
+_CONCLUIR_RE = re.compile(
+    r"^\s*(feito|fiz|ja fiz|j[áa] fiz|conclu[ií]d[oa]|resolvido|resolvi|"
+    r"paguei|j[áa] paguei|pronto|ok feito)\s*[.!]?\s*$", re.I)
+
+
+def _travar_acao_destrutiva(texto: str, v8: dict) -> dict:
+    """Impede o LLM de concluir/adiar quando o usuario nao pediu aquilo.
+
+    Dois estragos reais em 05/08:
+      1) tocou *Adiar* e o bot marcou como CONCLUIDO — lembrete perdido
+      2) o Fabio listou "arroz, leite, pao" e escreveu "Feito" querendo
+         dizer "terminei de listar". O bot deu baixa e o "Ver tudo" ficou
+         vazio. Ele perdeu a lista inteira no primeiro minuto de uso.
+
+    Regra: concluir so passa se a pessoa escreveu uma palavra INEQUIVOCA de
+    conclusao E sozinha na mensagem. "Feito" logo apos criar item vira
+    confirmacao de cadastro, nao baixa.
+    """
+    if not isinstance(v8, dict):
+        return v8
+    t = (texto or "").strip()
+
+    # pediu ADIAR -> nunca concluir
+    if _ADIAR_RE.match(t) and v8.get("concluir"):
+        v8 = dict(v8)
+        v8.pop("concluir", None)
+        v8["reply"] = ("Adiado. \u23f0 Me diz pra quando: *1 hora*, "
+                       "*amanh\u00e3* ou uma data.")
+        logging.getLogger("resolveai").warning(
+            "[trava] usuario pediu ADIAR e o motor tentou CONCLUIR")
+        return v8
+
+    # disse algo que NAO e conclusao, mas o motor quis concluir
+    if v8.get("concluir") and t and not _CONCLUIR_RE.match(t):
+        v8 = dict(v8)
+        v8.pop("concluir", None)
+        logging.getLogger("resolveai").warning(
+            "[trava] motor tentou CONCLUIR sem palavra clara do usuario: %r",
+            t[:60])
+    return v8
 
 
 _JANELA_CORRECAO_SEG = 300   # 5 min: depois disso e assunto novo
