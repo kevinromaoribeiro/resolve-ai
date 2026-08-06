@@ -93,12 +93,16 @@ _REGRAS = [
          ("Ainda n\u00e3o", "Ainda n\u00e3o")],
     ),
     (
-        "item_anotado",
-        # O bot confirma com "Anotado." — nunca com "Guardei:". Fica por
-        # ULTIMO porque "Anotado" vem junto com as perguntas acima, e a
-        # pergunta e sempre mais util que o menu.
-        re.compile(r"^\s*(\U0001F4CC\s*)?anotado[.:]", re.I | re.M),
-        [("Feito", "Feito"), ("Adiar", "adiar"), ("Ver tudo", "meus lembretes")],
+        "acabou_de_anotar",
+        # ACABOU DE ANOTAR -> os botoes tem que CONFIRMAR o que foi entendido.
+        # Antes aparecia "Feito / Adiar" no exato momento em que a pessoa
+        # tinha ACABADO de criar o item — sem sentido, e foi assim que o
+        # Fabio perdeu a lista dele em 05/08 (tocou Feito achando que era
+        # "terminei de falar"). Confirmar vem antes de concluir.
+        re.compile(r"^\s*(\U0001F4CC\s*)?anotado[.:]|^guardei\s*:", re.I | re.M),
+        [("\u2705 Isso mesmo", "isso mesmo"),
+         ("\u270F\uFE0F Mudar", "quero mudar"),
+         ("\u2795 Add outro", "quero adicionar outro")],
     ),
 ]
 
