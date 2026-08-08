@@ -49,7 +49,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v20.5-reabrir-item-2026-08-05"
+BUILD = "v20.6-entendimento-2026-08-05"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -906,9 +906,20 @@ _ADIAR_RE = re.compile(
     r"^\s*(adiar|adia|adiar\s*1h|adiar\s*amanh[aã]|depois|mais tarde|"
     r"deixa pra (depois|amanh[aã])|empurra|remarcar)\b", re.I)
 
-_CONCLUIR_RE = re.compile(
-    r"^\s*(feito|fiz|ja fiz|j[áa] fiz|conclu[ií]d[oa]|resolvido|resolvi|"
-    r"paguei|j[áa] paguei|pronto|ok feito)\s*[.!]?\s*$", re.I)
+# CONCLUSAO: o LLM decide a INTENCAO (ele entende "pode dar baixa",
+# "terminei de pagar", "ja resolvi isso"). Python nao tenta adivinhar
+# intencao — so bloqueia o que e INEQUIVOCAMENTE errado. A primeira versao
+# exigia que a mensagem fosse exatamente "feito", e isso barrava frase
+# legitima: regra rigida em cima de entendimento gera bug sem sentido.
+#
+# Sinais de que a mensagem NAO e uma baixa (aqui Python tem certeza):
+#   - contem palavra de adiamento
+#   - parece CONTEUDO: lista, varios itens, numero de valor, frase longa
+_NAO_E_BAIXA_RE = re.compile(
+    r"\b(adiar|adia|depois|mais tarde|amanh[a\u00e3]|semana que vem|ainda n[a\u00e3]o|nao fiz|n[a\u00e3]o fiz|esqueci)\b", re.I)
+
+_PARECE_CONTEUDO_RE = re.compile(
+    r"(,\s*\S+\s*,)|(\b\d{2,}\b.*\b\d{2,}\b)|(\bnormalmente\b)|(\bou\b.*\bou\b)", re.I)
 
 
 def _travar_acao_destrutiva(texto: str, v8: dict) -> dict:
@@ -939,8 +950,10 @@ def _travar_acao_destrutiva(texto: str, v8: dict) -> dict:
             "[trava] usuario pediu ADIAR e o motor tentou CONCLUIR")
         return v8
 
-    # disse algo que NAO e conclusao, mas o motor quis concluir
-    if v8.get("concluir") and t and not _CONCLUIR_RE.match(t):
+    # O LLM entendeu que era baixa. Python so vetoa se houver sinal claro
+    # de que NAO era — nao tenta reinterpretar a frase por conta propria.
+    if v8.get("concluir") and t and (
+            _NAO_E_BAIXA_RE.search(t) or _PARECE_CONTEUDO_RE.search(t)):
         v8 = dict(v8)
         v8.pop("concluir", None)
         _lg.getLogger("resolveai").warning(
