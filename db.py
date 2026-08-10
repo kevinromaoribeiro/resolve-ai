@@ -25,8 +25,16 @@ DB_PATH = Path(os.environ.get("DB_PATH",
 
 VALID_ITEM_TYPES = ("lembrete", "despesa", "documento")
 VALID_STATUSES = ("pendente", "concluido", "aglutinado", "vencido")
+# Viagem e Treino entraram em 09/08/2026. Motivo medido, não achismo: no
+# primeiro dia de uso real, 3 dos 18 itens do banco eram voo/check-in/jiu
+# jitsu e os três caíram em "Outros" porque não havia caixa pra eles. Item em
+# "Outros" não recebe a régua de aviso certa — voo precisa de check-in 48h
+# antes, treino não precisa de cobrança nenhuma.
+# Categoria fora desta tupla é rejeitada na escrita (add_item coage pra
+# "Outros"): acrescentar aqui é obrigatório antes de qualquer classificador
+# saber devolvê-la.
 VALID_CATEGORIES = ("Alimentação", "Pet", "Veículo", "Contas", "Saúde",
-                    "Casa", "Lazer", "Outros")
+                    "Casa", "Lazer", "Viagem", "Treino", "Outros")
 
 
 # ---------------------------------------------------------------------------
