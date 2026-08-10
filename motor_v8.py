@@ -39,6 +39,7 @@ import os
 import re
 from typing import Optional
 
+import casos_de_uso
 import tempo
 
 
@@ -193,6 +194,7 @@ F7. Nunca passe de 6 linhas no total. Se a lista for maior que 5 itens, mostre o
 18. TUDO que você escrever na resposta TEM que estar nos campos do JSON. Se você escreveu "R$ 187,00", então "valor_reais": 187.0 naquele item. Escrever o valor só no texto e deixar o campo null é perder a informação: o painel, os avisos e a soma de gastos ficam vazios.
 19. NUNCA pergunte algo que você acabou de responder. Se você listou os valores, não pergunte "qual o valor?". Antes de mandar, releia sua própria "reply": a pergunta do final só entra se ela pedir algo que REALMENTE falta.
 
+{casos}
 Formato (SOMENTE o JSON):
 {"intent":"consulta|registro|complemento|resposta|conclusao|conversa",
   "reply":"<mensagem ao usuário>",
@@ -394,6 +396,7 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
                   .replace("{historico}", _fmt_historico(historico))
                   .replace("{ultima_sua}",
                            _ultima_fala_bot(historico) or "(você ainda não respondeu nada)")
+                  .replace("{casos}", casos_de_uso.regras_prompt())
                   .replace("{situacao}", _situacao(situacao)))
         for tentativa in range(2):
             resp = completion(
@@ -475,8 +478,14 @@ def _preparar_item(novo: dict, ai_engine, texto_origem: str = "",
     # certa existia e ninguém chamava neste caminho.
     # Consequência: o painel de gastos por categoria vira uma barra só, e o
     # resumo semanal não consegue separar conta de recado.
-    _CATS = ("Alimentação", "Pet", "Veículo", "Contas", "Saúde", "Casa",
-             "Lazer", "Outros")
+    # Fonte única: db.VALID_CATEGORIES. Duplicar a tupla aqui foi o que deixou
+    # as duas listas divergirem quando Viagem e Treino nasceram.
+    # Import LOCAL de propósito: neste módulo `ai_engine` chega por parâmetro e
+    # `db` não chega de jeito nenhum — no topo do arquivo não existe nenhum dos
+    # dois. Import de módulo aqui dentro custa nada (fica no sys.modules) e não
+    # arrisca ciclo na carga.
+    import db as _db
+    _CATS = _db.VALID_CATEGORIES
     cat = novo.get("categoria")
     if cat not in _CATS or cat == "Outros":
         # A DESCRIÇÃO MANDA. O texto original só entra como último recurso.
@@ -498,6 +507,23 @@ def _preparar_item(novo: dict, ai_engine, texto_origem: str = "",
             # de tempo numa frase de um item só pertence àquele item.
             if n_itens == 1 and not re.search(r"\be\b", texto_origem):
                 adivinhado = ai_engine.classify_category(texto_origem)
+        # ÚLTIMA REDE: o catálogo de casos de uso.
+        # `classify_category` não conhece "voo", "azul", "check-in", "jiu
+        # jitsu", "ipva", "cnh" — por isso o print da reserva da Azul virou
+        # "Outros" em 05/08. O catálogo conhece, e só é consultado quando todo
+        # o resto já desistiu, então não tem como roubar acerto de ninguém.
+        if adivinhado == "Outros":
+            do_catalogo = casos_de_uso.categoria_de(
+                novo.get("descricao", ""), producao=True)
+            # A MESMA trava do bloco de cima vale aqui. Sem ela, "marca o
+            # veterinário E paga a luz" vira Contas (o catálogo vê "luz" e
+            # chuta). Em frase composta prefiro "Outros" a carimbar errado.
+            if (not do_catalogo and texto_origem and n_itens == 1
+                    and not re.search(r"\be\b", texto_origem)):
+                do_catalogo = casos_de_uso.categoria_de(
+                    texto_origem, producao=True)
+            if do_catalogo in _CATS:
+                adivinhado = do_catalogo
         novo["categoria"] = adivinhado
     novo.setdefault("hora_alvo", None)
     novo.setdefault("valor_reais", None)
