@@ -77,7 +77,7 @@ REPLENISHABLE_KEYWORDS = {
 CATEGORY_KEYWORDS = {
     "Saúde": ["farmácia", "farmacia", "remédio", "remedio", "consulta",
               "médico", "medico", "dentista", "exame", "vacina humana",
-              "psicólogo", "psicologo", "academia", "plano de saúde",
+              "psicólogo", "psicologo", "plano de saúde",
               "plano de saude", "hospital", "dermato", "cardiologista",
               # v16.7: "levar a Rafinha no pediatra" caía em Outros. Nome de
               # especialista é o jeito NORMAL de falar de consulta — ninguém
@@ -117,10 +117,16 @@ CATEGORY_KEYWORDS = {
                     "verdura", "legume", "carne", "açougue", "acougue",
                     "hortifruti", "sacolão", "sacolao", "janta", "marmita",
                     "rappi", "delivery", "hambúrguer", "hamburguer"],
-    "Lazer": ["cinema", "show", "viagem", "streaming", "netflix", "spotify",
+    # viagem, hotel e airbnb sairam desta lista em 09/08/2026, quando as
+    # categorias Viagem e Treino nasceram. Enquanto estavam aqui, o ai_engine
+    # respondia primeiro e o catalogo de casos de uso nunca era consultado: o
+    # voo caia em Viagem e o hotel da MESMA viagem caia em Lazer. "praia" fica,
+    # porque dia de praia e lazer, nao deslocamento. Mesma razao para academia
+    # ter saido de Saude: treino agora tem caixa propria.
+    "Lazer": ["cinema", "show", "streaming", "netflix", "spotify",
               "jogo", "playstation", "xbox", "bar", "parque", "disney",
               "prime video", "hbo", "max", "teatro", "balada", "festa",
-              "aniversário", "aniversario", "praia", "hotel", "airbnb"],
+              "aniversário", "aniversario", "praia"],
 }
 
 MONTHS_PT = {
@@ -922,7 +928,7 @@ Responda APENAS com JSON válido, sem markdown, sem preâmbulo, no formato:
   "reply": "resposta natural em pt-BR, máx 2-3 linhas",
   "items": [{
       "tipo": "lembrete|despesa|documento",
-      "categoria": "Alimentação|Pet|Veículo|Contas|Saúde|Casa|Lazer|Outros",
+      "categoria": "Alimentação|Pet|Veículo|Contas|Saúde|Casa|Lazer|Viagem|Treino|Outros",
       "descricao": "resumo curto e limpo (sem verbos de comando, sem data, sem valor)",
       "valor_reais": 0.0 ou null,
       "data_vencimento": "YYYY-MM-DD" ou null,
