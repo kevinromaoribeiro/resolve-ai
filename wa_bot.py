@@ -49,7 +49,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v21.0-casos-de-uso-2026-08-10"
+BUILD = "v21.1-ack-botoes-2026-08-11"
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -511,6 +511,65 @@ def _handle_onboarding(user: dict, text: str) -> Optional[str]:
     return None
 
 
+_ACK_CONFIRMOU_RE = re.compile(
+    r"^\\s*(?:\u2705\\s*)?isso\\s*mesmo\\s*[.!]?\\s*$", re.I)
+_ACK_MUDAR_RE = re.compile(
+    r"^\\s*(?:\u270F\uFE0F?\\s*)?(?:quero\\s+mudar|mudar(?:\\s+a\\s+data)?)\\s*[.!]?\\s*$",
+    re.I)
+_ACK_ADD_RE = re.compile(
+    r"^\\s*(?:\u2795\\s*)?(?:quero\\s+adicionar\\s+outro|add\\s+outro|"
+    r"adicionar\\s+outro)\\s*[.!]?\\s*$", re.I)
+
+
+def _resposta_de_botao(user: dict, phone: str, text: str) -> Optional[str]:
+    """Responde ao CLIQUE nos botoes de confirmacao. Em Python, nao no LLM.
+
+    BUG REAL DE PRODUCAO (visto no painel, 11/08):
+        10:52 usuario  "me lembra de olhar os ponto as 11:20"
+        10:52 bot      "Anotado. Voce pediu pra olhar os pontos as 11:20."
+        10:53 usuario  [toca Isso mesmo]
+        10:53 bot      "Como vai?"                    <- do nada
+    e tambem:
+        08:22 bot      "Anotado. Guardei: comprar chocolates"
+        08:22 usuario  [toca Isso mesmo]
+        08:22 bot      "O que voce gostaria de fazer agora?"
+
+    Causa: botoes.py monta cada botao como (titulo, payload), mas enviar()
+    so transmite o TITULO — e meta_cloud.to_evolution_shape devolve esse
+    titulo como {"conversation": ...}, ou seja texto livre. Ninguem trata,
+    e o LLM, que nao tem como saber que aquilo e um ACK, puxa conversa.
+
+    "Isso mesmo" e FIM de assunto: o item ja esta guardado, a pessoa so
+    confirmou. Resposta curta e terminal, sem pergunta nova. Cada pergunta
+    desnecessaria e uma vibracao a mais no celular de alguem que abriu o
+    app pra ter MENOS coisa na cabeca.
+
+    As regex casam SO os rotulos que botoes.py emite (titulo E payload).
+    Aceitar "perfeito", "correto" ou "confirmo" seria sequestrar fala livre
+    — e responder "ta guardado" pra quem nao guardou nada.
+    O \u270F vem com VARIATION SELECTOR-16 do WhatsApp; por isso o \uFE0F?.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    if _ACK_CONFIRMOU_RE.match(t):
+        return "Perfeito, t\u00e1 guardado. \U0001F44D"
+    if _ACK_MUDAR_RE.match(t):
+        try:
+            ultimo = db.ultimo_item(user["id"]) or {}
+        except Exception:
+            ultimo = {}
+        desc = (ultimo.get("descricao") or "").strip()
+        if desc:
+            return ("Beleza — o que muda em *" + desc + "*?\n"
+                    "Pode mandar s\u00f3 o que est\u00e1 errado "
+                    "(ex.: _na verdade \u00e9 dia 20_).")
+        return "Beleza — me manda o que est\u00e1 errado que eu ajusto."
+    if _ACK_ADD_RE.match(t):
+        return "Manda a pr\u00f3xima. \U0001F442"
+    return None
+
+
 def _answer_and_reprompt_name(user: dict, text: str) -> str:
     """Responde a pergunta/comando feita durante o passo 'nome' e, em seguida,
     repete gentilmente o convite pra dizer o nome — sem gravar lixo como nome."""
@@ -792,6 +851,26 @@ def handle_incoming(payload: dict) -> Optional[dict]:
         else:
             PENDING[phone] = result["pending_payload"]
         return {"number": phone, "text": result["reply"]}
+
+    # --- 1b. CLIQUE NOS BOTOES DE CONFIRMACAO -----------------------------
+    # Deterministico, e antes do motor. Sem isto o titulo do botao vira
+    # texto livre e o LLM responde "Como vai?" a um "Isso mesmo" — foi o
+    # que aconteceu com o Kevin em 11/08, duas vezes no mesmo dia.
+    #
+    # POSICAO IMPORTA: depois dos gates de acesso (bloqueado/cancelado) e
+    # depois do bloco de decisao PENDENTE. Acima deles, este ACK responderia
+    # a usuario bloqueado, roubaria a mensagem de quem cancelou, e engoliria
+    # a resposta de uma decisao pendente — deixando o PENDING travado.
+    if kind == "texto" and not user.get("onboarding_step"):
+        ack = _resposta_de_botao(user, phone, content)
+        if ack:
+            try:
+                db.touch_user(user["id"])
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[ack] falha ao atualizar ultima_interacao", exc_info=True)
+            return {"number": phone, "text": ack}
 
     # --- roteamento por tipo ----------------------------------------------
     if kind == "audio":
