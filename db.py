@@ -136,7 +136,10 @@ def init_db() -> None:
                          # v16: sem isto, um banco criado antes da coluna
                          # derruba TODO o resumo semanal com OperationalError
                          # dentro do cron — e o cron engole a exceção.
-                         ("dia_resumo", "TEXT DEFAULT 'Segunda-feira'")]:
+                         ("dia_resumo", "TEXT DEFAULT 'Segunda-feira'"),
+                         # M1.2: carimbo do aceite explícito da LGPD — prova
+                         # de consentimento (não só a UI ter mostrado botão).
+                         ("lgpd_aceite_em", "TEXT")]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
         # items: coluna de horário-alvo (v6.1)
@@ -255,7 +258,7 @@ def update_user_fields(user_id: int, **fields) -> None:
     """Atualiza campos arbitrários do usuário (whitelist de colunas)."""
     allowed = {"nome", "idade", "profissao", "interesses", "carro_modelo",
                "carro_km", "pet_info", "dia_resumo", "status",
-               "onboarding_step", "trial_nudges_sent"}
+               "onboarding_step", "trial_nudges_sent", "lgpd_aceite_em"}
     cols = {k: v for k, v in fields.items() if k in allowed}
     if not cols:
         return
@@ -298,9 +301,51 @@ def set_status(user_id: int, status: str) -> None:
 
 
 def delete_user(user_id: int) -> None:
-    """Exclusão LGPD: apaga o usuário e todos os seus itens (CASCADE)."""
+    """Exclusão LGPD: apaga o usuário e TUDO que se refere a ele.
+
+    BUG PRÉ-EXISTENTE (achado em auditoria, 11/08/2026): esta função só
+    apagava `users`. `items` some por FK CASCADE, mas `msg_log`, `memoria` e
+    `dispatches` NÃO têm foreign key — ficavam para trás. Como o webhook
+    grava `msg_log(telefone, preview)` com o TEXTO INTEGRAL da mensagem antes
+    de qualquer processamento, o conteúdo das conversas continuava no banco,
+    indexado por telefone, depois de o bot responder "Todos os seus dados
+    foram apagados permanentemente".
+
+    Ou seja: a resposta do comando `apagar meus dados` era falsa. Numa
+    obrigação de LGPD, prometer apagamento e não apagar é pior do que não ter
+    o comando. Verificado contra o banco (SELECT após o DELETE), não contra a
+    mensagem na tela.
+
+    msg_log é apagado por TELEFONE porque grande parte das linhas entra com
+    user_id=None — o webhook loga a mensagem recebida antes de resolver quem
+    é o usuário. Apagar só por user_id deixaria justamente o texto das
+    conversas para trás.
+    """
     with get_conn() as conn:
+        row = conn.execute("SELECT telefone FROM users WHERE id=?",
+                           (user_id,)).fetchone()
+        telefone = row["telefone"] if row else None
         conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+        conn.execute("DELETE FROM items WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM dispatches WHERE user_id=?", (user_id,))
+        for tabela in ("memoria", "demos"):
+            try:
+                conn.execute(f"DELETE FROM {tabela} WHERE user_id=?",
+                             (user_id,))
+            except Exception:
+                # tabela ainda não criada neste banco (memoria/demos nascem
+                # sob demanda). Não é erro — mas não pode passar calado.
+                import logging
+                logging.getLogger("resolveai").info(
+                    "[lgpd] tabela %s inexistente na purga do user %s",
+                    tabela, user_id)
+        if telefone:
+            digitos = re.sub(r"\D", "", str(telefone))
+            conn.execute(
+                "DELETE FROM msg_log WHERE telefone=? OR telefone=? "
+                "OR user_id=?", (telefone, digitos, user_id))
+        else:
+            conn.execute("DELETE FROM msg_log WHERE user_id=?", (user_id,))
 
 
 def set_created_days_ago(user_id: int, days: int) -> None:
