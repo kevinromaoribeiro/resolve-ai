@@ -1,3 +1,22 @@
+
+# ── M1.2: abertura do onboarding em 3 mensagens ────────────────────────
+# WELCOME_MSG (acima) NAO foi removida — mas atencao: ela ficou SEM NENHUM
+# CHAMADOR. Nao e "fallback", ninguem cai nela; e referencia de copy ate a
+# M1.2 assentar. Mantida de proposito (regra: nao apagar o que existe), e
+# marcada aqui pra ninguem achar que ainda esta no ar.
+# O problema dela era juntar TRES coisas numa mensagem so: apresentacao +
+# LGPD ("ao continuar voce aceita") + pedido do nome. Com 11 pessoas reais
+# em trial, aceite enterrado em "ao continuar" nao e consentimento: e
+# exposicao juridica.
+# Agora: (1) esta abertura, (2) jornada.LGPD_AVISO com botao, (3) o pedido
+# — que so dispara depois do clique.
+WELCOME_MSG_ABERTURA = (
+    "Oi! Eu sou o *Resolve AI* 🟢 — o assistente que tira da sua cabeça "
+    "contas, lembretes, manutenções e compras.\n\n"
+    "Eu te aviso *antes* de vencer, sozinho, aqui no Zap.\n\n"
+    "🎁 Você ganhou *{trial_days} dias grátis* pra testar. "
+    "Sem cartão, sem pegadinha."
+)
 # -*- coding: utf-8 -*-
 """
 textos.py — CENTRAL DE TEXTOS DO RESOLVE AI
@@ -142,4 +161,23 @@ AJUDA_MSG = (
     "Eu entendo o seu jeito de falar — manda texto, áudio ou foto. "
     "Comandos úteis:\n"
     "*assinar* · *cancelar* · *apagar meus dados* · *privacidade* · *ajuda*"
+)
+
+# ── M1.2: abertura do onboarding em 3 mensagens ────────────────────────
+# WELCOME_MSG (acima) NAO foi removida — mas atencao: ela ficou SEM NENHUM
+# CHAMADOR. Nao e "fallback", ninguem cai nela; e referencia de copy ate a
+# M1.2 assentar. Mantida de proposito (regra: nao apagar o que existe), e
+# marcada aqui pra ninguem achar que ainda esta no ar.
+# O problema dela era juntar TRES coisas numa mensagem so: apresentacao +
+# LGPD ("ao continuar voce aceita") + pedido do nome. Com 11 pessoas reais
+# em trial, aceite enterrado em "ao continuar" nao e consentimento: e
+# exposicao juridica.
+# Agora: (1) esta abertura, (2) jornada.LGPD_AVISO com botao, (3) o pedido
+# — que so dispara depois do clique.
+WELCOME_MSG_ABERTURA = (
+    "Oi! Eu sou o *Resolve AI* 🟢 — o assistente que tira da sua cabeça "
+    "contas, lembretes, manutenções e compras.\n\n"
+    "Eu te aviso *antes* de vencer, sozinho, aqui no Zap.\n\n"
+    "🎁 Você ganhou *{trial_days} dias grátis* pra testar. "
+    "Sem cartão, sem pegadinha."
 )
