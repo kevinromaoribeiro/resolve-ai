@@ -47,17 +47,137 @@ BOAS_VINDAS = (
     "Oi, {nome}! \U0001F44B Eu sou o *Resolve AI*.\n\n"
     "Eu guardo suas contas, consultas e prazos \u2014 e te aviso *antes*, "
     "sozinho, aqui no Zap.\n\n"
-    "\U0001F381 Seus *{dias} dias gr\u00e1tis* j\u00e1 come\u00e7aram. Sem cart\u00e3o, sem pegadinha.\n\n"
+    "\U0001F381 Seus *{dias} dias gr\u00e1tis* j\u00e1 come\u00e7aram. Sem cart\u00e3o, sem pegadinha."
+)
+
+# --- M1.2: onboarding em 3 mensagens, aceite da LGPD como ATO EXPLICITO ---
+# ANTES: o aceite ("Ao usar, voce aceita os Termos...") vinha enterrado
+# dentro do bloco de boas-vindas — ninguem clicava em nada, so seguia
+# escrevendo. Com 11 pessoas reais em trial isso e exposicao juridica, nao
+# detalhe de copy. AGORA: mensagem propria, com botao. A pessoa so avanca
+# pro pedido de demanda (mensagem 3) depois de tocar em "Concordo".
+RODAPE_LEGAL = (
+    "_Ao usar, voce aceita os Termos ({termos}). "
+    "Mande *apagar meus dados* quando quiser._"
+)
+
+LGPD_AVISO = (
+    "\U0001F512 Antes de come\u00e7ar, preciso do seu aceite.\n\n"
+    "Suas mensagens s\u00e3o processadas com seguran\u00e7a s\u00f3 para te atender — "
+    "nada \u00e9 vendido ou compartilhado. Termos completos aqui: {termos}\n\n"
+    "_A qualquer momento: mande \"apagar meus dados\" e eu apago tudo._\n\n"
+    "*Voc\u00ea concorda com os Termos?*"
+)
+
+# AUDITORIA: a versao anterior dizia "nao vou guardar nada seu" DEPOIS de ja
+# ter gravado nome, idade e interesses vindos da landing. Mentir na mensagem
+# juridica e pior do que nao ter a mensagem. Agora o texto descreve o que o
+# codigo REALMENTE faz: wa_bot chama db.delete_user() na recusa, antes de
+# mandar isto. A frase so pode existir porque o apagamento existe.
+LGPD_RECUSA = (
+    "Tudo bem — e j\u00e1 apaguei o que tinha seu aqui. \U0001F5D1\uFE0F\n\n"
+    "Sem o aceite eu n\u00e3o guardo nada, ent\u00e3o n\u00e3o fica registro nenhum.\n\n"
+    "Se mudar de ideia, \u00e9 s\u00f3 mandar um *oi* que a gente come\u00e7a do zero."
+)
+
+PEDIDO_DEMANDA = (
+    "Perfeito, {nome}! \u2705\n\n"
     "Vamos direto ao ponto: *me manda uma coisa que voc\u00ea n\u00e3o pode esquecer.*\n\n"
     "Pode ser a foto de um boleto, um \u00e1udio, ou s\u00f3 uma linha:\n"
     "_\"luz 187 vence dia 20\"_\n"
     "_\"dentista dia 15 \u00e0s 14h\"_"
 )
 
-RODAPE_LEGAL = (
-    "_Ao usar, voce aceita os Termos ({termos}). "
-    "Mande *apagar meus dados* quando quiser._"
+PEDIDO_NOME = "Perfeito! \u2705 Pra come\u00e7ar: *como voc\u00ea quer ser chamado?*"
+
+# AUDITORIA: quem manda "luz 187 vence dia 20" antes de aceitar tinha a
+# mensagem descartada em SILENCIO — o bot devolvia o aviso identico e a
+# pessoa saia achando que anotou. Perder dado de usuario e o pior defeito
+# possivel aqui. Agora: eco explicito do que NAO foi registrado, e o texto
+# fica guardado em memoria pra ser processado assim que o aceite chegar.
+LGPD_NAO_REGISTREI = (
+    "\u26A0\uFE0F Ainda *n\u00e3o registrei* o que voc\u00ea mandou — preciso do seu aceite "
+    "primeiro. Guardei aqui e registro assim que voc\u00ea confirmar.\n\n"
 )
+
+# Comando mandado antes do aceite: nao guardamos pra executar depois.
+# Replayar comando destrutivo e como assinar um cheque em branco com data
+# futura — a pessoa nem lembra mais que pediu.
+LGPD_COMANDO_ANTES = (
+    "Esse comando eu s\u00f3 consigo executar depois do seu aceite — e a\u00ed voc\u00ea "
+    "me manda de novo, pra ter certeza de que ainda \u00e9 o que voc\u00ea quer.\n\n"
+)
+
+# Quando a fila de pre-aceite lotou, o LGPD_NAO_REGISTREI vira mentira: ele
+# promete "guardei aqui" e nao guardou nada. Mesma classe de erro do "ja
+# apaguei o que tinha seu" — a copy tem que acompanhar o que o codigo faz.
+LGPD_NAO_GUARDEI = (
+    "\u26A0\uFE0F N\u00e3o consegui guardar mais nada antes do aceite — *me manda de novo* "
+    "depois de confirmar, que eu registro tudo.\n\n"
+)
+
+# Audio e foto sao IRRECUPERAVEIS antes do aceite: o download fica travado
+# ate o consentimento, e quando ele chega o msg_id da midia ja morreu. Dizer
+# "guardei aqui" pra uma foto de boleto seria mentira — e ela so descobriria
+# no vencimento.
+LGPD_NAO_GUARDEI_MIDIA = (
+    "\u26A0\uFE0F Recebi, mas *n\u00e3o consigo abrir \u00e1udio nem foto* antes do seu aceite.\n"
+    "Depois de confirmar, me manda de novo que eu leio e registro.\n\n"
+)
+
+# AUDITORIA: os usuarios que ja existiam quando a M1.2 subiu nunca passam
+# pelo fluxo novo (onboarding_step ja e None/"done"). Sem isto, 100% da base
+# real segue sem aceite explicito — que e exatamente a exposicao juridica
+# que a M1.2 veio fechar. SOFT de proposito: anexa o pedido na resposta em
+# vez de bloquear. Travar quem ja usa o produto todo dia por causa de um
+# aceite retroativo e trocar um risco juridico por um churn certo.
+LGPD_RECONSENTIMENTO = (
+    "\n\n— — —\n"
+    "\U0001F512 Atualizei meus Termos: {termos}\n"
+    "Continua tudo igual — suas mensagens s\u00e3o usadas s\u00f3 pra te atender, "
+    "nada \u00e9 vendido. Me manda *concordo* quando puder pra eu registrar seu "
+    "aceite. _(*apagar meus dados* apaga tudo, na hora.)_"
+)
+
+# AUDITORIA. A primeira versao aceitava "ok" e "sim" como consentimento.
+# Isso RECRIA o problema que a M1.2 existe pra matar: "ok" e o preenchimento
+# mais comum do WhatsApp, nao um ato de vontade. Aceite juridico so por
+# palavra inequivoca. Tambem aceitava "concordo?" (pergunta virava aceite) e
+# "sim, mas nao quero que guardem nada", e RECUSAVA "eu concordo" pelo ^.
+_SIM_LGPD_RE = re.compile(
+    r"^\s*(?:eu\s+)?(?:\u2705\s*)?(?:concordo|de\s*acordo|aceito)\b", re.I)
+# Esta regex terminava em `|n[\u00e3a]o)\b` — um "nao" SOLTO. E recusa dispara
+# db.delete_user(). Provado em teste: "nao sei", "nao entendi", "nao, o que
+# e isso?" APAGAVAM a conta, sem confirmacao e sem volta. Enquanto isso o
+# comando `apagar meus dados` — mesma destruicao — exige dois passos.
+_NAO_LGPD_RE = re.compile(
+    r"^\s*(?:n[\u00e3a]o\s*(?:concordo|aceito)|discordo|recuso|"
+    r"n[\u00e3a]o\s*quero)\b", re.I)
+# Marcas de que a frase NAO e um ato de vontade limpo: pergunta ou ressalva.
+_DUVIDA_LGPD_RE = re.compile(r"\?|\bmas\b|\bpor[\u00e9e]m\b|\bs[\u00f3o] que\b", re.I)
+
+
+def parse_aceite(texto: str) -> Optional[bool]:
+    """True = concordou, False = recusou, None = nao deu pra entender.
+
+    Determinismo em Python, nao no LLM: aceite de LGPD e o tipo de coisa
+    que nao pode depender de "o modelo entendeu a intencao 80% das vezes".
+
+    FAIL-CLOSED: na duvida devolve None e o fluxo repete o aviso. Nunca
+    presume aceite — presumir e exatamente o que a feature veio corrigir.
+    """
+    t = (texto or "").strip()
+    if not t:
+        return None
+    # A duvida invalida os DOIS lados. No sim, porque "concordo?" nao e ato
+    # de vontade. No nao, porque a recusa APAGA A CONTA.
+    duvida = bool(_DUVIDA_LGPD_RE.search(t))
+    # Recusa primeiro: "nao concordo" contem "concordo".
+    if _NAO_LGPD_RE.match(t):
+        return None if duvida else False
+    if _SIM_LGPD_RE.match(t):
+        return None if duvida else True
+    return None
 
 # --- a demonstracao: o coracao deste arquivo ------------------------------
 DEMO = (
