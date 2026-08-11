@@ -60,6 +60,19 @@ MAX_CORPO = 1024
 # Regra: leia uma conversa antes de escrever regex.
 _REGRAS = [
     (
+        "aceite_lgpd",
+        # M1.2 — PRIMEIRA da lista de proposito. O aviso de LGPD e a unica
+        # mensagem do produto em que o clique tem valor juridico: se outra
+        # regra roubasse o match, a pessoa receberia texto puro e o aceite
+        # viraria "ela continuou escrevendo" de novo — que e exatamente a
+        # exposicao que a M1.2 existe pra fechar.
+        # Escrita contra o texto REAL de jornada.LGPD_AVISO, nao imaginado.
+        re.compile(r"voc\u00ea concorda com os termos|preciso do seu aceite",
+                   re.I),
+        [("\u2705 Concordo", "concordo"),
+         ("N\u00e3o concordo", "n\u00e3o concordo")],
+    ),
+    (
         "alarme_na_hora",
         # "\u23f0 DC, chegou a hora: *Comprar racao* — voce me pediu pra
         #  avisar as 17:30. Responda *feito* que eu dou baixa, ou *adiar 1h*."
