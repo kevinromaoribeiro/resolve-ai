@@ -49,7 +49,68 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v21.1-ack-botoes-2026-08-11"
+BUILD = "v22.0-onboarding-lgpd-2026-08-11"
+
+# ---------------------------------------------------------------------------
+# M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
+# ---------------------------------------------------------------------------
+# ATENCAO DE DEPLOY: os dicionarios abaixo sao POR PROCESSO. Rode o uvicorn
+# com UM worker so (o padrao). Com 2+ workers a fila pre-aceite e o CONFIRM
+# ficam em processos diferentes e a demanda da pessoa se perde calada.
+LGPD_STEPS = ("lgpd_landing", "lgpd_organico")
+
+# O UNICO conjunto de comandos que atravessa o gate antes do aceite. Todos
+# protegem o usuario ou explicam o tratamento — nenhum grava dado novo nem
+# vende nada. "assinar" e "meu nome e X" ficam DE FORA de proposito.
+_CMD_PRE_ACEITE = {"apagar meus dados", "apagar dados", "excluir meus dados",
+                   "deletar meus dados", "privacidade", "termos", "lgpd",
+                   "meus dados", "ajuda"}
+
+# Comandos que NUNCA podem ser guardados na fila e replayados depois. Todos
+# abrem confirmacao destrutiva ou mexem em assinatura: replay arma o CONFIRM
+# (que nao tem TTL) por conta de uma frase antiga, e um "sim" ou "apagar"
+# solto dias depois executa a acao. Comando e ordem do momento.
+_CMD_NUNCA_ENFILEIRA = _CMD_PRE_ACEITE | {
+    "cancelar", "cancelar assinatura", "quero cancelar",
+    "apagar", "sim", "confirmo", "assinar", "planos", "quero assinar",
+    "pagar"}
+
+# Mensagens mandadas ANTES do aceite. Em memoria de proposito: e efemera e
+# nao vira base de dado sem consentimento — gravar no SQLite seria justamente
+# o que o aceite ainda nao autorizou.
+# LISTA por telefone: a primeira versao sobrescrevia, entao quem mandava 3
+# demandas recebia a promessa "guardei" 3 vezes e so a ultima sobrevivia.
+PRE_ACEITE: dict = {}
+PRE_ACEITE_MAX = 500        # teto de telefones
+PRE_ACEITE_MAX_MSGS = 5     # teto de mensagens por pessoa
+PRE_ACEITE_TTL_S = 3600     # some depois de 1h sem aceitar
+
+# Telefones que recebem o pedido de reconsentimento ANEXADO na proxima
+# resposta. Mesmo padrao do TRIAL_VENCIDO.
+RECONSENTIR: dict = {}
+
+# Quem acabou de recusar e teve os dados apagados. Sem isto, recusar e mandar
+# "oi" recria o usuario e dispara o onboarding INTEIRO de novo — a rajada que
+# rendeu 2 restricoes da Meta em 04/08.
+RECEM_APAGADOS: dict = {}
+CARENCIA_POS_RECUSA_S = 300
+
+# Ultimo envio da abertura completa. Sem isto cada "oi" de quem esta parado
+# no aceite dispara DUAS mensagens.
+ULTIMO_AVISO_LGPD: dict = {}
+REABRIR_ONBOARDING_S = 600
+
+# Confirmacao pendente cancelada porque a pessoa mandou outra coisa.
+CANCELADO_AVISO: dict = {}
+
+# Telefones cuja fila esta sendo reprocessada AGORA. Distingue "mensagem que
+# a pessoa acabou de mandar" de "mensagem antiga sendo colhida".
+EM_REPROCESSO: set = set()
+_SEM_CONFIRM = object()
+
+# phone -> (user_id, n_itens_antes, [demandas]). Conferido no webhook depois
+# que a resposta saiu: as demandas guardadas viraram item MESMO?
+CONFERIR_FILA: dict = {}
 
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
@@ -205,7 +266,11 @@ def _onboarding_done_msg(first_name: str, keys: list[str]) -> str:
     usuario abre quando quiser, e a regua do trial_guiado continua
     puxando as que ele nao usou.
     """
-    return jornada.BOAS_VINDAS.format(nome=first_name, dias=TRIAL_DAYS)
+    # M1.2: o pedido de demanda saiu de BOAS_VINDAS e virou PEDIDO_DEMANDA
+    # (mensagem 3). Este ponto e o FIM do fluxo organico — apontar pra
+    # BOAS_VINDAS aqui faria o cadastro terminar sem pedir nada, e a
+    # ativacao morreria em silencio.
+    return jornada.PEDIDO_DEMANDA.format(nome=first_name)
 
 
 def _payment_msg(first_name: str) -> str:
@@ -239,8 +304,17 @@ def _parse_landing_payload(text: str) -> Optional[dict]:
         return None
     try:
         _, resto = text.split("#RESOLVE", 1)
-        partes = [p.strip() for p in resto.lstrip("|").split("|")]
+        # lstrip("|") comia TODOS os pipes da esquerda e deslocava os campos:
+        # "#RESOLVE||30|contas" virava nome="30" e o bot dizia "Oi, 30!".
+        if resto.startswith("|"):
+            resto = resto[1:]
+        partes = [p.strip() for p in resto.split("|")]
         nome = partes[0] if len(partes) > 0 and partes[0] else ""
+        # Filtro FRACO de proposito: _is_not_a_name corta em 5+ palavras e em
+        # virgula, o que rejeitava "Ana Carolina de Souza Lima" e fazia o bot
+        # cumprimentar pelo pushName do WhatsApp.
+        if nome and _nao_e_nome_de_formulario(nome):
+            nome = ""
         idade_raw = partes[1] if len(partes) > 1 else ""
         idade = int(re.sub(r"\D", "", idade_raw)) if re.sub(r"\D", "", idade_raw) else None
         interesses = ""
@@ -262,7 +336,12 @@ def _get_or_create_user(phone: str, push_name: str = "") -> tuple[dict, bool]:
             return u, False
     uid = db.create_user(nome=push_name or f"Usuário {phone[-4:]}",
                          telefone=phone)
-    db.update_user_fields(uid, onboarding_step="nome", status="trial")
+    # Aqui gravava onboarding_step="nome", e o reset do MASTER_PHONE passava
+    # por este caminho SEM ser `is_new` — o dono resetava, mandava "oi", e a
+    # mensagem ia direto pro LLM sem nenhum aceite. Dois estragos: um caminho
+    # processando dado sem consentimento, e o dono testando a M1.2 sem nunca
+    # ver a M1.2. Todo usuario nasce parado no aceite. Sem excecao.
+    db.update_user_fields(uid, onboarding_step="lgpd_organico", status="trial")
     return db.get_user(uid), True
 
 
@@ -287,7 +366,10 @@ def _maybe_master_reset(phone: str, text: str) -> Optional[str]:
 def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     """Comandos globais (LGPD, assinatura, admin). Retorna resposta ou None."""
     low = text.strip().lower()
-    first_name = user["nome"].split()[0]
+    # split() em nome vazio/so espaco estoura IndexError e derruba o webhook
+    # inteiro — e como _ja_processada() ja marcou a mensagem, o reenvio da
+    # Meta e engolido pelo dedup e a mensagem some de vez.
+    first_name = ((user.get("nome") or "").split() or [""])[0]
 
     # --- confirmações pendentes ------------------------------------------
     if phone in CONFIRM:
@@ -301,10 +383,25 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         if action == "apagar" and low == "apagar":
             db.delete_user(user["id"])
             PENDING.pop(phone, None)
+            PRE_ACEITE.pop(phone, None)
+            RECONSENTIR.pop(phone, None)
             return ("Feito. Todos os seus dados foram apagados "
                     "permanentemente — registros, lembretes, tudo. "
                     "Se um dia quiser voltar, é só mandar um oi. 👋")
-        return "Ok, não fiz nada. Seguimos normal. 🙂"
+        # NAO retorna aqui. Este `return "Ok, nao fiz nada"` engolia a
+        # mensagem: quem pedia "apagar meus dados", desistia, e mandava
+        # "dentista dia 15 as 14h" recebia "Ok, nao fiz nada" e o item NUNCA
+        # era criado — perda silenciosa. A confirmacao ja foi cancelada pelo
+        # pop; a mensagem segue o fluxo e vira item, com aviso curto colado.
+        CANCELADO_AVISO[phone] = tempo.agora()
+        return None
+
+    # _handle_commands roda ANTES do gate de aceite. Correto para "apagar
+    # meus dados" — e a saida de emergencia. Mas levava junto "meu nome e
+    # Fernanda", que gravava nome real sem consentimento, e "assinar", que
+    # mandava link de pagamento pra quem nao aceitou os Termos.
+    if user.get("onboarding_step") in LGPD_STEPS and low not in _CMD_PRE_ACEITE:
+        return None
 
     # --- comandos ----------------------------------------------------------
     if low in ("cancelar", "cancelar assinatura", "quero cancelar"):
@@ -367,6 +464,10 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     # no banco. É a única informação que o bot repete em toda mensagem.
     # Em Python e não no LLM: um nome trocado errado é pior que nome errado.
     m = _RENOMEAR_RE.match(text.strip())
+    # No REPROCESSO da fila pre-aceite, nao. O texto guardado e antigo e a
+    # pessoa ja respondeu o nome depois dele, no passo do cadastro.
+    if m and phone in EM_REPROCESSO:
+        m = None
     if m:
         novo = m.group("nome").strip(" .!?,;\"'")[:60]
         if _is_not_a_name(novo) or len(novo) < 2:
@@ -441,7 +542,15 @@ _COMANDOS_DO_BOT = {"feito", "feita", "pronto", "pronta", "pago", "paga",
                     "apagar", "apaga", "deletar", "remover", "listar",
                     "lista", "itens", "status", "parar", "pausar", "sair",
                     "assinar", "pagar", "comprar", "sim", "não", "nao",
-                    "nenhum", "nada", "tudo", "todos", "reset", "resetar"}
+                    "nenhum", "nada", "tudo", "todos", "reset", "resetar",
+                    # M1.2 — as palavras dos botoes de aceite. Sem isto, o
+                    # segundo toque em "Concordo" (o botao continua clicavel,
+                    # e o msg_id e outro, entao o dedup nao pega) chega no
+                    # passo "nome" e a pessoa passa a se chamar "Concordo".
+                    # E o bug do "Feito" da v16.3, no passo mais critico.
+                    "concordo", "concorda", "concordou", "aceito", "aceita",
+                    "aceitar", "acordo", "discordo", "discorda", "recuso",
+                    "recusa", "confirmo", "confirma", "termos", "privacidade"}
 _NAO_NOME_PALAVRAS = {"quero", "preciso", "pode", "queria", "gostaria",
                       "me", "legal", "bora", "vamos", "help", "ajuda",
                       "menu", "start", "começar", "comecar", "obrigado",
@@ -457,6 +566,18 @@ def _is_not_a_name(text: str) -> bool:
     low = t.lower().strip("!?.,;")
     if low in _SAUDACOES or low in _NAO_NOME_PALAVRAS:
         return True
+    # TITULO DE BOTAO COM EMOJI. O texto que volta do clique e o titulo
+    # INTEIRO, emoji incluido; sem tirar o emoji "Concordo" passa como nome.
+    _limpo = re.sub(r"[^\wÀ-ÿ\s]", "", low).strip()
+    if _limpo and (_limpo in _NAO_NOME_PALAVRAS or _limpo in _SAUDACOES):
+        return True
+    if _limpo.split() and _limpo.split()[0] in _COMANDOS_DO_BOT:
+        return True
+    # Rotulo de botao de confirmacao. Reusa as MESMAS regex que interpretam
+    # o clique, em vez de manter uma segunda lista que sai de sincronia.
+    for _re_ack in (_ACK_CONFIRMOU_RE, _ACK_MUDAR_RE, _ACK_ADD_RE):
+        if _re_ack.match(t):
+            return True
     if _LOOKS_LIKE_QUESTION.search(t):
         return True
     if "," in t:                   # frase com vírgula não é nome
@@ -483,6 +604,11 @@ def _handle_onboarding(user: dict, text: str) -> Optional[str]:
     step = user.get("onboarding_step")
     if not step:
         return None
+    if step in LGPD_STEPS:
+        # O aceite e resolvido em _resolver_aceite, chamado de dentro do
+        # handle_incoming — la existe acesso ao content, que e o que permite
+        # REPROCESSAR a mensagem guardada antes do aceite. Aqui so blindamos.
+        return jornada.LGPD_AVISO.format(termos=TERMS_URL)
     if step == "nome":
         # Se claramente é uma pergunta/comando, não trata como nome:
         # deixa o motor responder e repete o convite do nome depois.
@@ -570,6 +696,336 @@ def _resposta_de_botao(user: dict, phone: str, text: str) -> Optional[str]:
     return None
 
 
+def _nao_e_nome_de_formulario(nome: str) -> bool:
+    """Filtro FRACO, so pro campo "nome" da landing page.
+
+    _is_not_a_name e calibrado pra conversa: corta 5+ palavras e qualquer
+    virgula, porque ali o risco e gravar uma frase inteira como nome. Num
+    formulario o risco e o oposto — "Maria da Conceicao Silva Santos" e nome
+    de gente e estava sendo descartado, fazendo o bot chamar a pessoa pelo
+    pushName do WhatsApp.
+    """
+    t = (nome or "").strip()
+    if len(t) < 2 or len(t) > 60:
+        return True
+    if re.fullmatch(r"[\\d\\s./-]+", t):
+        return True
+    if _LOOKS_LIKE_QUESTION.search(t):
+        return True
+    low = re.sub(r"[^\\w\u00C0-\u00ff\\s]", "", t.lower()).strip()
+    if low in _NAO_NOME_PALAVRAS or low in _SAUDACOES:
+        return True
+    return not re.search(r"[A-Za-z\u00C0-\u00ff]", t)
+
+
+def _purgar_pre_aceite() -> None:
+    """Tira da memoria o que ficou pra tras (quem abandonou o cadastro)."""
+    agora = tempo.agora()
+    for tel in list(PRE_ACEITE):
+        fila = [(x, q) for x, q in PRE_ACEITE.get(tel) or []
+                if (agora - q).total_seconds() < PRE_ACEITE_TTL_S]
+        if fila:
+            PRE_ACEITE[tel] = fila
+        else:
+            PRE_ACEITE.pop(tel, None)
+    for mapa, ttl in ((RECEM_APAGADOS, PRE_ACEITE_TTL_S),
+                      (ULTIMO_AVISO_LGPD, PRE_ACEITE_TTL_S),
+                      (CANCELADO_AVISO, 120)):
+        for tel in list(mapa):
+            try:
+                if (agora - mapa[tel]).total_seconds() > ttl:
+                    mapa.pop(tel, None)
+            except Exception:
+                mapa.pop(tel, None)
+
+
+def _pop_pre_aceite(phone: str) -> list:
+    """Tira a fila e devolve LISTA de textos.
+
+    Ponto unico de leitura de proposito. A conversao de string para fila foi
+    feita em dois lugares e esquecida num terceiro (o ramo da landing), que
+    devolvia a lista crua pro fluxo de texto e derrubava o webhook com
+    AttributeError — 500, dedup engolindo o reenvio, e a demanda que o bot
+    tinha ACABADO de prometer registrar perdida.
+    """
+    return [x for x, _q in (PRE_ACEITE.pop(phone, None) or [])]
+
+
+def _repor_pre_aceite(phone: str, textos_: list) -> None:
+    """Devolve a fila pra memoria quando o envio falhou."""
+    if textos_:
+        agora = tempo.agora()
+        PRE_ACEITE[phone] = [(x, agora) for x in textos_]
+
+
+def _enviar_avulsa(phone: str, texto: str, user_id=None) -> bool:
+    """Mensagem fora do retorno do webhook, com log no painel e alerta."""
+    ok = send_whatsapp(phone, texto)
+    try:
+        db.log_message(user_id, phone, "out" if ok else "out_falhou",
+                       "texto", texto)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[envio] falha ao logar mensagem avulsa", exc_info=True)
+    if not ok:
+        _alertar_dono("Nao consegui entregar uma resposta avulsa",
+                      phone, texto[:60])
+    return ok
+
+
+def _abrir_onboarding_lgpd(phone: str, texto_abertura: str,
+                           user_id=None) -> bool:
+    """Manda as mensagens 1 e 2 do onboarding e registra as duas no painel.
+
+    Funcao unica porque ha TRES portas de entrada (usuario novo, landing e
+    saudacao de quem esta parado) e a auditoria pegou uma delas escapando.
+    Porta duplicada e regra que diverge.
+
+    Estas duas mensagens saem FORA do caminho normal do webhook, entao o
+    db.log_message de saida — que mora dentro do if reply: — nunca rodava.
+    O painel mostrava o "oi" recebido e nenhuma resposta.
+    """
+    aviso = jornada.LGPD_AVISO.format(termos=TERMS_URL)
+    # Marca aqui, nao em quem chama: sao tres portas, e marcar em uma so
+    # deixava a rajada viva pelas outras.
+    ULTIMO_AVISO_LGPD[phone] = tempo.agora()
+    ok1 = send_whatsapp(phone, texto_abertura)
+    ok2 = botoes.enviar_resposta(phone, aviso, send_whatsapp)
+    for ok, txt in ((ok1, texto_abertura), (ok2, aviso)):
+        try:
+            db.log_message(user_id, phone, "out" if ok else "out_falhou",
+                           "texto", txt)
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[onboarding] falha ao logar no painel", exc_info=True)
+    if not (ok1 and ok2):
+        _alertar_dono("ONBOARDING: nao consegui mandar boas-vindas/LGPD "
+                      "(pessoa ficou no vacuo no primeiro contato)",
+                      phone, texto_abertura[:60])
+    return ok1 and ok2
+
+
+def _conferir_fila_virou_item(phone: str) -> None:
+    """Confere no BANCO se cada demanda guardada virou item. Em Python.
+
+    A fila volta pro motor como bloco multi-linha, e quantos itens nascem
+    dali e decisao do LLM — justamente onde o bot fez promessa por escrito
+    ("registro assim que voce confirmar"). Cinco linhas virando um item e
+    perda silenciosa de quatro demandas.
+
+    Nao conserta o motor: detecta e faz barulho, em vez de deixar a pessoa
+    descobrir no vencimento.
+    """
+    pend = CONFERIR_FILA.pop(phone, None)
+    if not pend:
+        return
+    user_id, antes, demandas = pend
+    if len(demandas) < 2:
+        return
+    try:
+        criados = len(db.list_items(user_id)) - antes
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[fila] nao consegui conferir itens criados", exc_info=True)
+        return
+    if criados >= len(demandas):
+        return
+    faltam = len(demandas) - criados
+    detalhe = "; ".join(d[:40] for d in demandas)
+    _alertar_dono(
+        "FILA PRE-ACEITE: " + str(len(demandas)) + " demandas viraram " +
+        str(criados) + " item(ns) — " + str(faltam) + " pode(m) ter se "
+        "perdido no motor. [" + detalhe + "]", phone, detalhe[:120])
+
+
+def _reprocessar_fila(user: dict, phone: str, fila: list):
+    """Passa cada demanda guardada pelo caminho normal de uma mensagem.
+
+    Linha a linha, nao em bloco: com a fila unida por quebra de linha, o
+    low in ("assinar", ...) do _handle_commands compara contra o blob
+    inteiro e nunca casa.
+    """
+    demandas, respostas = [], []
+    EM_REPROCESSO.add(phone)
+    # Cinto e suspensorio: mesmo com o filtro de enfileiramento, o reprocesso
+    # nao pode DEIXAR uma confirmacao destrutiva armada.
+    _confirm_antes = CONFIRM.get(phone, _SEM_CONFIRM)
+    try:
+        for texto in fila:
+            resposta = _handle_commands(user, phone, texto)
+            if resposta:
+                respostas.append(resposta)
+            else:
+                demandas.append(texto)
+    finally:
+        EM_REPROCESSO.discard(phone)
+        if _confirm_antes is _SEM_CONFIRM:
+            CONFIRM.pop(phone, None)
+        else:
+            CONFIRM[phone] = _confirm_antes
+    # A fila INTEIRA e percorrida, nao ate o primeiro comando. Parar no
+    # primeiro descartava tudo que viesse depois.
+    return ("\n\n".join(respostas) if respostas else None,
+            "\n".join(demandas))
+
+
+def _colher_pre_aceite(user: dict, phone: str, fechou_cadastro: bool) -> list:
+    """Devolve as demandas guardadas quando o cadastro acabou de terminar.
+
+    A pessoa mandou "luz 187 vence dia 20" antes de aceitar. O bot respondeu,
+    por escrito, "Guardei aqui e registro assim que voce confirmar". No fluxo
+    organico ainda faltavam dois passos (nome e interesses), entao a promessa
+    so pode ser cumprida AQUI.
+    """
+    if not phone or not fechou_cadastro:
+        return []
+    return _pop_pre_aceite(phone)
+
+
+def _resolver_aceite(user: dict, phone: str, kind: str,
+                     content: str) -> tuple:
+    """Gate do aceite. Devolve (resposta_ou_None, demandas_a_reprocessar).
+
+    Enquanto nao ha aceite, NENHUMA mensagem vira item nem chega no LLM.
+    """
+    step = user.get("onboarding_step")
+    aviso = jornada.LGPD_AVISO.format(termos=TERMS_URL)
+
+    # Evento que nao e pedido da pessoa: protocolo/recibo, reacao e
+    # figurinha. Responder o muro juridico completo a um emoji e ruido puro
+    # — e cada saida dessas conta no limite de envio da Meta.
+    if kind in ("reacao", "figurinha"):
+        return (None, [])
+    if kind in ("desconhecido", "texto") and not (content or "").strip():
+        return (None, [])
+
+    # Midia antes do aceite. NAO usa LGPD_NAO_REGISTREI: aquele texto afirma
+    # "guardei aqui", e a fila so aceita texto. Audio e foto sao
+    # irrecuperaveis — o download e gated ate o aceite, entao o msg_id da
+    # midia ja morreu quando o consentimento chega.
+    if kind != "texto":
+        return (jornada.LGPD_NAO_GUARDEI_MIDIA + aviso, [])
+
+    aceite = jornada.parse_aceite(content)
+
+    if aceite is None:
+        texto = (content or "").strip()
+        e_saudacao = texto.lower().strip("!?.,;") in _SAUDACOES
+        if e_saudacao or not texto:
+            # "oi" de quem esta parado no aceite = esta comecando agora.
+            # So uma vez a cada REABRIR_ONBOARDING_S: repetir a abertura a
+            # cada "oi" transforma 3 saudacoes em 6 mensagens.
+            ultimo = ULTIMO_AVISO_LGPD.get(phone)
+            if ultimo and (tempo.agora() - ultimo).total_seconds() \
+                    < REABRIR_ONBOARDING_S:
+                return (aviso, [])
+            abertura = (textos.WELCOME_MSG_ABERTURA
+                        .format(trial_days=TRIAL_DAYS)
+                        if step == "lgpd_organico" else
+                        jornada.BOAS_VINDAS.format(
+                            nome=((user.get("nome") or "").split() or [""])[0],
+                            dias=TRIAL_DAYS))
+            _abrir_onboarding_lgpd(phone, abertura, user.get("id"))
+            return (None, [])
+
+        # COMANDO NUNCA VAI PRA FILA. Guardar "apagar meus dados" ou
+        # "cancelar" como demanda e replayar depois do aceite ARMAVA a
+        # confirmacao destrutiva: dias depois, um "apagar" solto apagava a
+        # conta por causa de uma frase mandada antes de existir cadastro.
+        if texto.lower().strip("!?.,;") in _CMD_NUNCA_ENFILEIRA:
+            return (jornada.LGPD_COMANDO_ANTES + aviso, [])
+
+        # Mandou conteudo de verdade: guarda pra processar depois do aceite
+        # e AVISA que ainda nao registrou (nunca descarta em silencio).
+        fila = PRE_ACEITE.setdefault(phone, []) \
+            if len(PRE_ACEITE) < PRE_ACEITE_MAX or phone in PRE_ACEITE else None
+        if fila is not None and len(fila) < PRE_ACEITE_MAX_MSGS:
+            fila.append((texto[:500], tempo.agora()))
+            return (jornada.LGPD_NAO_REGISTREI + aviso, [])
+        return (jornada.LGPD_NAO_GUARDEI + aviso, [])
+
+    if aceite is False:
+        # RECUSA = APAGA. A copy de LGPD_RECUSA diz "ja apaguei o que tinha
+        # seu" — essa frase so pode existir porque este delete existe.
+        PRE_ACEITE.pop(phone, None)
+        PENDING.pop(phone, None)
+        CONFIRM.pop(phone, None)
+        try:
+            db.delete_user(user["id"])
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").error(
+                "[lgpd] FALHA AO APAGAR na recusa — usuario %s",
+                user.get("id"), exc_info=True)
+            _alertar_dono("LGPD: recusa sem apagamento (prometi apagar e "
+                          "nao apaguei — risco juridico)", phone, "recusa")
+            return ("N\u00e3o consegui concluir agora. \U0001F615 J\u00e1 avisei o "
+                    "respons\u00e1vel e isso vai ser resolvido — se quiser "
+                    "garantir, manda *apagar meus dados*.", [])
+        RECEM_APAGADOS[phone] = tempo.agora()
+        return (jornada.LGPD_RECUSA, [])
+
+    # --- ACEITOU ---------------------------------------------------------
+    db.update_user_fields(user["id"],
+                          lgpd_aceite_em=tempo.agora().isoformat())
+
+    if step == "lgpd_organico":
+        # NAO consome o PRE_ACEITE aqui. Este ramo ainda vai pedir nome e
+        # interesses; se o texto guardado fosse devolvido agora, ele cairia
+        # no step "nome" e viraria o NOME da pessoa.
+        db.update_user_fields(user["id"], onboarding_step="nome")
+        return (jornada.PEDIDO_NOME, [])
+
+    guardado = _pop_pre_aceite(phone)
+    nome = ((user.get("nome") or "").split() or [""])[0]
+    ints = [i for i in (user.get("interesses") or "").split(",") if i]
+    cta = ""
+    if ints:
+        try:
+            import trial_guiado
+            _, sugestao = trial_guiado._sugestao_para(
+                {"interesses": ",".join(ints)})
+            cta = "\n\nPra j\u00e1 come\u00e7ar: " + sugestao
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").info(
+                "[onboarding] sem sugestao do trial_guiado", exc_info=True)
+            cta = ""
+
+    if guardado:
+        msg3 = (jornada.PEDIDO_DEMANDA.format(nome=nome)
+                + "\n\n_J\u00e1 vou registrar o que voc\u00ea tinha mandado._")
+    else:
+        msg3 = jornada.PEDIDO_DEMANDA.format(nome=nome) + cta
+
+    # ENVIA ANTES DE FECHAR O ESTADO. A ordem anterior gravava
+    # onboarding_step=None e so entao enviava, com o retorno ignorado: se o
+    # envio falhasse, o aceite ficava gravado, o cadastro "concluido", a
+    # pessoa sem receber nada e ninguem alertado.
+    ok3 = send_whatsapp(phone, msg3)
+    try:
+        db.log_message(user["id"], phone, "out" if ok3 else "out_falhou",
+                       "texto", msg3)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[onboarding] falha ao logar mensagem 3 no painel", exc_info=True)
+    if not ok3:
+        _alertar_dono("ONBOARDING: aceite registrado mas a mensagem 3 nao "
+                      "chegou (pessoa fica sem saber o que fazer)",
+                      phone, msg3[:60])
+        # a fila VOLTA pra memoria: consumi-la num envio que nao chegou
+        # perderia o dado duas vezes.
+        _repor_pre_aceite(phone, guardado)
+        return (None, [])
+
+    db.update_user_fields(user["id"], onboarding_step=None)
+    return (None, guardado)
+
+
 def _answer_and_reprompt_name(user: dict, text: str) -> str:
     """Responde a pergunta/comando feita durante o passo 'nome' e, em seguida,
     repete gentilmente o convite pra dizer o nome — sem gravar lixo como nome."""
@@ -590,6 +1046,28 @@ def _classify_message(msg: dict) -> tuple[str, str]:
     ext = msg.get("extendedTextMessage") or {}
     if ext.get("text"):
         return "texto", ext["text"]
+    # RESPOSTA DE BOTAO. O canal oficial normaliza o clique para
+    # "conversation", entao na pratica isto raramente roda. Mas se o titulo
+    # vier vazio, ou se o bot cair no canal reserva (wasender), que NAO tem
+    # esse branch, o clique vira "desconhecido" — e com o gate da M1.2 no ar
+    # isso TRANCA a pessoa: ela toca em "Concordo", recebe o aviso de novo, e
+    # nunca sai. Botao e o caminho principal do produto.
+    for chave, id_campo, txt_campo in (
+            ("buttonsResponseMessage", "selectedButtonId", "selectedDisplayText"),
+            ("templateButtonReplyMessage", "selectedId", "selectedDisplayText"),
+            ("listResponseMessage", "selectedRowId", "title")):
+        node = msg.get(chave) or {}
+        if node:
+            titulo = (node.get(txt_campo) or node.get(id_campo) or "")
+            if not titulo and chave == "listResponseMessage":
+                titulo = ((node.get("singleSelectReply") or {})
+                          .get("selectedRowId") or "")
+            return "texto", titulo
+    inter = msg.get("interactive") or {}
+    reply_btn = (inter.get("button_reply") or inter.get("list_reply")
+                 or inter.get("nfm_reply") or {})
+    if reply_btn:
+        return "texto", (reply_btn.get("title") or reply_btn.get("id") or "")
     if "audioMessage" in msg:
         return "audio", ""          # arquivo é buscado via wasender.baixar_midia
     if "imageMessage" in msg:
@@ -755,11 +1233,109 @@ def handle_incoming(payload: dict) -> Optional[dict]:
             return {"number": phone, "text": reset_reply}
 
     user, is_new = _get_or_create_user(phone, push_name)
-    first_name = user["nome"].split()[0]
+    # split()[0] em nome vazio estoura IndexError e derruba o webhook com
+    # 500. E como _ja_processada() marca a mensagem ANTES do processamento,
+    # o reenvio da Meta e descartado como duplicado: a mensagem se perde pra
+    # sempre e a pessoa trava em todas as seguintes.
+    first_name = ((user.get("nome") or "").split() or [""])[0]
 
+    # Purga dos dicionarios efemeros, no topo e nao escondida num ramo:
+    # quando morava so dentro do gate, os mapas so eram varridos se ALGUEM
+    # mandasse conteudo antes de aceitar.
+    _purgar_pre_aceite()
+
+    # OBS: o download da midia foi movido pra DEPOIS do gate de aceite
+    # (bloco 0a2). Baixar significa decriptar o audio/foto da pessoa, e "sem
+    # dado sem aceite" nao combina com decriptar primeiro e perguntar depois.
+
+    # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
+    # Veio da landing page com dados no payload? Cria perfil completo e
+    # pula o onboarding — a pessoa chega CONHECIDA, não jogada no vácuo.
+    # Vale para usuário novo E para quem ainda está no meio do cadastro
+    # (ex.: logo após um RESET, que recria o registro no passo "nome").
+    # Sem isso o payload seria gravado como se fosse o nome da pessoa.
+    landing = _parse_landing_payload(content) if kind == "texto" else None
+    if landing and (landing.get("nome") or landing.get("interesses")) and (
+            is_new or user.get("onboarding_step") in ("nome", "interesses")):
+        fn = ((landing["nome"] or "").split() or [""])[0] or first_name
+        db.update_user_fields(
+            user["id"],
+            nome=landing["nome"] or user["nome"],
+            idade=landing.get("idade"),
+            interesses=landing.get("interesses") or None,
+            onboarding_step="lgpd_landing")
+        _abrir_onboarding_lgpd(
+            phone, jornada.BOAS_VINDAS.format(nome=fn, dias=TRIAL_DAYS),
+            user["id"])
+        return None
+
+    if is_new:
+        # Sem payload da landing: LGPD -> pergunta nome -> interesses.
+        db.update_user_fields(user["id"], onboarding_step="lgpd_organico")
+        # Carencia pos-recusa: quem acabou de recusar e voltou nao leva o
+        # onboarding inteiro de novo. Sem isto, "Nao concordo" + "oi" vira
+        # rajada e reinicia o trial a cada volta.
+        _apagado_em = RECEM_APAGADOS.get(phone)
+        if _apagado_em and (tempo.agora() - _apagado_em).total_seconds() \
+                < CARENCIA_POS_RECUSA_S:
+            return {"number": phone, "text":
+                    ("Pra continuar eu preciso do seu aceite nos Termos ("
+                     + TERMS_URL + ").\n\nÉ só mandar *concordo*. 🙂")}
+        RECEM_APAGADOS.pop(phone, None)
+        _abrir_onboarding_lgpd(
+            phone,
+            textos.WELCOME_MSG_ABERTURA.format(trial_days=TRIAL_DAYS),
+            user["id"])
+        return None
+
+    # --- 0a. GATE DO ACEITE DE LGPD ---------------------------------------
+    # POSICAO IMPORTA. Este gate ja esteve ACIMA dos blocos de landing/is_new
+    # e o efeito foi matar o funil da landing: como todo usuario nasce em
+    # "lgpd_organico", o gate retornava antes de _parse_landing_payload
+    # rodar, e quem vinha da landing perdia nome, idade e interesses.
+    # Cobre TODOS os formatos — antes so texto passava por
+    # _handle_onboarding, entao audio e imagem escapavam pro motor de IA.
+    if user.get("onboarding_step") in LGPD_STEPS:
+        cmd_pre = (_handle_commands(user, phone, content)
+                   if kind == "texto" else None)
+        if cmd_pre:
+            return {"number": phone, "text": cmd_pre}
+        resposta, reprocessar = _resolver_aceite(user, phone, kind, content)
+        if resposta is not None:
+            return {"number": phone, "text": resposta}
+        if not reprocessar:
+            return None          # mensagem 3 ja saiu direto
+        user = db.get_user(user["id"]) or user
+        first_name = ((user.get("nome") or "").split() or [""])[0]
+        try:
+            _cmd, _blob = _reprocessar_fila(user, phone, reprocessar)
+        except Exception:
+            # A fila JA foi popada. Sem devolver, uma excecao aqui apaga em
+            # silencio a demanda que o bot prometeu registrar.
+            _repor_pre_aceite(phone, reprocessar)
+            _alertar_dono("FILA: erro ao reprocessar demandas guardadas "
+                          "(devolvidas pra memoria)", phone,
+                          "; ".join(reprocessar)[:120])
+            raise
+        if _cmd and not _blob.strip():
+            return {"number": phone, "text": _cmd}
+        if _cmd:
+            _enviar_avulsa(phone, _cmd, user.get("id"))
+        if not _blob.strip():
+            return None
+        try:
+            CONFERIR_FILA[phone] = (user["id"], len(db.list_items(user["id"])),
+                                    _blob.split("\n"))
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[fila] nao consegui contar itens antes", exc_info=True)
+        kind, content = "texto", _blob
+
+    # --- 0a2. DOWNLOAD DA MIDIA (so depois do aceite) ---------------------
+    # Decriptar o audio de alguem que ainda nao aceitou os Termos e processar
+    # dado sem consentimento, mesmo que o conteudo nunca chegue ao LLM.
     media_b64 = ""
-    # A mídia do WhatsApp vem criptografada: a wasender.baixar_midia() chama o
-    # endpoint de decrypt e devolve o arquivo já legível em base64.
     if kind in ("audio", "imagem_silenciosa", "imagem_com_texto"):
         media_b64 = wasender.baixar_midia(
             msg_id=data.get("_msg_id", "") or "",
@@ -771,50 +1347,99 @@ def handle_incoming(payload: dict) -> Optional[dict]:
                 "[media] %s nao pode ser lido (tipo=%s)",
                 kind, data.get("_media_tipo"))
 
-    # --- 0. boas-vindas: primeiro contato inicia o onboarding --------------
-    # Veio da landing page com dados no payload? Cria perfil completo e
-    # pula o onboarding — a pessoa chega CONHECIDA, não jogada no vácuo.
-    # Vale para usuário novo E para quem ainda está no meio do cadastro
-    # (ex.: logo após um RESET, que recria o registro no passo "nome").
-    # Sem isso o payload seria gravado como se fosse o nome da pessoa.
-    landing = _parse_landing_payload(content) if kind == "texto" else None
-    if landing and (landing.get("nome") or landing.get("interesses")) and (
-            is_new or user.get("onboarding_step") in ("nome", "interesses")):
-        db.update_user_fields(
-            user["id"],
-            nome=landing["nome"] or user["nome"],
-            idade=landing.get("idade"),
-            interesses=landing.get("interesses") or None,
-            onboarding_step="done")
-        fn = (landing["nome"] or "").split()[0] or first_name
-        ints = [i for i in (landing.get("interesses") or "").split(",") if i]
-        # primeira sugestão já personalizada pelo 1º interesse
-        primeira = ""
-        if ints:
+    # --- 0b. RECONSENTIMENTO DA BASE ANTIGA -------------------------------
+    # Quem ja existia quando a M1.2 subiu tem onboarding_step None/"done" e
+    # nunca passa pelo gate acima. Sem isto, 100% da base real — as 11
+    # pessoas que motivaram a feature — seguiria sem aceite explicito.
+    # SOFT de proposito: anexa o pedido na resposta em vez de bloquear.
+    if kind == "texto" and not user.get("lgpd_aceite_em"):
+        _resp_legado = jornada.parse_aceite(content)
+        if _resp_legado is True:
+            db.update_user_fields(user["id"],
+                                  lgpd_aceite_em=tempo.agora().isoformat())
+            return {"number": phone, "text":
+                    "Obrigado! ✅ Aceite registrado. Seguimos. 🤝"}
+        if _resp_legado is False:
+            # Aqui NAO apagamos automaticamente: essa pessoa tem semanas de
+            # itens e apagar sem confirmacao seria o pior defeito possivel.
+            RECONSENTIR.pop(phone, None)
             try:
-                import trial_guiado
-                _, cta = trial_guiado._sugestao_para({"interesses": ",".join(ints)})
-                primeira = f"\n\nPra já começar: {cta}"
+                db.log_dispatch(user["id"], "lgpd_recusou")
             except Exception:
-                primeira = ""
-        # Boas-vindas da landing: UMA acao concreta em vez de apresentacao
-        # + LGPD + cardapio. Ver jornada.BOAS_VINDAS.
-        return {"number": phone, "text":
-                jornada.BOAS_VINDAS.format(nome=fn, dias=TRIAL_DAYS)
-                + "\n\n" + jornada.RODAPE_LEGAL.format(termos=TERMS_URL)}
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[lgpd] falha ao registrar objecao do legado",
+                    exc_info=True)
+            _alertar_dono("LGPD: usuario da base antiga RECUSOU os termos "
+                          "(decidir se mantem a conta)", phone, content)
+            return {"number": phone, "text":
+                    ("Entendido — não vou mais te pedir isso. 🤝\n\n"
+                     "Seus lembretes continuam funcionando normalmente. "
+                     "Se preferir que eu apague tudo, é só mandar "
+                     "*apagar meus dados*.")}
+        try:
+            if not db.dispatched_today("reconsentimento", user["id"]) \
+                    and not db.dispatched_ever("lgpd_recusou", user["id"]):
+                RECONSENTIR[phone] = True
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[lgpd] falha no dedup do reconsentimento", exc_info=True)
 
-    if is_new:
-        # Sem payload da landing: fluxo normal de onboarding (pergunta nome etc.)
-        return {"number": phone, "text": textos.WELCOME_MSG.format(trial_days=TRIAL_DAYS, terms_url=TERMS_URL)}
-
-    # --- 1. comandos globais e onboarding (só em texto) --------------------
+    # --- 1. comandos globais e onboarding --------------------------------
     if kind == "texto":
         cmd_reply = _handle_commands(user, phone, content)
         if cmd_reply:
             return {"number": phone, "text": cmd_reply}
+        _step_antes = user.get("onboarding_step")
         onb_reply = _handle_onboarding(user, content)
+        user = db.get_user(user["id"]) or user
+        _fechou = bool(_step_antes) and not user.get("onboarding_step")
         if onb_reply:
-            return {"number": phone, "text": onb_reply}
+            # Terminou o cadastro agora? Entao e a hora de honrar a promessa
+            # feita la atras em LGPD_NAO_REGISTREI.
+            pendente = _colher_pre_aceite(user, phone, _fechou)
+            if pendente:
+                _ok = send_whatsapp(phone, onb_reply)
+                try:
+                    db.log_message(user["id"], phone,
+                                   "out" if _ok else "out_falhou",
+                                   "texto", onb_reply)
+                except Exception:
+                    import logging
+                    logging.getLogger("resolveai").warning(
+                        "[onboarding] falha ao logar no painel", exc_info=True)
+                if not _ok:
+                    _alertar_dono("ONBOARDING: fim do cadastro nao chegou "
+                                  "no usuario", phone, onb_reply[:60])
+                    _repor_pre_aceite(phone, pendente)
+                    return None
+                first_name = ((user.get("nome") or "").split() or [""])[0]
+                try:
+                    _cmd2, _blob2 = _reprocessar_fila(user, phone, pendente)
+                except Exception:
+                    _repor_pre_aceite(phone, pendente)
+                    _alertar_dono("FILA: erro ao reprocessar demandas "
+                                  "guardadas (devolvidas pra memoria)",
+                                  phone, "; ".join(pendente)[:120])
+                    raise
+                if _cmd2 and not _blob2.strip():
+                    return {"number": phone, "text": _cmd2}
+                if _cmd2:
+                    _enviar_avulsa(phone, _cmd2, user.get("id"))
+                if not _blob2.strip():
+                    return None
+                try:
+                    CONFERIR_FILA[phone] = (
+                        user["id"], len(db.list_items(user["id"])),
+                        _blob2.split("\n"))
+                except Exception:
+                    import logging
+                    logging.getLogger("resolveai").warning(
+                        "[fila] nao consegui contar itens antes", exc_info=True)
+                kind, content = "texto", _blob2
+            else:
+                return {"number": phone, "text": onb_reply}
 
     # --- 2. gates de acesso -------------------------------------------------
     status = user.get("status") or "trial"
@@ -1111,6 +1736,24 @@ def _meu_item(user_id: int, item_id) -> bool:
         logging.getLogger("resolveai").warning(
             "[dono] falha ao conferir item %s", item_id, exc_info=True)
         return False   # na duvida, NAO escreve
+
+
+def _esquecer_processada(msg_id: str) -> None:
+    """Desmarca a mensagem pra que o reenvio da Meta possa ser processado.
+
+    So e chamado quando o processamento EXPLODIU. Sem isto, a marca feita
+    antes do processamento faz o reenvio ser descartado como duplicado e a
+    mensagem da pessoa some para sempre por causa de um bug nosso.
+    """
+    if not msg_id:
+        return
+    try:
+        with db.get_conn() as conn:
+            conn.execute("DELETE FROM msgs_vistas WHERE msg_id=?", (msg_id,))
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[webhook] nao consegui desmarcar msg %s", msg_id, exc_info=True)
 
 
 def _ja_processada(msg_id: str) -> bool:
@@ -1779,7 +2422,24 @@ try:
                 "[webhook] reenvio da Meta ignorado (msg ja processada)")
             return {"ok": True, "duplicada": True}
 
-        reply = handle_incoming(payload)
+        # REDE DE SEGURANCA. O _ja_processada acima ja marcou este msg_id,
+        # entao qualquer excecao que escape daqui faz a Meta reenviar e o
+        # dedup descartar: a mensagem da pessoa some PARA SEMPRE, sem log e
+        # sem ninguem saber. Ja aconteceu com um IndexError de nome vazio.
+        try:
+            reply = handle_incoming(payload)
+        except Exception as e:
+            import logging
+            logging.getLogger("resolveai").error(
+                "[webhook] EXCECAO ao processar mensagem de ...%s",
+                str(num or "")[-4:], exc_info=True)
+            _esquecer_processada(_mid)
+            _alertar_dono("ERRO NAO TRATADO no webhook: " + repr(e),
+                          num, content)
+            reply = ({"number": num, "text":
+                      ("Deu um problema aqui do meu lado e eu não consegui "
+                       "processar isso. 😕 Me manda de novo, por favor?")}
+                     if num else None)
 
         # FAXINA FINAL, num lugar só.
         # "Precisando de ajuda com algo?" e "Posso ajudar com mais alguma
@@ -1790,10 +2450,56 @@ try:
             reply["text"] = motor_v8.tirar_enchimento(reply["text"])
 
         # Trial vencido: o item JÁ foi gravado acima. Agora sim o convite.
+        # Confirmacao cancelada por outra mensagem: avisa curto, sem roubar
+        # a resposta. O pop acontece SEMPRE que ha marcador, mesmo se reply
+        # for None — senao o aviso fica preso e aparece dias depois, colado
+        # numa resposta de outro assunto.
+        _cancel_em = CANCELADO_AVISO.pop(num, None) if num else None
+        if (_cancel_em and reply and reply.get("text")
+                and (tempo.agora() - _cancel_em).total_seconds() < 120):
+            reply["text"] = ("_(cancelei o pedido anterior)_\n\n"
+                             + reply["text"])
+
         nome_venc = TRIAL_VENCIDO.pop(num, None) if num else None
         if nome_venc and reply and reply.get("text"):
             reply["text"] = (f"{reply['text'].rstrip()}\n\n"
                              f"— — —\n{_payment_msg(nome_venc)}")
+
+        # Reconsentimento da base antiga: anexado, nunca no lugar da
+        # resposta. O log_dispatch e gravado AQUI, quando o texto realmente
+        # entra na resposta — gravar na marcacao queimava o pedido do dia
+        # mesmo quando a resposta era None (usuario bloqueado).
+        if num and RECONSENTIR.pop(num, None) and reply and reply.get("text"):
+            reply["text"] = (reply["text"].rstrip()
+                             + jornada.LGPD_RECONSENTIMENTO.format(
+                                 termos=TERMS_URL))
+            try:
+                _uid2 = None
+                for _cand in db.list_users():
+                    if re.sub(r"\D", "", _cand["telefone"]) == num:
+                        _uid2 = _cand["id"]
+                        break
+                if _uid2 is not None:
+                    db.log_dispatch(_uid2, "reconsentimento")
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[lgpd] falha ao registrar envio do reconsentimento",
+                    exc_info=True)
+
+        # A fila pre-aceite virou item no BANCO? Confere aqui, depois do
+        # processamento — invariante em Python, verificado contra o banco.
+        # Protegido: roda FORA do try/except do handle_incoming e ANTES do
+        # envio; sem a protecao, uma excecao aqui deixava o usuario sem
+        # resposta e o reenvio era descartado pelo dedup.
+        if num:
+            try:
+                _conferir_fila_virou_item(num)
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[fila] conferencia de itens falhou", exc_info=True)
+                _alertar_dono("FILA: conferencia de itens falhou", num, "")
 
         falha_depois = getattr(motor_v8, "ULTIMA_FALHA", "")
         if falha_depois and falha_depois != falha_antes:
