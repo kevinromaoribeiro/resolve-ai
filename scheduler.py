@@ -320,9 +320,37 @@ def check_time_alarms(ref: Optional[datetime] = None) -> list[dict]:
         first_name = (item.get("user_nome") or "").split()[0] or "Oi"
         valor = (f" ({'R$ %.2f' % item['valor_reais']})".replace(".", ",")
                  if item.get("valor_reais") else "")
-        msg = (f"⏰ {first_name}, chegou a hora: *{item['descricao']}*"
-               f"{valor} — você me pediu pra avisar às {item['hora_alvo']}.\n"
-               f"Responda *feito* que eu dou baixa, ou *adiar 1h*.")
+        # QUANTO ATRASOU? O texto muda, o aviso nao deixa de sair.
+        #
+        # Caso da Carol (11/08): as 21:43 ela cadastrou "dentista 11/08 as
+        # 16:00" — cinco horas no passado. O cron viu hora_alvo <= agora e
+        # mandou "⏰ chegou a hora" de um compromisso que tinha sido de
+        # tarde. Dizer "chegou a hora" cinco horas depois e mentira, e
+        # ensina a pessoa a ignorar o ⏰ — que e justamente o que ela paga
+        # pra receber.
+        #
+        # A saida NAO e filtrar: sumir com o lembrete e pior que avisar
+        # atrasado. E dizer a verdade.
+        _atraso = 0
+        try:
+            _h, _m = str(item["hora_alvo"])[:5].split(":")
+            _marcado = now.replace(hour=int(_h), minute=int(_m),
+                                   second=0, microsecond=0)
+            _atraso = int((now - _marcado).total_seconds() // 60)
+        except Exception:
+            _atraso = 0
+        if _atraso > db.ALARME_JANELA_MIN:
+            _quanto = (f"{_atraso // 60}h" if _atraso >= 60
+                       else f"{_atraso} min")
+            msg = (f"{first_name}, passou da hora de *{item['descricao']}*"
+                   f"{valor} — era às {item['hora_alvo']} "
+                   f"(há {_quanto}).\n"
+                   f"Ainda vale? Responda *feito* se já resolveu, ou me "
+                   f"manda a data certa que eu reagendo.")
+        else:
+            msg = (f"⏰ {first_name}, chegou a hora: *{item['descricao']}*"
+                   f"{valor} — você me pediu pra avisar às {item['hora_alvo']}.\n"
+                   f"Responda *feito* que eu dou baixa, ou *adiar 1h*.")
         dispatches.append({
             "user_id": item["user_id"],
             "user_nome": item.get("user_nome", ""),
