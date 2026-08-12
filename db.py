@@ -36,6 +36,12 @@ VALID_STATUSES = ("pendente", "concluido", "aglutinado", "vencido")
 VALID_CATEGORIES = ("Alimentação", "Pet", "Veículo", "Contas", "Saúde",
                     "Casa", "Lazer", "Viagem", "Treino", "Outros")
 
+# Ate quantos minutos depois da hora marcada o alarme ainda pode dizer
+# "chegou a hora". Passou disso, o scheduler troca o TEXTO — mas nao deixa
+# de avisar. Filtrar aqui faria o lembrete SUMIR, que e pior que avisar
+# atrasado. (caso da Carol, 11/08)
+ALARME_JANELA_MIN = 90
+
 
 # ---------------------------------------------------------------------------
 # Conexão e schema
