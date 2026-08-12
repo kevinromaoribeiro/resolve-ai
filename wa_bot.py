@@ -112,6 +112,10 @@ _SEM_CONFIRM = object()
 # que a resposta saiu: as demandas guardadas viraram item MESMO?
 CONFERIR_FILA: dict = {}
 
+# item_id -> True. Evita repetir o aviso de "essa hora ja passou" a cada
+# mensagem seguinte sobre o mesmo item.
+PASSADO_AVISADO: dict = {}
+
 # AVISO DE VENCIMENTO: SÓ UM DIA ANTES.
 # O scheduler vinha avisando em D-3, D-1 e no próprio dia — três mensagens
 # pelo mesmo boleto. Isso não é ajudar, é encher o saco, e é assim que o
@@ -756,6 +760,29 @@ def _repor_pre_aceite(phone: str, textos_: list) -> None:
     if textos_:
         agora = tempo.agora()
         PRE_ACEITE[phone] = [(x, agora) for x in textos_]
+
+
+def _hora_ja_passou(data_iso, hora_alvo) -> bool:
+    """A data+hora combinada ja ficou pra tras?
+
+    Nasceu do caso da Carol (11/08): as 21:43 ela cadastrou "dentista
+    11/08 as 16:00" — cinco horas no passado. O bot confirmou sem piscar e
+    o cron disparou "chegou a hora" um minuto depois.
+
+    Um lembrete cuja hora ja passou nao e lembrete: ou a pessoa errou o dia
+    (o caso dela: tinha dito "amanha"), ou errou a hora. Nos dois casos o
+    certo e perguntar, nao gravar calado.
+    """
+    if not data_iso or not hora_alvo:
+        return False
+    try:
+        d = datetime.strptime(str(data_iso)[:10], "%Y-%m-%d").date()
+        h, m = str(hora_alvo)[:5].split(":")
+        quando = datetime.combine(d, datetime.min.time()).replace(
+            hour=int(h), minute=int(m))
+        return quando < tempo.agora()
+    except Exception:
+        return False
 
 
 def _enviar_avulsa(phone: str, texto: str, user_id=None) -> bool:
@@ -2500,6 +2527,45 @@ try:
                 logging.getLogger("resolveai").warning(
                     "[fila] conferencia de itens falhou", exc_info=True)
                 _alertar_dono("FILA: conferencia de itens falhou", num, "")
+
+        # HORA NO PASSADO: avisa em vez de deixar a pessoa descobrir com um
+        # "chegou a hora" fora de hora. (caso da Carol, 11/08)
+        if num and reply and reply.get("text"):
+            try:
+                _u = None
+                for _c in db.list_users():
+                    if re.sub(r"\D", "", _c["telefone"]) == num:
+                        _u = _c
+                        break
+                if _u:
+                    _ult = db.ultimo_item(_u["id"]) or {}
+                    # SO se o item nasceu NESTA mensagem. Sem isto, quem
+                    # tem uma conta vencida em aberto levaria o aviso
+                    # grudado em qualquer resposta ("bom dia", "quanto
+                    # gastei") — o bot cutucando sobre coisa que ela nao
+                    # perguntou.
+                    _novo = False
+                    try:
+                        _crit = datetime.strptime(
+                            _ult.get("data_criacao") or "",
+                            "%Y-%m-%d %H:%M:%S")
+                        _novo = (tempo.agora() - _crit).total_seconds() < 30
+                    except Exception:
+                        _novo = False
+                    if (_novo and _ult.get("status") == "pendente"
+                            and _hora_ja_passou(_ult.get("data_vencimento"),
+                                                _ult.get("hora_alvo"))
+                            and not PASSADO_AVISADO.get(_ult.get("id"))):
+                        PASSADO_AVISADO[_ult["id"]] = True
+                        reply["text"] = (
+                            reply["text"].rstrip()
+                            + "\n\n⚠️ Só confirmando: essa data e hora *já "
+                              "passaram*. Se era pra outro dia, me manda a "
+                              "data certa que eu corrijo.")
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[passado] falha ao checar hora no passado", exc_info=True)
 
         falha_depois = getattr(motor_v8, "ULTIMA_FALHA", "")
         if falha_depois and falha_depois != falha_antes:
