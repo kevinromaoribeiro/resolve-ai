@@ -232,6 +232,8 @@ def check_overdue(ref: Optional[date] = None) -> list[dict]:
         y, m, d = map(int, venc.split("-"))
         atraso = (ref - date(y, m, d)).days
         first = (item.get("user_nome") or "").split()[0] or "Oi"
+        if db.item_silenciado(item["id"]):
+            continue          # M1.5 — silenciado nao cobra tambem
         if atraso >= ARCHIVE_AFTER_DAYS:
             if not db.dispatched_ever_item("arquivado", item["id"]):
                 db.archive_item(item["id"])
@@ -317,6 +319,11 @@ def check_time_alarms(ref: Optional[datetime] = None) -> list[dict]:
             continue
         if db.dispatched_today("hora", item["user_id"], item["id"]):
             continue
+        # M1.5 — item silenciado continua na lista, mas para de tocar.
+        # Alerta que toca depois de tres "agora nao" e alerta que a pessoa
+        # silencia — e quando ela silencia, silencia o bot inteiro.
+        if db.item_silenciado(item["id"]):
+            continue
         first_name = (item.get("user_nome") or "").split()[0] or "Oi"
         valor = (f" ({'R$ %.2f' % item['valor_reais']})".replace(".", ",")
                  if item.get("valor_reais") else "")
@@ -351,6 +358,22 @@ def check_time_alarms(ref: Optional[datetime] = None) -> list[dict]:
             msg = (f"⏰ {first_name}, chegou a hora: *{item['descricao']}*"
                    f"{valor} — você me pediu pra avisar às {item['hora_alvo']}.\n"
                    f"Responda *feito* que eu dou baixa, ou *adiar 1h*.")
+
+        # M1.5 — ESCALONAMENTO DE TOM. Nao escala pra cobranca: escala pra
+        # HONESTIDADE. Quem promete tirar peso da cabeca nao pode virar mais
+        # uma voz cobrando. Na 3a vez o bot assume que o problema pode ser
+        # dele (hora errada) e devolve a escolha pra pessoa.
+        _snoozes = 0
+        try:
+            _snoozes = db.dispatch_count_item("adiado", item["id"])
+        except Exception:
+            _snoozes = 0
+        if _snoozes >= db.SNOOZE_LIMITE:
+            msg = (f"{first_name}, já te chamei "
+                   f"{_snoozes}x pro *{item['descricao']}* e não rolou.\n\n"
+                   f"Ou o horário tá errado, ou isso não é prioridade "
+                   f"agora — e as duas respostas são válidas.\n\n"
+                   f"Me diz: *remarcar* ou *tirar da lista*?")
         dispatches.append({
             "user_id": item["user_id"],
             "user_nome": item.get("user_nome", ""),
@@ -607,6 +630,35 @@ def check_winback() -> list[dict]:
     return dispatches
 
 
+PURGA_DIA_DO_MES = 1     # roda uma vez por mes, dia 1
+PURGA_HORA = 4           # de madrugada, longe do horario de gente
+
+
+def rodar_purga_se_for_o_dia(now: Optional[datetime] = None) -> Optional[dict]:
+    """M1.6 — purga de concluidos velhos, 1x por mes.
+
+    SECO por padrao: conta e registra o lacre, mas nao apaga. Delete de dado
+    de usuario nao estreia direto em producao — primeiro a gente olha o
+    numero por algumas semanas. Ligar de verdade e trocar uma env var.
+    """
+    import os
+    now = now or tempo.agora()
+    if now.day != PURGA_DIA_DO_MES or now.hour != PURGA_HORA:
+        return None
+    if db.dispatched_today("purga-mensal", 0):
+        return None
+    seco = os.environ.get("PURGA_VALENDO", "0") != "1"
+    try:
+        r = db.purgar_concluidos(seco=seco)
+        db.log_dispatch(0, "purga-mensal")
+        return r
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[purga] falhou", exc_info=True)
+        return None
+
+
 def run_proactive_engine(
     ref_date: Optional[date] = None,
     ref_datetime: Optional[datetime] = None,
@@ -618,6 +670,7 @@ def run_proactive_engine(
     """
     now = ref_datetime or tempo.agora()
     roll_recurring(ref=ref_date)          # recorrentes rolam ANTES de tudo
+    rodar_purga_se_for_o_dia(now)         # M1.6 (seco por padrao)
     alarms = check_time_alarms(ref=now)
     if _in_quiet_hours(now):
         due, churn, trial, guided, overdue, resumo = [], [], [], [], [], []
