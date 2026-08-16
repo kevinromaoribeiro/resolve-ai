@@ -42,6 +42,11 @@ VALID_CATEGORIES = ("Alimentação", "Pet", "Veículo", "Contas", "Saúde",
 # atrasado. (caso da Carol, 11/08)
 ALARME_JANELA_MIN = 90
 
+# M1.5 — quantas vezes a pessoa pode empurrar o MESMO item antes de o bot
+# parar de insistir e perguntar a verdade. Tres e o numero em que "lembrete"
+# ja virou "cobranca" na cabeca de quem recebe.
+SNOOZE_LIMITE = 3
+
 
 # ---------------------------------------------------------------------------
 # Conexão e schema
@@ -334,14 +339,24 @@ def delete_user(user_id: int) -> None:
         conn.execute("DELETE FROM users WHERE id=?", (user_id,))
         conn.execute("DELETE FROM items WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM dispatches WHERE user_id=?", (user_id,))
-        for tabela in ("memoria", "demos"):
+        # resumo_mensal entrou aqui na auditoria v23.0 (P1-3): a agregacao
+        # do M1.6 e chaveada por user_id e sobrevivia ao "apagar meus dados",
+        # que promete "remove tudo, na hora". Nao vazava (users e
+        # AUTOINCREMENT, id nao se repete), mas a promessa e "tudo".
+        for tabela in ("memoria", "demos", "resumo_mensal"):
             try:
                 conn.execute(f"DELETE FROM {tabela} WHERE user_id=?",
                              (user_id,))
-            except Exception:
-                # tabela ainda não criada neste banco (memoria/demos nascem
-                # sob demanda). Não é erro — mas não pode passar calado.
+            except Exception as _e:
                 import logging
+                # So "tabela nao existe" e esperado. Qualquer outro erro aqui
+                # (schema divergente, coluna faltando) fazia o DELETE falhar
+                # calado enquanto o bot respondia "apagados permanentemente".
+                if "no such table" not in str(_e).lower():
+                    logging.getLogger("resolveai").warning(
+                        "[lgpd] FALHA ao purgar %s do user %s", tabela,
+                        user_id, exc_info=True)
+                    raise
                 logging.getLogger("resolveai").info(
                     "[lgpd] tabela %s inexistente na purga do user %s",
                     tabela, user_id)
@@ -639,6 +654,152 @@ def items_due_at_time(now: Optional[datetime] = None) -> list[dict]:
                  AND i.hora_alvo IS NOT NULL
                  AND i.hora_alvo <= ?""", (today, hhmm)).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# M1.6 — PURGA DE CONCLUIDOS + LACRE
+# ---------------------------------------------------------------------------
+# Apaga o TEXTO, guarda o NUMERO. Sem isso a purga destroi a unica municao
+# que o produto tem no fim do ano ("voce fechou 47 coisas e pagou R$ 2.310").
+# Por isso o agregado roda ANTES do delete — se nascer depois, o historico
+# ja nasce perdido.
+_RESUMO_DDL = ("CREATE TABLE IF NOT EXISTS resumo_mensal ("
+               "user_id INTEGER, mes TEXT, categoria TEXT, "
+               "qtd INTEGER, soma REAL, "
+               "PRIMARY KEY (user_id, mes, categoria))")
+
+_LACRE_DDL = ("CREATE TABLE IF NOT EXISTS lacre_purga ("
+              "id INTEGER PRIMARY KEY AUTOINCREMENT, quando TEXT, "
+              "corte TEXT, itens INTEGER, usuarios INTEGER, seco INTEGER)")
+
+PURGA_DIAS = 90
+
+
+def agregar_antes_da_purga(corte_iso: str) -> int:
+    """Soma em resumo_mensal tudo que vai ser apagado. Roda ANTES do delete.
+
+    Guarda so numero: mes, categoria, quantidade e soma. Nenhuma descricao,
+    nenhum nome de terceiro — nada que identifique o que a pessoa fez.
+    """
+    with get_conn() as conn:
+        conn.execute(_RESUMO_DDL)
+        linhas = conn.execute(
+            "SELECT user_id, substr(data_criacao,1,7) AS mes, "
+            "categoria, COUNT(*) AS qtd, "
+            "COALESCE(SUM(valor_reais),0) AS soma "
+            "FROM items WHERE status='concluido' AND data_criacao < ? "
+            "GROUP BY user_id, mes, categoria", (corte_iso,)).fetchall()
+        for r in linhas:
+            conn.execute(
+                "INSERT INTO resumo_mensal (user_id, mes, categoria, qtd, soma) "
+                "VALUES (?,?,?,?,?) "
+                "ON CONFLICT(user_id, mes, categoria) DO UPDATE SET "
+                "  qtd = qtd + excluded.qtd, soma = soma + excluded.soma",
+                (r["user_id"], r["mes"], r["categoria"], r["qtd"], r["soma"]))
+    return len(linhas)
+
+
+def purgar_concluidos(dias: int = PURGA_DIAS, seco: bool = True) -> dict:
+    """Apaga itens CONCLUIDOS mais velhos que N dias. Nunca toca em pendente.
+
+    seco=True (padrao) so conta e registra o lacre, sem apagar: e o dry-run
+    que precede qualquer delete. Apagar dado de usuario nao estreia direto
+    em producao.
+    """
+    corte = (tempo.agora() - timedelta(days=dias)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        conn.execute(_LACRE_DDL)
+        r = conn.execute(
+            "SELECT COUNT(*) AS n, COUNT(DISTINCT user_id) AS u FROM items "
+            "WHERE status='concluido' AND data_criacao < ?",
+            (corte,)).fetchone()
+        n, u = int(r["n"]), int(r["u"])
+    if n and not seco:
+        agregar_antes_da_purga(corte)      # numero antes, texto depois
+        with get_conn() as conn:
+            conn.execute(
+                "DELETE FROM items WHERE status='concluido' "
+                "AND data_criacao < ?", (corte,))
+    with get_conn() as conn:
+        conn.execute(_LACRE_DDL)
+        conn.execute(
+            "INSERT INTO lacre_purga (quando, corte, itens, usuarios, seco) "
+            "VALUES (?,?,?,?,?)",
+            (_now_iso(), corte[:10], n, u, 1 if seco else 0))
+    return {"corte": corte[:10], "itens": n, "usuarios": u, "seco": seco}
+
+
+def ultimo_lacre():
+    """Ultima purga real, pro comando meus dados falar em numero."""
+    try:
+        with get_conn() as conn:
+            conn.execute(_LACRE_DDL)
+            r = conn.execute(
+                "SELECT quando, corte, itens FROM lacre_purga "
+                "WHERE seco=0 ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(r) if r else None
+    except Exception:
+        return None
+
+
+def resumo_historico(user_id: int) -> dict:
+    """Numeros que SOBREVIVEM a purga: quantos fechou e quanto somou."""
+    try:
+        with get_conn() as conn:
+            conn.execute(_RESUMO_DDL)
+            r = conn.execute(
+                "SELECT COALESCE(SUM(qtd),0) AS q, COALESCE(SUM(soma),0) AS s "
+                "FROM resumo_mensal WHERE user_id=?", (user_id,)).fetchone()
+        return {"qtd": int(r["q"] or 0), "soma": float(r["s"] or 0)}
+    except Exception:
+        return {"qtd": 0, "soma": 0.0}
+
+
+def registrar_adiamento(user_id: int, item_id: int) -> int:
+    """Conta que a pessoa empurrou ESTE item. Devolve o total.
+
+    M1.5. Usa a tabela dispatches (que ja existe e ja e o log de tudo que
+    acontece com um item) em vez de coluna nova: adiamento e evento, nao
+    atributo. Assim o contador nasce com historico e nao exige migracao.
+    """
+    try:
+        log_dispatch(user_id, "adiado", item_id)
+        return dispatch_count_item("adiado", item_id)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[snooze] falha ao contar adiamento do item %s", item_id,
+            exc_info=True)
+        return 0
+
+
+def dispatch_count_item(kind: str, item_id: int) -> int:
+    """Quantas vezes este KIND aconteceu para ESTE item."""
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT COUNT(*) AS n FROM dispatches WHERE kind=? AND item_id=?",
+            (kind, item_id)).fetchone()
+    return int(r["n"] if r else 0)
+
+
+def silenciar_item(item_id: int, user_id: int) -> None:
+    """Para de tocar o alarme deste item, sem apagar nada.
+
+    M1.5. O item CONTINUA na lista da pessoa — o que morre e o toque. E o
+    freio anti-silenciamento: o alerta se desliga sozinho antes de a pessoa
+    desligar o bot inteiro. Perder o item seria perder dado; parar de tocar
+    e respeitar quem ja disse "agora nao" tres vezes.
+    """
+    try:
+        log_dispatch(user_id, "silenciado", item_id)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[snooze] falha ao silenciar item %s", item_id, exc_info=True)
+
+
+def item_silenciado(item_id: int) -> bool:
+    return dispatch_count_item("silenciado", item_id) > 0
 
 
 def postpone_item(item_id: int, new_date: Optional[str] = None,
