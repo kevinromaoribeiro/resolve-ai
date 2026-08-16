@@ -1024,6 +1024,69 @@ def items_overdue(min_days: int, max_days: int,
     return [dict(r) for r in rows]
 
 
+def dentro_da_janela(user_id=None, telefone: str = "",
+                     horas: int = 24) -> bool:
+    """A pessoa falou com o bot nas últimas 24h?
+
+    É o que decide se podemos mandar texto livre ou se precisa de template
+    (M2.0). Três coisas que a auditoria do M2.0 provou não serem detalhe:
+
+    1. **Casa por TELEFONE, não só por user_id.** O webhook grava toda
+       mensagem de entrada com `user_id=None` (`wa_bot.py`, rota do webhook)
+       — é o mesmo motivo pelo qual `conversa_recente` já busca por telefone.
+       A primeira versão desta função só olhava `user_id` e por isso NUNCA
+       devolvia True em produção: o motor proativo inteiro teria parado.
+    2. **Formato de `ts` normalizado.** `log_message` grava
+       `isoformat()` ('2026-08-16T09:59:36', com T) e o corte era montado com
+       `strftime` (espaço). Em comparação de string 'T' (0x54) > ' ' (0x20),
+       então qualquer mensagem do mesmo dia-calendário do corte passava — a
+       janela de 24h virava até ~48h. Aqui os dois lados usam 'T'.
+    3. **Só mensagem de ENTRADA conta.** Se a saída do bot abrisse a janela,
+       ele se autoautorizaria a falar pra sempre — exatamente o que a Meta
+       proíbe e o que rendeu duas restrições neste número.
+
+    A fonte é o banco, não memória de processo: dicionário em memória morre
+    no redeploy.
+    """
+    digitos = re.sub(r"\D", "", telefone or "")
+    if not user_id and not digitos:
+        return False
+    corte = (tempo.agora() - timedelta(hours=horas)).isoformat(
+        timespec="seconds")
+    # O FILTRO GROSSO VAI NO SQL, PRA NÃO MATAR O ÍNDICE.
+    #
+    # `replace(ts,' ','T') >= ?` é função sobre a coluna: o SQLite ignora o
+    # `idx_msglog_ts` e faz SCAN da tabela inteira (medido: 48ms com 200 mil
+    # linhas, crescendo linear, num caminho chamado por disparo a cada 5min).
+    # Como 'T' (0x54) > ' ' (0x20), cortar pelo formato com ESPAÇO é um
+    # superconjunto seguro — nenhuma linha válida escapa — e o índice volta.
+    # O refino exato fica no Python, que já estava aqui.
+    #
+    # `tipo <> 'resgate_painel'`: aquilo é o dono escrevendo pela pessoa no
+    # painel, não a pessoa falando. Não abre janela.
+    corte_dt = tempo.agora() - timedelta(hours=horas)
+    corte_grosso = corte_dt.strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        linhas = conn.execute(
+            """SELECT user_id, telefone, ts FROM msg_log
+                WHERE direcao='in' AND ts >= ?
+                  AND COALESCE(tipo,'') <> 'resgate_painel'""",
+            (corte_grosso,)).fetchall()
+    for r in linhas:
+        try:
+            quando = datetime.strptime(
+                str(r["ts"])[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            continue
+        if quando < corte_dt:
+            continue
+        if user_id and r["user_id"] == user_id:
+            return True
+        if digitos and re.sub(r"\D", "", r["telefone"] or "") == digitos:
+            return True
+    return False
+
+
 def log_message(user_id, telefone, direcao, tipo, preview):
     """Registra uma mensagem (in/out) para o painel de acompanhamento."""
     try:

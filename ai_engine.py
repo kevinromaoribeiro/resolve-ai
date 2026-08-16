@@ -1081,7 +1081,12 @@ INTENT_PATTERNS = [
     ("agradecimento", r"^(obrigad[oa]+|valeu|vlw|show|top|perfeito|massa|boa)\W*$"),
     ("capacidades", r"o que (voc[eê]|vc|tu) faz|como (voc[eê]|vc|isso) funciona|pra que (voc[eê]|vc|isso) serve|me ajuda com o qu|quais.*(comandos|fun[cç][oõ]es)"),
     ("consulta_gastos", r"quanto (j[aá] )?gastei|meus gastos|total gasto|gastei quanto|resumo.*gasto"),
-    ("consulta_agenda", r"o que (tem|vence|t[aá] pendente)|meus lembretes|minha agenda|o que (voc[eê]|vc) anotou|pr[oó]ximos (vencimentos|lembretes)|(lista|mostra).*(pendente|lembrete)|o que falta"),
+    # M2.0 (auditoria P1-7): "lista", "ver tudo" e "itens" SOZINHOS caiam no
+    # "nao identifiquei conta, data nem valor". E os templates aprovados pela
+    # Meta mandam a pessoa responder exatamente isso — instrucao que o bot
+    # nao entendia. O corpo do template e contrato: mudar depois exige nova
+    # aprovacao, entao quem se ajusta e o codigo.
+    ("consulta_agenda", r"^\s*(ver\s*tudo|ver\s+lista|lista|listar|itens|pendentes|minha\s+lista)\s*[.!?]*\s*$|o que (tem|vence|t[aá] pendente)|meus lembretes|minha agenda|o que (voc[eê]|vc) anotou|pr[oó]ximos (vencimentos|lembretes)|(lista|mostra).*(pendente|lembrete)|o que falta"),
     ("adiar", r"^adia(?:r)?\b"),
     ("remover", r"^(esquece|apaga|remove|tira)\b"),
     ("editar", r"^(muda|mudar|altera|alterar|corrige|corrigir|troca)\b"),
@@ -1103,6 +1108,33 @@ def detect_intent(text: str) -> str:
             r"[\W_]*(hmm+|hum+|kkk+|rs+|ok|t[aá]|sei l[aá]|\?+)[\W_]*", low):
         return "vago"
     return "registro"
+
+
+def texto_pendentes(user_id: int) -> str:
+    """A lista de pendentes, pronta pro WhatsApp.
+
+    Vive numa função só porque agora tem DOIS chamadores: a intenção
+    `consulta_agenda` (fala natural) e o comando determinístico `lista` /
+    `ver tudo` do wa_bot — que existe porque os templates aprovados pela
+    Meta mandam a pessoa responder exatamente isso (auditoria M2.0, P1-7).
+    Duas cópias do mesmo texto divergiriam na primeira mudança de copy.
+    """
+    import db
+    pendentes = db.list_items(user_id, status="pendente")
+    if not pendentes:
+        return ("Nada pendente — sua cabeça está oficialmente leve. 🧘 "
+                "Quando surgir algo, manda que eu seguro.")
+    linhas = "\n".join(
+        f"• {i['descricao']}"
+        + (f" — vence {i['data_vencimento'][8:10]}/"
+           f"{i['data_vencimento'][5:7]}" if i["data_vencimento"] else "")
+        + (f" ({_fmt_valor(i['valor_reais'])})" if i["valor_reais"] else "")
+        for i in pendentes[:8])
+    resto = (f"\n_(+{len(pendentes) - 8} outro(s))_" if len(pendentes) > 8
+             else "")
+    return (f"📋 Você tem *{len(pendentes)} pendente(s)*:\n{linhas}{resto}\n\n"
+            f"Resolveu algum? Me fala (_\"paguei a conta de luz\"_) que eu "
+            f"dou baixa.")
 
 
 def _match_pending_item(user_id: int, text: str) -> Optional[dict]:
@@ -1234,24 +1266,7 @@ def converse(
             base["reply"] = (f"📊 Você gastou *{_fmt_valor(total)}* este "
                              f"mês:\n{top}")
     elif intent == "consulta_agenda":
-        pendentes = db.list_items(user_id, status="pendente")
-        if not pendentes:
-            base["reply"] = ("Nada pendente — sua cabeça está oficialmente "
-                             "leve. 🧘 Quando surgir algo, manda que eu "
-                             "seguro.")
-        else:
-            linhas = "\n".join(
-                f"• {i['descricao']}"
-                + (f" — vence {i['data_vencimento'][8:10]}/"
-                   f"{i['data_vencimento'][5:7]}"
-                   if i["data_vencimento"] else "")
-                + (f" ({_fmt_valor(i['valor_reais'])})"
-                   if i["valor_reais"] else "")
-                for i in pendentes[:8])
-            base["reply"] = (f"📋 Você tem *{len(pendentes)} pendente(s)*:\n"
-                             f"{linhas}\n\nResolveu algum? Me fala "
-                             f"(_\"paguei a conta de luz\"_) que eu dou "
-                             f"baixa.")
+        base["reply"] = texto_pendentes(user_id)
     elif intent == "conclusao":
         match = _match_pending_item(user_id, text)
         # Fallback: se não casou pelo texto (ex.: resposta seca "feito" a um

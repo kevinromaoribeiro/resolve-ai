@@ -50,7 +50,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v23.4-fase1-baixa-deterministica-2026-08-16"
+BUILD = "v23.5-m20-templates-2026-08-16"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -262,6 +262,15 @@ PENDING_MAX_ERROS = 2
 # convite e vira jaula: um PENDING de dias antes sequestrava a mensagem
 # seguinte, e o menu ("pag" em "pagar") transformava um pedido novo em
 # "Despesa Paga" — com o pedido real descartado calado (14/08).
+# (dia, item_id, kind, motivo) que ja gerou linha de nao-entrega.
+#
+# O DIA FAZ PARTE DA CHAVE (auditoria M2.0 rodada 2, P1-3): sem ele, o
+# container que fica semanas de pe registrava a falha UMA VEZ e nunca mais.
+# O "N falha(s) de envio ontem" do dash matinal le o msg_log do dia — e
+# mostrava zero enquanto o lembrete continuava sem sair a cada 5 minutos.
+# Trocar ruido permanente por silencio permanente e o defeito que a regra 5
+# existe pra matar. Chaves de dias anteriores sao podadas a cada ciclo.
+FALHA_JA_LOGADA: set = set()
 PENDING_EM: dict[str, object] = {}
 PENDING_TTL_S = 1200        # 20 min: o tempo de responder um menu, nao 3 dias
 # Confirmações pendentes de comandos destrutivos: phone -> 'cancelar'|'apagar'
@@ -916,6 +925,16 @@ def _resposta_de_snooze(user: dict, phone: str, text: str):
                 "Se a hora tava ruim, me diz outra que\n"
                 "eu passo a te chamar nela.")
     return None
+
+
+# M2.0 — as formas de pedir a lista. UMA fonte: o regex de `consulta_agenda`
+# no ai_engine reusa esta lista (auditoria M2.0, P2-6: duas listas escritas
+# à mão já divergiam em "vertudo" e "ver lista").
+LISTA_COMANDOS = ("ver tudo", "vertudo", "ver lista", "lista", "listar",
+                  "itens", "pendentes", "minha lista")
+_LISTA_RE = re.compile(
+    r"^\s*(?:" + "|".join(c.replace(" ", r"\s+") for c in LISTA_COMANDOS)
+    + r")\s*[.!?]*\s*$", re.I)
 
 
 _ACK_CONFIRMOU_RE = re.compile(
@@ -2473,6 +2492,31 @@ def handle_incoming(payload: dict) -> Optional[dict]:
                 return None      # a lista de opcoes ja saiu direto
             return {"number": phone, "text": _kit}
 
+        # M2.0 — "ver tudo" / "lista". Comando determinístico, e AQUI, não
+        # no _handle_commands.
+        #
+        # AUDITORIA M2.0 rodada 2 (P1-1): eu tinha posto no _handle_commands,
+        # que roda ANTES dos gates de acesso — e o comentário daquele bloco
+        # proíbe isso com nome e data (auditoria v23.0, P1-2: "kits" respondia
+        # pra quem o admin bloqueou). Medido: usuário BLOQUEADO recebia a
+        # lista inteira de itens, e quem CANCELOU recebia a lista em vez do
+        # convite de reativação — o único ponto de volta do produto.
+        #
+        # Os templates aprovados mandam responder isso, então tem que
+        # funcionar; mas funcionar pra quem tem direito de receber resposta.
+        # O `.strip(" *_")` existe porque o corpo do template mostra
+        # *ver tudo* com asterisco, e quem copia o texto cru manda junto.
+        if _LISTA_RE.match(content.strip().strip(" *_.!?")):
+            try:
+                db.touch_user(user["id"])
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[lista] falha ao atualizar ultima_interacao",
+                    exc_info=True)
+            return {"number": phone,
+                    "text": ai_engine.texto_pendentes(user["id"])}
+
         # M1.7 — pedido de avisar outra pessoa. MOVIDO de _handle_commands
         # (auditoria v23.0, P1-2): aqui ja passou pelo aceite LGPD e pelos
         # gates de acesso, entao usuario bloqueado nao recebe link nenhum.
@@ -3313,12 +3357,26 @@ def dispatch_proactive() -> int:
                 jornada.marcar_demo_enviada(_d["user_id"])
                 continue
             _txt = jornada.texto_demo(_d["descricao"], _d.get("quando") or "")
-            if _enviar_com_botao(_u["telefone"], _txt):
+            # A demo dispara 90s depois do primeiro item, ou seja, SEMPRE
+            # dentro da janela de 24h — por isso texto livre aqui é legítimo.
+            # Ainda assim passa pelo `falar`: se a pessoa nao estiver na
+            # janela (relógio torto, reprocessamento atrasado), a regra vale
+            # igual e a amostra não sai queimando o número.
+            _res = wasender.falar(re.sub(r"\D", "", _u["telefone"]), _txt,
+                                  user_id=_u["id"])
+            if _res.get("enviado"):
                 try:
                     db.log_message(_u["id"], _u["telefone"], "out", "texto", _txt)
                 except Exception:
-                    pass
-            jornada.marcar_demo_enviada(_d["user_id"])
+                    log.warning("[demo] enviada mas nao logada no painel",
+                                exc_info=True)
+                jornada.marcar_demo_enviada(_d["user_id"])
+            else:
+                # AUDITORIA M2.0 (P1-5): isto marcava como enviada FORA do
+                # if. Envio falhado + marcado = a amostra de 90s, que é o
+                # "aha" do produto, sumia no minuto 2 e nunca voltava.
+                log.warning("[demo] nao enviada (%s) — user %s, volta no "
+                            "proximo ciclo", _res.get("motivo"), _d["user_id"])
     except Exception:
         log.warning("[demo] falha ao disparar amostra", exc_info=True)
 
@@ -3338,15 +3396,38 @@ def dispatch_proactive() -> int:
     import random
     import time
     primeiro = True
+    # (user_id, kind) -> o disparo com texto desse grupo saiu? Os irmãos sem
+    # texto só podem ser carimbados como avisados depois que o cabeça sair.
+    # Premissa (confirmada na auditoria): há no máximo UM grupo por
+    # (user_id, kind) por ciclo, e o cabeça vem antes dos irmãos. Se o cabeça
+    # for cortado por qualquer motivo, a chave nunca é gravada e os irmãos
+    # caem no `continue` — fail-closed.
+    cabeca_ok: dict = {}
+    # Poda do registro de não-entrega: só o dia corrente interessa.
+    _hoje_iso = tempo.hoje().isoformat()
+    for _k in [k for k in FALHA_JA_LOGADA if k and k[0] != _hoje_iso]:
+        FALHA_JA_LOGADA.discard(_k)
     for d in all_dispatches[:DISPATCH_MAX_PER_CYCLE]:
         number = re.sub(r"\D", "", d["telefone"])
         if not number:
             log.warning("[cron] disparo sem número: %s", d.get("message", "")[:40])
             continue
         # Disparo SEM texto é só registro de dedup (vários itens vencidos
-        # agrupados numa mensagem só). Marca como enviado e não vibra o
-        # celular de novo.
+        # agrupados numa mensagem só: um carrega o texto, os irmãos carregam
+        # só o dedup).
+        #
+        # AUDITORIA M2.0 (P0-3): isto marcava os irmãos como avisados ANTES
+        # de o disparo-cabeça passar pelo `falar`. Com o envio recusado, os
+        # itens irmãos ficavam carimbados e NUNCA MAIS voltavam
+        # (`dispatched_ever_item`) — a pessoa perdia "conta de água" e "IPVA"
+        # pra sempre por causa de uma mensagem que não saiu. Agora o irmão só
+        # é carimbado se o cabeça do mesmo (user_id, kind) tiver saído.
         if not (d.get("message") or "").strip():
+            if not cabeca_ok.get((d.get("user_id"), d.get("kind"))):
+                log.info("[cron] grupo %s do user %s nao saiu — irmao %s "
+                         "NAO marcado (volta no proximo ciclo)",
+                         d.get("kind"), d.get("user_id"), d.get("item_id"))
+                continue
             try:
                 db.log_dispatch(d["user_id"], d.get("kind", "outro"),
                                 d.get("item_id"))
@@ -3372,16 +3453,69 @@ def dispatch_proactive() -> int:
                                       ENVIO_INTERVALO_MAX))
         primeiro = False
 
-        ok = send_whatsapp(number, d["message"])
-        log.info("[cron] envio p/ …%s (%s): %s", number[-4:],
-                 d.get("kind", "?"), "OK" if ok else "FALHOU")
+        # M2.0 — TODA proativa passa pela porta única. Dentro da janela sai
+        # texto livre; fora, só template aprovado; sem template, não sai.
+        #
+        # Antes disto o envio era sempre texto livre — e no canal oficial a
+        # Meta recusa fora da janela (erro 131047). Ou seja: quem mais
+        # precisava do lembrete (quem parou de responder) era exatamente
+        # quem não recebia, e o log dizia "FALHOU" sem dizer por quê.
+        import templates as _cat
+        _tpl, _vars = _cat.para_disparo(d)
+        res = wasender.falar(number, d["message"], user_id=d.get("user_id"),
+                             template=_tpl, variaveis=_vars)
+        ok = res.get("enviado")
+        log.info("[cron] envio p/ ...%s (%s): %s", number[-4:],
+                 d.get("kind", "?"),
+                 ("OK via " + (res.get("via") or "?")) if ok
+                 else f"NAO ENVIADO ({res.get('motivo')})")
+        cabeca_ok[(d.get("user_id"), d.get("kind"))] = bool(ok)
         if ok:
             sent += 1
+            # DEDUP DO TRIAL GUIADO: marcado por QUEM ENVIA, nunca por quem
+            # gera (auditoria M2.0, P0-4). Marcado na geração, um nudge
+            # recusado pelo `falar` era queimado sem ter saído — inclusive o
+            # d6_fim, a única mensagem de conversão do trial.
+            if d.get("nudge"):
+                try:
+                    db.mark_nudge_sent(d["user_id"], d["nudge"])
+                except Exception:
+                    log.warning("[cron] envio OK mas o nudge %s nao foi "
+                                "marcado (user %s) — risco de repetir",
+                                d.get("nudge"), d.get("user_id"),
+                                exc_info=True)
             try:
                 db.log_dispatch(d["user_id"], d.get("kind", "outro"),
                                 d.get("item_id"))
             except Exception:
-                pass  # log falhar não pode derrubar o envio
+                # Não derruba nada (a mensagem JÁ saiu), mas não pode sumir:
+                # sem o dispatch não existe dedup, e a pessoa leva a mesma
+                # mensagem de novo no próximo ciclo.
+                log.warning("[cron] envio OK mas o dedup nao foi gravado "
+                            "(user %s, item %s)", d.get("user_id"),
+                            d.get("item_id"), exc_info=True)
+        else:
+            # NÃO registra dispatch: o dedup é por item, e marcar como
+            # enviado algo que não saiu apaga o lembrete pra sempre.
+            #
+            # Mas registra a NÃO-ENTREGA uma vez por DIA, por
+            # (item, kind, motivo). O cron roda a cada 5-15 min e o item
+            # volta em todo ciclo enquanto não sai: sem esse freio são ~200
+            # linhas por item por dia, e o "N falha(s) de envio ontem" do
+            # dash matinal vira ruído que ninguém lê. Com o dia na chave, o
+            # sinal reaparece todo dia enquanto o problema existir.
+            try:
+                _chave = (_hoje_iso, d.get("item_id"), d.get("kind"),
+                          res.get("motivo"))
+                if _chave not in FALHA_JA_LOGADA:
+                    FALHA_JA_LOGADA.add(_chave)
+                    db.log_message(d.get("user_id"), number, "out_falhou",
+                                   d.get("kind", "outro"),
+                                   f"[{res.get('motivo')}] "
+                                   f"{d['message'][:200]}")
+            except Exception:
+                log.warning("[cron] falha ao registrar a nao-entrega",
+                            exc_info=True)
     return sent
 
 
@@ -4256,9 +4390,19 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
                 "pushName": body.get("nome_push") or "",
                 "message": {"conversation": texto}}}}
             try:
-                db.log_message(None, tel, "in", "texto", texto)
+                # tipo "resgate_painel", NAO "texto" (auditoria M2.0, P1-2):
+                # aqui quem escreve e o dono, pelo painel, no lugar da
+                # pessoa. Se isso contasse como entrada, a janela de 24h
+                # abriria no NOSSO banco sem a pessoa ter falado — e a Meta,
+                # que nao conhece o nosso msg_log, recusaria o texto livre.
+                # Seria o guardrail da janela furado pelo caminho que o dono
+                # usa justamente com quem sumiu.
+                db.log_message(None, tel, "in", "resgate_painel", texto)
             except Exception:
-                pass
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[resgate] falha ao logar a mensagem no painel",
+                    exc_info=True)
             reply = handle_incoming(payload)
             if not reply or not (reply.get("text") or "").strip():
                 return JSONResponse({"ok": False, "enviado": False,

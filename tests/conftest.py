@@ -51,6 +51,10 @@ def limpo(monkeypatch):
         alvo = getattr(wa_bot, nome, None)
         if isinstance(alvo, dict):
             alvo.clear()
+    for nome in ("FALHA_JA_LOGADA",):
+        alvo = getattr(wa_bot, nome, None)
+        if isinstance(alvo, set):
+            alvo.clear()
 
     enviadas: list[tuple[str, str]] = []
 
@@ -89,7 +93,12 @@ def usuario():
         with db.get_conn() as conn:
             conn.execute("DELETE FROM items WHERE user_id=?", (uid,))
             conn.execute("DELETE FROM dispatches WHERE user_id=?", (uid,))
-            conn.execute("DELETE FROM msg_log WHERE user_id=?", (uid,))
+            # msg_log INTEIRO: o webhook grava com user_id NULO e telefone em
+            # formato variável, então limpar por id (ou por telefone exato)
+            # deixava a janela de 24h aberta de um teste pro outro. Estado
+            # que vaza entre casos faz o teste seguinte passar por engano —
+            # é a regra 4 do protocolo do auditor.
+            conn.execute("DELETE FROM msg_log")
     db.update_user_fields(uid, onboarding_step=None, status="trial",
                           lgpd_aceite_em=tempo.agora().isoformat())
     return db.get_user(uid)

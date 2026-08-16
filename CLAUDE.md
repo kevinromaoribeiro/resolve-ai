@@ -70,6 +70,43 @@ e `canal.py` amarra as funções no import (`send_text = _mod.send_text`). Patch
 módulo `wasender` **não** chega no `wa_bot` — o alvo certo é `canal`. Teste que acha
 que cortou a rede e não cortou manda mensagem de verdade.
 
+### M2.0 — templates e a janela de 24h (16/08/2026)
+
+Estamos na Cloud API oficial, e **fora da janela de 24h só sai template aprovado**.
+Isso não é preferência: a Meta recusa texto livre com erro 131047, e antes do M2.0
+a proativa de quem tinha sumido simplesmente não chegava — falhando calada.
+
+- `canal.falar()` é a **porta única** de saída proativa. Dentro da janela, texto
+  livre; fora, template; sem template aprovado, **não sai** e devolve o motivo.
+- `db.dentro_da_janela(user_id, telefone)` — casa por **telefone também**, porque o
+  webhook grava `msg_log` com `user_id` nulo. Só mensagem de ENTRADA abre a janela.
+- `templates/` é o catálogo (dado). `templates/SUBMISSAO.md` é **gerado** —
+  não edite à mão, rode `python templates/gerar_submissao.py`.
+- Depois que a Meta aprovar, setar no EasyPanel:
+  `TEMPLATES_APROVADOS=nome1,nome2,...` (default vazio = nada sai fora da janela).
+
+**Regra que vale pra tudo aqui: quem marca dedup é quem ENVIA, nunca quem gera.**
+`log_dispatch`, `mark_nudge_sent` e os itens irmãos de um grupo de vencidos já
+foram queimados sem envio — cada um apagou lembrete de usuário pra sempre.
+
+#### As 4 exceções declaradas à porta única
+
+Estas NÃO passam pelo `falar`, de propósito — são mensagens **pro dono**, não pro
+usuário, e o alerta não pode sumir justamente quando o sistema quebrou:
+
+| Onde | O que é |
+|---|---|
+| `_alertar_dono` | alerta de falha (o mais crítico: some quando mais importa) |
+| `relatorio_matinal` | dash das 8h |
+| `maybe_admin_report` | relatório do admin |
+| `watchdog_check` | aviso de QR/sessão caída |
+
+**Custo aceito:** no canal oficial, se você não falar com o bot por 24h, a Meta
+recusa esses avisos com 131047 e eles não chegam. O jeito de fechar isso sem
+perder o alerta é um template UTILITY de operação para o seu próprio número —
+fica pro backlog. Se alguém adicionar um envio proativo **pro usuário** fora do
+`falar`, é porta dos fundos e a auditoria vai (corretamente) reprovar.
+
 ### Backlog declarado (não é bug novo, é dívida conhecida)
 
 - Caminho degradado (v8 fora do ar) grava descrição suja: `paguei a conta de luz 187`
@@ -187,7 +224,13 @@ o que já foi fechado, pra ele não refazer. Auditoria completa desnecessária q
 3. **Verifique o resultado do deploy no `/health`**, não na tela do EasyPanel.
    O BUILD tem que ser o novo; se vier o antigo, subiu imagem velha.
 4. **Rollback é `git checkout` do arquivo pro commit anterior.** Já salvou a produção em 3 min.
-5. **A chave do painel trafega em query string** (`/painel?k=...`, `/dash?k=...`).
+5. **Nunca reescreva arquivo-fonte com `Get-Content -Raw | Set-Content` no PowerShell.**
+   O `Get-Content` lê em ANSI e o `Set-Content -Encoding utf8` grava com BOM: em
+   16/08/2026 isso trocou 730 acentos do `wa_bot.py` por lixo e adicionou BOM, num
+   comando que era só pra bumpar o BUILD. O arquivo continuava compilando — quem
+   pegou foi a suíte. Para editar fonte, use ferramenta de edição de texto; para
+   conferir estrago: `python -c "d=open('x.py','rb').read(); print(d[:3], d.decode('utf-8').count('Ã'))"`.
+6. **A chave do painel trafega em query string** (`/painel?k=...`, `/dash?k=...`).
    Fica no histórico e no título da aba. Pendência de segurança: rotacionar e mover pra header.
 
 ---

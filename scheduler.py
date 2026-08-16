@@ -359,9 +359,15 @@ def check_time_alarms(ref: Optional[datetime] = None) -> list[dict]:
             _atraso = int((now - _marcado).total_seconds() // 60)
         except Exception:
             _atraso = 0
+        # M2.0: qual das tres variantes de texto e esta? Sem isso o template
+        # "Chegou a hora" seria usado tambem pro alarme atrasado e pro
+        # escalonamento — dizendo "chegou a hora" cinco horas depois (caso
+        # da Carol) e voltando a cobrar quem o M1.5 mandou parar de cobrar.
+        variante = "na_hora"
         if _atraso > db.ALARME_JANELA_MIN:
             _quanto = (f"{_atraso // 60}h" if _atraso >= 60
                        else f"{_atraso} min")
+            variante = "atrasado"
             msg = (f"{first_name}, passou da hora de *{item['descricao']}*"
                    f"{valor} — era às {item['hora_alvo']} "
                    f"(há {_quanto}).\n"
@@ -382,6 +388,7 @@ def check_time_alarms(ref: Optional[datetime] = None) -> list[dict]:
         except Exception:
             _snoozes = 0
         if _snoozes >= db.SNOOZE_LIMITE:
+            variante = "escalonado"
             msg = (f"{first_name}, já te chamei "
                    f"{_snoozes}x pro *{item['descricao']}* e não rolou.\n\n"
                    f"Ou o horário tá errado, ou isso não é prioridade "
@@ -393,6 +400,7 @@ def check_time_alarms(ref: Optional[datetime] = None) -> list[dict]:
             "telefone": item["telefone"],
             "item_id": item["id"],
             "kind": "hora",
+            "variante": variante,
             "message": msg,
         })
     return dispatches

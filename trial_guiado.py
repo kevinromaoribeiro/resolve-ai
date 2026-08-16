@@ -120,7 +120,15 @@ def _sugestao_para(user: dict, prefer: Optional[str] = None) -> tuple[str, str]:
     return chave, _POR_INTERESSE[chave]
 
 
-def _mk(user: dict, kind: str, message: str) -> dict:
+def _mk(user: dict, kind: str, message: str, nudge: str = "") -> dict:
+    """Monta o disparo. `nudge` e a chave do dedup — e quem marca e QUEM ENVIA.
+
+    AUDITORIA M2.0 (16/08/2026): o `db.mark_nudge_sent` era chamado aqui, na
+    GERACAO. Com o M2.0 recusando envio fora da janela, o nudge era queimado
+    sem nunca ter saido e nao voltava mais — inclusive o `d6_fim`, que e a
+    UNICA mensagem de conversao do trial, com o link de pagamento. Marcar
+    antes de enviar e apagar dado do usuario em silencio.
+    """
     return {
         "user_id": user["id"],
         "user_nome": user.get("nome", ""),
@@ -128,6 +136,7 @@ def _mk(user: dict, kind: str, message: str) -> dict:
         "item_id": None,
         "kind": kind,
         "message": message,
+        "nudge": nudge,
     }
 
 
@@ -161,8 +170,8 @@ def run_trial_nudges() -> list[dict]:
                    f"responde *mais tempo* que eu falo com o Kevin e libero "
                    f"alguns dias a mais. Não quero que você decida sem ter "
                    f"visto o que eu faço. Nada some: seus itens ficam aqui.")
-            dispatches.append(_mk(user, "trial_d6", msg))
-            db.mark_nudge_sent(user["id"], "d6_fim")
+            dispatches.append(_mk(user, "trial_d6", msg,
+                                         nudge="d6_fim"))
             continue
 
         # Dias 1–5: só toca quem ESFRIOU (inativo 24h+). Quem usa hoje, deixa em paz.
@@ -180,8 +189,8 @@ def run_trial_nudges() -> list[dict]:
                 msg = (f"{first}, vi que você já começou a usar. 🙌 Manda mais "
                        f"uma coisa que te preocupa hoje — conta, consulta, "
                        f"compra — que eu tiro da sua cabeça.")
-            dispatches.append(_mk(user, "trial_d1", msg))
-            db.mark_nudge_sent(user["id"], "d1")
+            dispatches.append(_mk(user, "trial_d1", msg,
+                                         nudge="d1"))
             continue
 
         # D2: HÁBITO — 2ª sugestão, dentro do interesse escolhido.
@@ -189,8 +198,8 @@ def run_trial_nudges() -> list[dict]:
             chave, cta = _sugestao_para(user)
             msg = (f"{first}, dica rápida: {cta}\n\nQuanto mais você me conta, "
                    f"menos você precisa lembrar. Esse é o ponto. 🧠")
-            dispatches.append(_mk(user, "trial_d2", msg))
-            db.mark_nudge_sent(user["id"], "d2")
+            dispatches.append(_mk(user, "trial_d2", msg,
+                                         nudge="d2"))
             continue
 
         # D3: AMPLIAÇÃO — mostra um interesse escolhido que ela ainda não usou.
@@ -200,8 +209,8 @@ def run_trial_nudges() -> list[dict]:
             msg = (f"{first}, você me disse que também se preocupa com isso — "
                    f"então: {cta}\n\nPosso cuidar de várias frentes ao mesmo "
                    f"tempo, sem você se perder.")
-            dispatches.append(_mk(user, "trial_d3", msg))
-            db.mark_nudge_sent(user["id"], "d3")
+            dispatches.append(_mk(user, "trial_d3", msg,
+                                         nudge="d3"))
             continue
 
         # D4: AHA PROATIVO — o diferencial. "Eu te aviso sem você pedir."
@@ -210,8 +219,8 @@ def run_trial_nudges() -> list[dict]:
                    f"*te aviso na hora certa, sozinho*. Você não precisa abrir "
                    f"nada nem lembrar de checar. Me dá um vencimento ou uma "
                    f"data que eu provo isso nos próximos dias. ⏰")
-            dispatches.append(_mk(user, "trial_d4", msg))
-            db.mark_nudge_sent(user["id"], "d4")
+            dispatches.append(_mk(user, "trial_d4", msg,
+                                         nudge="d4"))
             continue
 
         # D5: PROVA — valor acumulado. Quanto ela já tirou da cabeça.
@@ -225,8 +234,8 @@ def run_trial_nudges() -> list[dict]:
                 chave, cta = _sugestao_para(user)
                 msg = (f"{first}, faltam 2 dias do seu teste e eu ainda não te "
                        f"mostrei o melhor. Testa agora: {cta}")
-            dispatches.append(_mk(user, "trial_d5", msg))
-            db.mark_nudge_sent(user["id"], "d5")
+            dispatches.append(_mk(user, "trial_d5", msg,
+                                         nudge="d5"))
             continue
 
         # ── SEGUNDA SEMANA (trial de 14 dias) ────────────────────────────
@@ -252,8 +261,8 @@ def run_trial_nudges() -> list[dict]:
                 msg = (f"{first}, faz uma semana e eu ainda não te avisei de "
                        f"nada — porque você ainda não me deu uma data. É aí "
                        f"que eu sou bom. Testa: {cta}")
-            dispatches.append(_mk(user, "trial_d7", msg))
-            db.mark_nudge_sent(user["id"], "d7")
+            dispatches.append(_mk(user, "trial_d7", msg,
+                                         nudge="d7"))
             continue
 
         # D9: ANTECIPAÇÃO — o diferencial que nenhuma agenda tem.
@@ -263,8 +272,8 @@ def run_trial_nudges() -> list[dict]:
                    f"contínuo, troca de óleo*. Eu calculo quando vai acabar e "
                    f"te aviso ANTES, sem você pedir. 🔄\n\n"
                    f"Manda um: _\"comprei ração de 15kg hoje\"_.")
-            dispatches.append(_mk(user, "trial_d9", msg))
-            db.mark_nudge_sent(user["id"], "d9")
+            dispatches.append(_mk(user, "trial_d9", msg,
+                                         nudge="d9"))
             continue
 
         # D11: DINHEIRO — mostra o retrovisor de gastos que ela nem sabia ter.
@@ -282,8 +291,8 @@ def run_trial_nudges() -> list[dict]:
                        f"do jeito que vierem — _\"mercado 180\"_, _\"uber "
                        f"32\"_ — e depois pergunta *quanto eu gastei*. Sai "
                        f"tudo separado por categoria, sem planilha. 💸")
-            dispatches.append(_mk(user, "trial_d11", msg))
-            db.mark_nudge_sent(user["id"], "d11")
+            dispatches.append(_mk(user, "trial_d11", msg,
+                                         nudge="d11"))
             continue
 
         # D12: AVISO HONESTO — dois dias antes, sem susto e sem pressão.
@@ -293,8 +302,8 @@ def run_trial_nudges() -> list[dict]:
                    f"Se ainda não deu pra testar direito, responde *mais "
                    f"tempo* que eu resolvo. Prefiro que você decida tendo "
                    f"visto o serviço funcionando.")
-            dispatches.append(_mk(user, "trial_d12", msg))
-            db.mark_nudge_sent(user["id"], "d12")
+            dispatches.append(_mk(user, "trial_d12", msg,
+                                         nudge="d12"))
             continue
 
     return dispatches

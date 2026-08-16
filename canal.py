@@ -74,6 +74,75 @@ def send_template(number: str, nome_template: str, variaveis: list,
     return False
 
 
+# ---------------------------------------------------------------------------
+# M2.0 — A PORTA UNICA DE SAIDA PROATIVA
+# ---------------------------------------------------------------------------
+# Quais templates a Meta ja aprovou. A fonte da verdade e o Business Manager,
+# nao o nosso banco — banco daria a ilusao de "aprovado" sem a Meta ter
+# aprovado. Default VAZIO de proposito: enquanto ninguem configurar, nada sai
+# fora da janela e a falha aparece no log, em vez de virar mensagem que a
+# pessoa nunca recebe.
+def _aprovados() -> set:
+    bruto = os.environ.get("TEMPLATES_APROVADOS", "") or ""
+    return {p.strip() for p in bruto.split(",") if p.strip()}
+
+
+def falar(telefone: str, texto: str, *, user_id=None, template=None,
+          variaveis=None, tipo: str = "texto") -> dict:
+    """Fala com o usuario respeitando a janela de 24h. Devolve o que houve.
+
+    {"enviado": bool, "via": "texto"|"template"|None, "motivo": str}
+
+    DENTRO da janela  -> texto livre (a pessoa falou com o bot ha pouco).
+    FORA da janela    -> so template aprovado. Sem ele, NAO SAI.
+
+    O "nao sai" e a parte que importa. Antes do M2.0 o codigo mandava texto
+    livre nos dois casos; no canal oficial a Meta recusa com 131047 e o
+    lembrete morre calado. Agora a recusa e nossa, e ela e explicita: quem
+    chamou recebe o motivo e registra.
+
+    Regra em Python, nunca no prompt: o LLM nao decide se pode falar fora da
+    janela, e caminho novo que queira mandar proativa passa por aqui.
+    """
+    import db
+
+    variaveis = list(variaveis or [])
+    # telefone vai junto porque o webhook grava msg_log com user_id nulo —
+    # sem ele a janela nunca abre e NADA sai (auditoria M2.0, P0-1).
+    if db.dentro_da_janela(user_id, telefone):
+        ok = send_text(telefone, texto)
+        return {"enviado": bool(ok), "via": "texto" if ok else None,
+                "motivo": "" if ok else "falha_no_envio"}
+
+    if not template:
+        return {"enviado": False, "via": None,
+                "motivo": "fora_da_janela_sem_template"}
+
+    import templates as _cat
+    if template not in _cat.CATALOGO:
+        log.error("[canal] template %r nao esta no catalogo do repo", template)
+        return {"enviado": False, "via": None,
+                "motivo": "template_fora_do_catalogo"}
+
+    if template not in _aprovados():
+        log.warning("[canal] template %r ainda nao aprovado — nao enviei "
+                    "(configure TEMPLATES_APROVADOS depois do Business "
+                    "Manager)", template)
+        return {"enviado": False, "via": None,
+                "motivo": "template_nao_aprovado"}
+
+    if not OFICIAL:
+        # Canal reserva nao tem template. Mandar texto livre aqui seria
+        # repetir exatamente o que rendeu duas restricoes da Meta em 24h.
+        log.warning("[canal] fora da janela no canal reserva: nao envio")
+        return {"enviado": False, "via": None, "motivo": "canal_sem_template"}
+
+    idioma = _cat.CATALOGO[template].idioma
+    ok = send_template(telefone, template, variaveis, idioma)
+    return {"enviado": bool(ok), "via": "template" if ok else None,
+            "motivo": "" if ok else "template_recusado"}
+
+
 def suporta_botoes() -> bool:
     """True se o canal aceita botao de resposta rapida.
 
