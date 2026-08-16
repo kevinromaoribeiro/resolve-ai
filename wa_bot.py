@@ -49,7 +49,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v22.1-alarme-atrasado-2026-08-12"
+BUILD = "v23.3-motor1-auditado-2026-08-15"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -111,6 +111,42 @@ _SEM_CONFIRM = object()
 # phone -> (user_id, n_itens_antes, [demandas]). Conferido no webhook depois
 # que a resposta saiu: as demandas guardadas viraram item MESMO?
 CONFERIR_FILA: dict = {}
+
+# ---------------------------------------------------------------------------
+# M1.3 — KITS DE ROTINA
+# ---------------------------------------------------------------------------
+# phone -> {"kit": <id>, "quando": datetime}. Estado do fluxo de 2 passos:
+# a pessoa toca no kit (passo 1) e depois na opcao (passo 2).
+# Em memoria porque e efemero e morre em 15 min — nao vale coluna no banco.
+KIT_ETAPA: dict = {}
+KIT_JANELA_S = 900
+
+# phone -> True. Marca que a lista ja foi oferecida depois do 1o item, pra
+# nao repetir a oferta em toda mensagem.
+KIT_JA_OFERECIDO: dict = {}
+
+# M1.5 — phone -> descricao do item que acabou de entrar em modo silencioso.
+# O aviso vai ANEXADO na resposta: a pessoa precisa saber que o bot parou de
+# tocar, senao "parou de funcionar" vira o diagnostico dela.
+SILENCIOU_AGORA: dict = {}
+
+# M1.4 — phone -> {uid, antes, esperado, txt}. Marcado quando um audio e
+# transcrito, conferido no webhook depois que o motor rodou.
+AUDIO_ESPERADO: dict = {}
+
+# phone -> datetime da oferta. A oferta termina com uma pergunta sim/nao,
+# entao a resposta natural e "sim" — e se "sim" nao funcionar, queimamos o
+# unico pico de confianca do funil. Dentro desta janela, sim/quero/bora/ok
+# valem como "kits".
+KIT_CONVITE: dict = {}
+KIT_CONVITE_S = 600
+# Auditoria v23.0: "ok", "claro", "pode" e "manda" sozinhos sao respostas
+# comuns a QUALQUER coisa. Dentro dos 600s do convite, isso sequestrava a
+# frase e jogava a pessoa num kit que ela nao pediu. Ficaram so as formas
+# que so fazem sentido como aceite do convite.
+_KIT_SIM_RE = re.compile(
+    r"^\s*(?:pode\s+mandar|quero\s+sim|manda\s+(?:os\s+)?kits?|"
+    r"mostra\s+(?:os\s+)?kits?|sim|quero|bora|vamos)\s*[.!]?\s*$", re.I)
 
 # item_id -> True. Evita repetir o aviso de "essa hora ja passou" a cada
 # mensagem seguinte sobre o mesmo item.
@@ -294,6 +330,10 @@ def _phone_from_jid(jid: str) -> str:
 
 
 MASTER_PHONE = re.sub(r"\D", "", os.environ.get("MASTER_PHONE", ""))
+# Numero PUBLICO do bot, usado na assinatura da delegacao (M1.7). Nao
+# confundir com MASTER_PHONE, que e o numero do dono e serve de gate do
+# comando de reset — mandar AQUELE pra terceiro seria expor o Kevin.
+BOT_PHONE = re.sub(r"\D", "", os.environ.get("BOT_PHONE", ""))
 _MASTER_RESET_RE = re.compile(
     r"^(reset|resetar|zerar|/reset|novo teste|reiniciar teste|sou novo)\b",
     re.IGNORECASE)
@@ -426,7 +466,42 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         return (f"Bora, {first_name}! 🚀\n"
                 f"💳 Mensal (R$ 19,90): {PAYMENT_LINK}{anual}\n\n"
                 f"Pagou, me avisa aqui que eu ativo na hora.")
-    if low in ("privacidade", "termos", "lgpd", "meus dados"):
+    # M1.6 — "meus dados" responde com NUMERO, nao com juridiques.
+    if low in ("meus dados", "meus dado"):
+        try:
+            _ativos = len(db.list_items(user["id"], status="pendente"))
+            _hist = db.resumo_historico(user["id"])
+            _lac = db.ultimo_lacre()
+        except Exception:
+            # Auditoria v23.0: devolver zeros aqui e MENTIR numa resposta de
+            # LGPD. A pessoa via "0 itens ativos" com cara de verdade e nao
+            # tinha como saber que o banco falhou. Regra #5: erro nao passa
+            # calado.
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[lgpd] falha ao montar 'meus dados' do user %s",
+                user.get("id"), exc_info=True)
+            return ("Não consegui ler seus dados agora — deu erro do meu "
+                    "lado. \U0001F615\n\nTenta de novo daqui a pouco. Se "
+                    "insistir, me chama que eu vejo na mão.")
+        _linhas = ["\U0001F512 *Seus dados, em número:*", ""]
+        _linhas.append("• " + str(_ativos) + " itens ativos")
+        _linhas.append("• Áudio eu transcrevo e descarto")
+        if _hist.get("qtd"):
+            _v = ("R$ " + f"{_hist['soma']:,.2f}"
+                  .replace(",", "X").replace(".", ",").replace("X", "."))
+            _linhas.append("• Já fechei " + str(_hist["qtd"]) +
+                           " coisas com você (" + _v + ")")
+        if _lac:
+            _linhas.append("• Em " + str(_lac["quando"])[:10] + " apaguei " +
+                           str(_lac["itens"]) + " concluídos antigos")
+        else:
+            _linhas.append("• Concluído com mais de 90 dias\n  eu apago sozinho")
+        _linhas += ["", "Guardo o resumo em número, não o texto.",
+                    "", "Manda *apagar meus dados* que some tudo, na hora."]
+        return "\n".join(_linhas)
+
+    if low in ("privacidade", "termos", "lgpd"):
         return ("🔒 *Privacidade em 4 linhas:*\n"
                 "• Suas mensagens, fotos e áudios são processados por IA "
                 "(OpenAI, servidores no exterior) só para te atender.\n"
@@ -435,6 +510,12 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 "transfiro nada.\n"
                 "• *apagar meus dados* remove tudo, na hora (LGPD).\n\n"
                 f"Termos completos: {TERMS_URL}")
+    # M1.7 (delegacao) e M1.3 (kits) SAIRAM daqui — auditoria v23.0, P1-2.
+    # _handle_commands roda ANTES dos gates de acesso (~1795) e e chamado
+    # ANTES do aceite LGPD (~1650). Aqui dentro, "kits" respondia pra quem o
+    # admin bloqueou e pra quem ainda nao aceitou os termos. O gate existe
+    # exatamente pra isso. Os dois blocos foram pro handle_incoming, depois
+    # de todo mundo passar no gate. NAO trazer de volta pra ca.
     if low in ("ajuda", "menu", "comandos"):
         return ("Eu entendo linguagem natural — manda texto, áudio ou foto "
                 "do seu jeito. Comandos úteis:\n"
@@ -641,14 +722,192 @@ def _handle_onboarding(user: dict, text: str) -> Optional[str]:
     return None
 
 
+_KITS_RE = re.compile(
+    r"^\s*(?:kits?|montar\s+(?:a\s+)?rotina|minha\s+rotina|rotina)"
+    r"\s*[.!?]?\s*$", re.I)
+
+
+def _enviar_lista_kits(user: dict, phone: str, corpo: str = "") -> str:
+    """Manda os Kits de Rotina como lista interativa. (M1.3)
+
+    Devolve "" quando a lista saiu (nada mais a responder) ou um TEXTO de
+    fallback se a Meta recusou o interativo.
+
+    O fallback nao e enfeite: jornada.enviar_lista devolve False quando a
+    Meta recusa (fora da janela de 24h, credencial, formato). Sem ele a
+    pessoa pede "kits" e nao recebe nada — falha silenciosa, que e o
+    defeito que este projeto mais persegue.
+    """
+    import casos_de_uso
+    # Ordena pelos interesses que ela marcou na landing: quem escolheu
+    # "carro" ve o kit do carro primeiro. Nenhum kit some.
+    linhas = casos_de_uso.linhas_kits(user.get("interesses") or "")
+    corpo = corpo or ("Bora tirar mais coisa da sua cabe\u00e7a. \U0001F9E0\n\n"
+                      "Escolhe uma frente que eu monto\n"
+                      "com voc\u00ea, uma pergunta por vez.")
+    KIT_ETAPA.pop(phone, None)
+    if jornada.enviar_lista(phone, corpo, "Ver os kits", linhas,
+                            titulo="Kits de Rotina"):
+        KIT_ETAPA[phone] = {"kit": None, "quando": tempo.agora()}
+        try:
+            db.log_message(user.get("id"), phone, "out", "texto",
+                           "[lista] Kits de Rotina")
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[kits] falha ao logar a lista no painel", exc_info=True)
+        return ""
+    # Meta recusou o interativo: cai pra texto numerado, sem perder o pedido.
+    KIT_ETAPA[phone] = {"kit": None, "quando": tempo.agora()}
+    itens = "\n".join("*" + str(n + 1) + "* " + k[1]
+                      for n, k in enumerate(casos_de_uso.KITS))
+    return (corpo + "\n\n" + itens +
+            "\n\n_Responda com o n\u00famero._")
+
+
+def _resposta_de_kit(user: dict, phone: str, text: str):
+    """Fluxo de 2 passos dos Kits. Deterministico, em Python.
+
+    Passo 1: tocou no kit  -> pergunta QUAL item (lista de opcoes)
+    Passo 2: tocou na opcao -> faz UMA pergunta, com exemplo pronto
+
+    Nao cria item aqui de proposito. Quem cria e o motor, com a frase que
+    ela mandar no passo seguinte — assim o item nasce com data, e item sem
+    data nao avisa ninguem. O kit tira o trabalho de LEMBRAR o que
+    cadastrar; nao tira o trabalho de dizer quando.
+    """
+    # Auditoria v23.2: a guarda de LGPD estava so na ETAPA 1 (lista de
+    # kits). A etapa 2 era alcancavel por outra porta: usuario da base
+    # antiga criava o 1o item, recebia o convite e respondia "sim" — e
+    # levava os kits sem nunca ter aceitado os termos. Guarda na origem
+    # cobre convite e KIT_ETAPA de uma vez.
+    if not user or not user.get("lgpd_aceite_em"):
+        return None
+    import casos_de_uso
+    t = (text or "").strip()
+    if not t:
+        return None
+
+    # "sim" logo depois da oferta pos-primeiro-item
+    _conv = KIT_CONVITE.get(phone)
+    if _conv and _KIT_SIM_RE.match(t):
+        try:
+            if (tempo.agora() - _conv).total_seconds() < KIT_CONVITE_S:
+                KIT_CONVITE.pop(phone, None)
+                return _enviar_lista_kits(user, phone)
+        except Exception:
+            KIT_CONVITE.pop(phone, None)
+
+    estado = KIT_ETAPA.get(phone) or {}
+    fresco = False
+    try:
+        fresco = (tempo.agora() - estado["quando"]).total_seconds() < KIT_JANELA_S
+    except Exception:
+        fresco = False
+
+    # --- passo 2: ja escolheu o kit, agora escolheu a opcao --------------
+    if fresco and estado.get("kit"):
+        kit = casos_de_uso.kit_por_id(estado["kit"])
+        opc = casos_de_uso.opcao_por_rotulo(kit, t)
+        if not opc and re.fullmatch(r"[1-9]", t):
+            try:
+                opc = kit[3][int(t) - 1]
+            except Exception:
+                opc = None
+        if opc:
+            KIT_ETAPA.pop(phone, None)
+            return casos_de_uso.texto_passo2(kit, opc)
+
+    # --- passo 1: escolheu o kit ----------------------------------------
+    kit = casos_de_uso.kit_por_rotulo(t)
+    if not kit and fresco and estado.get("kit") is None \
+            and re.fullmatch(r"[1-9]", t):
+        # numero SO vale logo depois da lista ter sido mostrada: um "3"
+        # solto no meio de qualquer conversa nao pode virar kit.
+        try:
+            kit = casos_de_uso.KITS[int(t) - 1]
+        except Exception:
+            kit = None
+    if not kit:
+        return None
+
+    KIT_ETAPA[phone] = {"kit": kit[0], "quando": tempo.agora()}
+    linhas = casos_de_uso.linhas_opcoes(kit)
+    corpo = casos_de_uso.texto_passo1(kit)
+    if jornada.enviar_lista(phone, corpo, "Escolher", linhas,
+                            titulo=kit[1][:24]):
+        try:
+            db.log_message(user.get("id"), phone, "out", "texto",
+                           "[lista] " + kit[1])
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[kits] falha ao logar opcoes no painel", exc_info=True)
+        return ""
+    opts = "\n".join("*" + str(n + 1) + "* " + o
+                     for n, o in enumerate(kit[3]))
+    return corpo + "\n\n" + opts + "\n\n_Responda com o n\u00famero._"
+
+
+# M1.5 — respostas do escalonamento (3 adiamentos).
+_SNOOZE_REMARCAR_RE = re.compile(
+    r"^\s*(?:\U0001F4C5\s*)?remarcar\s*[.!]?\s*$", re.I)
+_SNOOZE_TIRAR_RE = re.compile(
+    r"^\s*(?:\u2716\uFE0F?\s*)?tirar\s+da\s+lista\s*[.!]?\s*$", re.I)
+# Sinonimos de adiar, pra CONTAR o snooze. O ai_engine ja trata o adiamento
+# em si; aqui so registramos que aconteceu — sem contador nao existe 3a vez.
+_ADIOU_RE = re.compile(
+    r"^\s*(?:adiar|adia|depois|mais\s+tarde|amanh[aã]|"
+    r"deixa\s+pra\s+(?:depois|amanh[aã]))\b", re.I)
+
+
+def _resposta_de_snooze(user: dict, phone: str, text: str):
+    """M1.5 — a pessoa respondeu ao escalonamento das 3 vezes.
+
+    Duas saidas, as duas honestas: remarcar ou sair da lista. Insistir uma
+    quarta vez seria o bot virando a voz que cobra — o oposto do que ele
+    vende. Quem adiou tres vezes ja disse alguma coisa; o certo e perguntar
+    o que, nao repetir mais alto.
+    """
+    t_ = (text or "").strip()
+    if not t_:
+        return None
+    try:
+        alvo = db.ultimo_alarme_disparado(user["id"]) or db.ultimo_item(user["id"])
+    except Exception:
+        alvo = None
+    if not alvo:
+        return None
+    desc = (alvo.get("descricao") or "isso").strip()
+
+    if _SNOOZE_TIRAR_RE.match(t_):
+        # NAO apaga: conclui. Perder item de usuario e o pior defeito
+        # possivel — e ela pode querer ver depois que resolveu.
+        try:
+            db.update_item_status(alvo["id"], "concluido")
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[snooze] falha ao tirar da lista", exc_info=True)
+        return ("Tirei *" + desc + "* da lista. \u2705\n\n"
+                "Se voltar a fazer sentido, é só me falar de novo.")
+
+    if _SNOOZE_REMARCAR_RE.match(t_):
+        return ("Beleza. Pra quando?\n"
+                "_\"sexta 9h\"_ · _\"dia 20\"_\n\n"
+                "Se a hora tava ruim, me diz outra que\n"
+                "eu passo a te chamar nela.")
+    return None
+
+
 _ACK_CONFIRMOU_RE = re.compile(
-    r"^\\s*(?:\u2705\\s*)?isso\\s*mesmo\\s*[.!]?\\s*$", re.I)
+    r"^\s*(?:\u2705\s*)?isso\s*mesmo\s*[.!]?\s*$", re.I)
 _ACK_MUDAR_RE = re.compile(
-    r"^\\s*(?:\u270F\uFE0F?\\s*)?(?:quero\\s+mudar|mudar(?:\\s+a\\s+data)?)\\s*[.!]?\\s*$",
+    r"^\s*(?:\u270F\uFE0F?\s*)?(?:quero\s+mudar|mudar(?:\s+a\s+data)?)\s*[.!]?\s*$",
     re.I)
 _ACK_ADD_RE = re.compile(
-    r"^\\s*(?:\u2795\\s*)?(?:quero\\s+adicionar\\s+outro|add\\s+outro|"
-    r"adicionar\\s+outro)\\s*[.!]?\\s*$", re.I)
+    r"^\s*(?:\u2795\s*)?(?:quero\s+adicionar\s+outro|add\s+outro|"
+    r"adicionar\s+outro)\s*[.!]?\s*$", re.I)
 
 
 def _resposta_de_botao(user: dict, phone: str, text: str) -> Optional[str]:
@@ -712,11 +971,11 @@ def _nao_e_nome_de_formulario(nome: str) -> bool:
     t = (nome or "").strip()
     if len(t) < 2 or len(t) > 60:
         return True
-    if re.fullmatch(r"[\\d\\s./-]+", t):
+    if re.fullmatch(r"[\d\s./-]+", t):
         return True
     if _LOOKS_LIKE_QUESTION.search(t):
         return True
-    low = re.sub(r"[^\\w\u00C0-\u00ff\\s]", "", t.lower()).strip()
+    low = re.sub(r"[^\w\u00C0-\u00ff\s]", "", t.lower()).strip()
     if low in _NAO_NOME_PALAVRAS or low in _SAUDACOES:
         return True
     return not re.search(r"[A-Za-z\u00C0-\u00ff]", t)
@@ -741,6 +1000,24 @@ def _purgar_pre_aceite() -> None:
                     mapa.pop(tel, None)
             except Exception:
                 mapa.pop(tel, None)
+
+
+def _purgar_kits() -> None:
+    """Estado do fluxo de kits e efemero: 15 min e some."""
+    agora = tempo.agora()
+    for tel in list(KIT_CONVITE):
+        try:
+            if (agora - KIT_CONVITE[tel]).total_seconds() > KIT_CONVITE_S:
+                KIT_CONVITE.pop(tel, None)
+        except Exception:
+            KIT_CONVITE.pop(tel, None)
+    for tel in list(KIT_ETAPA):
+        try:
+            if (agora - KIT_ETAPA[tel]["quando"]).total_seconds() \
+                    > KIT_JANELA_S:
+                KIT_ETAPA.pop(tel, None)
+        except Exception:
+            KIT_ETAPA.pop(tel, None)
 
 
 def _pop_pre_aceite(phone: str) -> list:
@@ -1151,6 +1428,82 @@ def _fetch_media_base64(payload: dict) -> str:
     return ""
 
 
+_VERBOS_ACAO = (
+    "pagar", "paga", "marcar", "marca", "comprar", "compra", "ligar",
+    "liga", "levar", "leva", "buscar", "busca", "agendar", "agenda",
+    "renovar", "renova", "trocar", "troca", "lembrar", "lembra",
+    "resolver", "resolve", "mandar", "manda", "avisar", "avisa",
+)
+_CONECTIVOS_LISTA = (" e ", " tambem", " também", " ai ", " aí ",
+                     " depois ", ", ")
+
+
+# M1.7 — TRAVA DURA. O bot NAO manda mensagem pra numero de terceiro.
+#
+# Fora da janela de 24h a Meta so entrega template aprovado, e escrever pra
+# quem nunca falou com o bot e spam. Este numero JA levou duas restricoes da
+# Meta; a terceira e banimento, e sem receita nao da pra reconstruir base num
+# numero novo. Isso e regra de codigo, nao decisao de produto que alguem
+# reverte no calor de uma demanda.
+PODE_ENVIAR_EXTERNO = False
+
+_DELEGAR_RE = re.compile(
+    r"\b(?:avisa|avisar|lembra|lembrar|manda|mandar|fala|falar)\s+"
+    r"(?:a|o|pra|para|pro|com)?\s*"
+    r"(?:minha|meu|a|o)?\s*"
+    r"(esposa|marido|mulher|namorad[ao]|m[ãa]e|pai|filh[ao]|irm[ãa][o]?|"
+    r"s[óo]ci[ao]|chefe|secret[áa]ri[ao]|di[áa]rista)\b", re.I)
+
+
+def _link_delegacao(texto: str, quem: str) -> str:
+    """M1.7 — monta a mensagem e devolve um link, sem escrever pra ninguem.
+
+    A promessa "avisa minha esposa" e cumprida: o bot escreve o recado e a
+    pessoa envia com um toque, do WhatsApp DELA. O consentimento e o de
+    sempre (gente falando com gente), o risco pra Meta e zero, e o
+    destinatario que quiser vira usuario iniciando a conversa — que e o
+    unico jeito legitimo de abrir a janela de 24h.
+    """
+    recado = (texto or "").strip()
+    # Auditoria v23.0, P1-4: aqui ia MASTER_PHONE, o numero do DONO. Sem a
+    # env setada o texto saia como "wa.me/)" pra todo mundo; com ela setada,
+    # o WhatsApp pessoal do Kevin ia parar no celular de estranhos — num
+    # numero que ja levou duas restricoes da Meta. Sem BOT_PHONE, a frase do
+    # convite simplesmente nao sai. Link quebrado nao vai pro ar.
+    _bot = re.sub(r"\D", "", BOT_PHONE or "")
+    if _bot:
+        _assina = ("\n\n(quem me lembrou disso foi o Resolve AI — "
+                   "se quiser, ele te lembra também: wa.me/" + _bot + ")")
+    else:
+        _assina = "\n\n(quem me lembrou disso foi o Resolve AI)"
+    msg = recado + _assina
+    from urllib.parse import quote
+    return ("Não mando mensagem pro número de\n"
+            "outra pessoa — ela não me autorizou. \U0001F512\n\n"
+            "Mas deixei pronto: toca aqui e vai\n"
+            "do *seu* WhatsApp, num toque.\n\n"
+            "https://wa.me/?text=" + quote(msg) + "\n\n"
+            "_E eu te lembro de mandar, se quiser:\n"
+            "me diz o dia._")
+
+
+def _quantas_tarefas(texto: str) -> int:
+    """Quantas coisas a pessoa provavelmente pediu neste audio. (M1.4)
+
+    Em PYTHON, nao no prompt. O LLM as vezes ouve "preciso pagar a luz,
+    marcar o dentista e comprar racao" e devolve UM item — e a pessoa so
+    descobre no vencimento dos outros dois. Contar verbo de acao e
+    conectivo de lista e grosseiro, mas e deterministico: serve de PISO
+    pra checar a saida do modelo, nao pra criar item sozinho.
+    """
+    t_ = " " + (texto or "").lower().strip() + " "
+    if not t_.strip():
+        return 0
+    verbos = sum(1 for v in _VERBOS_ACAO if (" " + v + " ") in t_)
+    conect = sum(1 for c in _CONECTIVOS_LISTA if c in t_)
+    return max(1, min(verbos, conect + 1) if verbos else 1)
+
+
 def _transcribe_audio(b64: str) -> Optional[str]:
     """Transcreve áudio via OpenAI Whisper. Loga o erro real se falhar."""
     import logging
@@ -1270,6 +1623,7 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     # quando morava so dentro do gate, os mapas so eram varridos se ALGUEM
     # mandasse conteudo antes de aceitar.
     _purgar_pre_aceite()
+    _purgar_kits()
 
     # OBS: o download da midia foi movido pra DEPOIS do gate de aceite
     # (bloco 0a2). Baixar significa decriptar o audio/foto da pessoa, e "sem
@@ -1514,6 +1868,65 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     # a usuario bloqueado, roubaria a mensagem de quem cancelou, e engoliria
     # a resposta de uma decisao pendente — deixando o PENDING travado.
     if kind == "texto" and not user.get("onboarding_step"):
+        # M1.3 — toque na lista de kits. Vem antes do motor pelo mesmo
+        # motivo do ACK: o titulo da lista chega como texto livre e o LLM
+        # nao tem como saber que aquilo foi um toque, nao uma frase.
+        _kit = _resposta_de_kit(user, phone, content)
+        if _kit is not None:
+            try:
+                db.touch_user(user["id"])
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[kit] falha ao atualizar ultima_interacao", exc_info=True)
+            if _kit == "":
+                return None      # a lista de opcoes ja saiu direto
+            return {"number": phone, "text": _kit}
+
+        # M1.7 — pedido de avisar outra pessoa. MOVIDO de _handle_commands
+        # (auditoria v23.0, P1-2): aqui ja passou pelo aceite LGPD e pelos
+        # gates de acesso, entao usuario bloqueado nao recebe link nenhum.
+        # user.get("lgpd_aceite_em") na guarda: o gate de cima chaveia por
+        # onboarding_step, e usuario da BASE ANTIGA nao tem nem um nem outro
+        # — passava direto e usava feature nova sem ter aceitado os termos.
+        # Guarda so nestes dois blocos: mexer na guarda geral tiraria snooze
+        # e ACK do legado, que sempre funcionaram.
+        _dl = _DELEGAR_RE.search(content)
+        if _dl and not PODE_ENVIAR_EXTERNO and user.get("lgpd_aceite_em"):
+            return {"number": phone,
+                    "text": _link_delegacao(content, _dl.group(1))}
+
+        # M1.3 — Kits de Rotina. Tambem movido. Vem DEPOIS de
+        # _resposta_de_kit porque aquele trata a etapa 2 (escolha dentro do
+        # kit); este trata a etapa 1 ("kits", "rotina").
+        if user.get("lgpd_aceite_em") and _KITS_RE.match(content.strip()):
+            _lk = _enviar_lista_kits(user, phone)
+            if _lk:
+                return {"number": phone, "text": _lk}
+            return None      # a lista interativa ja saiu direto
+
+        # M1.5 — resposta ao escalonamento
+        _sn = _resposta_de_snooze(user, phone, content)
+        if _sn:
+            return {"number": phone, "text": _sn}
+
+        # M1.5 — CONTA o adiamento. Sem contador nao existe terceira vez, e
+        # sem terceira vez o escalonamento nunca acontece.
+        if _ADIOU_RE.match(content.strip()):
+            try:
+                _alvo = (db.ultimo_alarme_disparado(user["id"])
+                         or db.ultimo_item(user["id"]))
+                if _alvo:
+                    _n = db.registrar_adiamento(user["id"], _alvo["id"])
+                    if _n > db.SNOOZE_LIMITE:
+                        # passou do limite e ainda empurrou: para de tocar.
+                        db.silenciar_item(_alvo["id"], user["id"])
+                        SILENCIOU_AGORA[phone] = (_alvo.get("descricao") or "")
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[snooze] falha ao registrar adiamento", exc_info=True)
+
         ack = _resposta_de_botao(user, phone, content)
         if ack:
             try:
@@ -1535,6 +1948,18 @@ def handle_incoming(payload: dict) -> Optional[dict]:
         if transcript is None:
             return {"number": phone, "text": textos.AUDIO_INDISPONIVEL}
         kind, content = "audio", transcript
+        # M1.4 — quantas tarefas esse audio provavelmente tem?
+        try:
+            _esp = _quantas_tarefas(transcript)
+            if _esp >= 2:
+                AUDIO_ESPERADO[phone] = {
+                    "uid": user["id"],
+                    "antes": len(db.list_items(user["id"])),
+                    "esperado": _esp, "txt": transcript}
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[audio] falha ao estimar tarefas", exc_info=True)
 
     elif kind in ("imagem_silenciosa", "imagem_com_texto"):
         ocr = _read_image(media_b64) if media_b64 else None
@@ -2566,6 +2991,84 @@ try:
                 import logging
                 logging.getLogger("resolveai").warning(
                     "[passado] falha ao checar hora no passado", exc_info=True)
+
+        # M1.3 — OFERTA NO PICO DE CONFIANCA.
+        # Comando digitado e feature morta: ninguem adivinha "kits". O
+        # momento que converte e logo depois do PRIMEIRO item dar certo —
+        # ela acabou de ver que funciona. Uma vez por pessoa, anexado, sem
+        # roubar a resposta.
+        if num and reply and reply.get("text"):
+            try:
+                _uk = None
+                for _c in db.list_users():
+                    if re.sub(r"\D", "", _c["telefone"]) == num:
+                        _uk = _c
+                        break
+                if (_uk and not KIT_JA_OFERECIDO.get(num)
+                        and len(db.list_items(_uk["id"])) == 1
+                        and _uk.get("lgpd_aceite_em")
+                        and not _uk.get("onboarding_step")):
+                    KIT_JA_OFERECIDO[num] = True
+                    KIT_CONVITE[num] = tempo.agora()
+                    # ARITMETICA DO TRIAL: se o unico item dela so avisa
+                    # depois dos 14 dias (IPVA e anual, revisao e semestral),
+                    # ela cancela sem NUNCA ver o produto funcionar. Nesse
+                    # caso a oferta puxa algo de repeticao curta, que prova
+                    # o valor dentro da janela.
+                    _longe = False
+                    try:
+                        _it = db.list_items(_uk["id"])[0]
+                        _dv = (_it.get("data_vencimento") or "")[:10]
+                        if _dv:
+                            _d = datetime.strptime(_dv, "%Y-%m-%d").date()
+                            _longe = (_d - tempo.hoje()).days > 14
+                    except Exception:
+                        _longe = False
+                    if _longe:
+                        _oferta = ("\n\n— — —\n"
+                                   "\U0001F9E0 Guardado. Mas esse s\u00f3 toca\n"
+                                   "l\u00e1 na frente.\n\n"
+                                   "Me d\u00e1 algo da sua *semana* que eu\n"
+                                   "te mostro funcionando j\u00e1.\n"
+                                   "Responda *sim* que eu te ajudo.")
+                    else:
+                        _oferta = ("\n\n— — —\n"
+                                   "\U0001F9E0 Esse foi o primeiro.\n"
+                                   "Quer montar o resto da rotina?\n"
+                                   "Responda *sim* que eu te mostro.")
+                    reply["text"] = reply["text"].rstrip() + _oferta
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[kits] falha na oferta pos-primeiro-item", exc_info=True)
+
+        # M1.4 — o audio virou N itens mesmo?
+        # A pessoa desabafa 3 coisas num audio de 20s. Se o motor entendeu
+        # 1, ela sai achando que anotou tudo e descobre no vencimento — a
+        # falha silenciosa que este projeto persegue. Aqui a gente NAO
+        # conserta o modelo: detecta e diz a verdade, com recibo do que
+        # entrou.
+        _au = AUDIO_ESPERADO.pop(num, None) if num else None
+        if _au and reply and reply.get("text"):
+            try:
+                _criados = len(db.list_items(_au["uid"])) - _au["antes"]
+                if _criados < _au["esperado"]:
+                    reply["text"] = (
+                        reply["text"].rstrip()
+                        + "\n\n— — —\n"
+                          "\U0001F3A4 Ouvi mais de uma coisa nesse áudio\n"
+                          "e registrei " + str(max(_criados, 0)) + ".\n"
+                          "Faltou algo? Me manda em texto que eu\n"
+                          "completo agora.")
+                    _alertar_dono(
+                        "AUDIO: esperava ~" + str(_au["esperado"]) +
+                        " itens e criou " + str(_criados), num,
+                        (_au.get("txt") or "")[:120])
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[audio] falha ao conferir itens do brain dump",
+                    exc_info=True)
 
         falha_depois = getattr(motor_v8, "ULTIMA_FALHA", "")
         if falha_depois and falha_depois != falha_antes:
