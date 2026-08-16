@@ -171,34 +171,68 @@ CATALOGO = [
 # Montados a partir do que os 11 primeiros usuarios pediram de verdade.
 # ---------------------------------------------------------------------------
 KITS = [
+    # ORDEM IMPORTA: a lista aparece nesta sequencia e quase ninguem rola
+    # ate o fim. A ordem aqui e por (1) sinal real dos 11 primeiros usuarios
+    # e (2) ARITMETICA DO TRIAL — kit que so dispara daqui a um mes nao
+    # prova nada dentro dos 14 dias.
+    #
+    # (id, titulo <=24, descricao <=72, [opcoes], pergunta do passo 2)
+
+    # Semanal: e o UNICO que garante aviso dentro do trial. Jiu jitsu
+    # terca/quinta apareceu organico no primeiro dia de uso.
+    ("aulas", "\U0001F4C5 Aulas da semana",
+     "Treino, aula, terapia — toda semana",
+     ["Treino / academia", "Aula (curso, idioma)", "Terapia / consulta fixa",
+      "Aula do filho"],
+     "Que dia da semana e que horas?\n"
+     "_\"terca e quinta 20h\"_\n"
+     "_\"todo sabado 9h\"_"),
+
+    # Carro foi o assunto com mais sinal real: IPVA, troca de oleo e
+    # "olhar os pontos" apareceram organicos.
+    ("carro", "\U0001F697 Carro em dia",
+     "IPVA, licenciamento, seguro, oleo",
+     ["IPVA", "Licenciamento", "Seguro", "Troca de oleo"],
+     "Me diz a data (ou o km, no oleo):\n"
+     "_\"IPVA vence 15/03\"_\n"
+     "_\"troquei o oleo hoje, 45 mil km\"_\n\n"
+     "N\u00e3o lembra? Manda *n\u00e3o sei* que a\n"
+     "gente descobre junto."),
+
+    # E literalmente a promessa de venda do produto e nao existia na lista.
+    ("parcelas", "\U0001F4B3 Parcelas e boletos",
+     "Parcela, carne, aluguel, fatura",
+     ["Parcela / carne", "Fatura do cartao", "Aluguel", "Mensalidade"],
+     "Que dia vence e quanto e?\n"
+     "_\"parcela do sofa dia 8, 250\"_\n"
+     "_\"fatura dia 10\"_\n\n"
+     "S\u00f3 o dia j\u00e1 me serve."),
+
     ("contas_casa", "\U0001F3E0 Contas da casa",
-     "Luz, internet, celular e água",
-     ["Luz", "Internet", "Celular", "Água"],
-     "Qual dia do mês cada uma vence? Pode mandar tudo junto: "
-     "_\"luz 20, internet 10, celular 15\"_"),
+     "Luz, internet, celular e agua",
+     ["Luz", "Internet", "Celular", "\u00c1gua"],
+     "Que dia do mes vence?\n"
+     "_So o dia ja serve: \"20\"_\n"
+     "_Ou completo: \"luz 187 dia 20\"_"),
 
-    ("saude", "\U0001FA7A Saúde em dia",
-     "Consulta, exame e remédio que acaba",
-     ["Consulta", "Exame", "Remédio"],
-     "Me diz o que tem marcado ou o que precisa marcar. "
-     "_\"dentista dia 15 às 14h\"_"),
+    ("pet", "\U0001F43E Pet",
+     "Racao, vacina, vermifugo, banho",
+     # "Banho e tosa" saiu: o petshop ja liga. Lembrete que duplica algo
+     # que ela ja recebe treina a pessoa a ignorar o bot.
+     ["Ra\u00e7\u00e3o acabando", "Vacina vencendo", "Vermifugo",
+      "Antipulga"],
+     "Quando foi a ultima vez?\n"
+     "_\"comprei racao de 15kg hoje\"_\n"
+     "_\"vacina do Thor foi ontem\"_"),
 
-    ("carro", "\U0001F697 Carro em ordem",
-     "IPVA, licenciamento, seguro e revisão",
-     ["IPVA", "Licenciamento", "Seguro", "Troca de óleo"],
-     "Me diz o que você lembra e eu monto o resto: "
-     "_\"troquei o óleo hoje, 45 mil km\"_"),
-
-    ("rotina", "\U0001F3CB️ Rotina e treino",
-     "Academia, treino, água, suplemento",
-     ["Treino", "Suplemento"],
-     "Quais dias e que horas? _\"jiu jitsu terça e quinta 20h\"_"),
-
-    ("viagem", "✈️ Viagem",
-     "Voo, hotel, check-in e documentos",
-     ["Voo", "Check-in", "Hotel"],
-     "Manda o *print da reserva* que eu tiro tudo dele — "
-     "horário, check-in e a hora de sair de casa."),
+    ("saude", "\U0001FA7A Sa\u00fade em dia",
+     "Consulta, exame, remedio que acaba",
+     # "Consulta marcada" virou "Consulta pra MARCAR": a clinica ja manda
+     # SMS de quem tem hora. O valor aqui e lembrar de marcar.
+     ["Consulta pra marcar", "Exame pra fazer", "Remedio acabando"],
+     "Ate quando precisa resolver?\n"
+     "_\"marcar dentista ate dia 30\"_\n"
+     "_\"meu remedio acaba em 20 dias\"_"),
 ]
 
 
@@ -259,6 +293,81 @@ def categoria_de(texto: str, producao: bool = False):
     return melhor
 
 
+# Interesse marcado na landing -> categorias do CATALOGO. Serve pra puxar
+# exemplos REAIS (os mesmos que o motor entende) em vez de inventar frase.
+# Frases prontas pra pessoa COPIAR, por interesse marcado na landing.
+#
+# Escritas a mao, com acento e no formato que o motor entende. NAO saem do
+# CATALOGO: aquilo e dado tecnico pro prompt do LLM e esta sem acento de
+# proposito — "ipva parcela 2 em marco" na tela da pessoa parece bot
+# quebrado. O que ela ve tem que ser copia decente.
+EXEMPLOS_PARA_COPIAR = {
+    "contas":     ['luz 187 vence dia 20',
+                   'internet vence todo dia 10'],
+    "carro":      ['IPVA vence 15/03',
+                   'troquei o óleo hoje, 45 mil km'],
+    "saude":      ['dentista dia 15 às 14h',
+                   'meu remédio acaba em 20 dias'],
+    "pet":        ['comprei ração de 15kg hoje',
+                   'vacina do Thor foi ontem'],
+    "datas":      ['aniversário da minha mãe é 03/09',
+                   'formatura dia 12 às 19h'],
+    "mercado":    ['o café tá acabando',
+                   'comprei fralda tamanho G hoje'],
+    "encomendas": ['comprei um fone, chega dia 12',
+                   'posso trocar até dia 20'],
+    "burocracia": ['minha CNH vence em março',
+                   'declarar imposto até abril'],
+}
+
+
+def exemplos_por_interesse(interesses: str = "", n: int = 3) -> list:
+    """Frases prontas pra pessoa copiar, escolhidas pelo que ELA marcou.
+
+    Sai do CATALOGO, nao de texto inventado: sao exatamente os formatos que
+    o motor entende, entao o que ela copiar vai funcionar de primeira.
+
+    VARIOS exemplos, nao um. Quem chega no zap sem saber o que mandar trava
+    — e mostrar so uma sugestao faz parecer que o bot serve pra uma coisa
+    so. Tres cabem na tela do celular sem virar cardapio (o cardapio de 8
+    ja foi testado e deu 8 cadastros / 1 item).
+
+    Sempre completa com um exemplo de conta: e o caso mais universal e o
+    que melhor mostra a promessa (aviso antes de vencer).
+    """
+    marcados = [p.strip().lower()
+                for p in (interesses or "").split(",") if p.strip()]
+    # "contas" entra sempre no fim: e o caso mais universal e o que melhor
+    # mostra a promessa (aviso antes de vencer). Se ela ja marcou, nao
+    # duplica.
+    if "contas" not in marcados:
+        marcados.append("contas")
+
+    saida = []
+    # uma frase de CADA interesse primeiro — assim ela ve que o bot serve
+    # pra mais de uma coisa, que e o ponto de mostrar varias opcoes
+    for m in marcados:
+        ex = EXEMPLOS_PARA_COPIAR.get(m) or []
+        if ex and ex[0] not in saida:
+            saida.append(ex[0])
+        if len(saida) >= n:
+            return saida[:n]
+    # sobrou espaco: completa com a segunda frase de cada
+    for m in marcados:
+        for e in (EXEMPLOS_PARA_COPIAR.get(m) or [])[1:]:
+            if e not in saida:
+                saida.append(e)
+            if len(saida) >= n:
+                return saida[:n]
+    return saida[:n]
+
+
+def bloco_de_exemplos(interesses: str = "", n: int = 3) -> str:
+    """Os exemplos ja formatados pro WhatsApp: um por linha, em italico."""
+    ex = exemplos_por_interesse(interesses, n)
+    return "\n".join('_"' + e + '"_' for e in ex)
+
+
 def resumo_prompt(limite: int = 4000) -> str:
     """Bloco compacto pro system prompt do LLM."""
     linhas = ["CASOS QUE VOCE CONHECE (categoria | exemplo | o que fazer):"]
@@ -306,7 +415,106 @@ def kit_por_id(kit_id: str):
     return None
 
 
-def linhas_kits() -> list:
-    """Linhas prontas pra mensagem de lista do WhatsApp."""
-    return [{"id": f"kit_{k[0]}", "title": k[1][:24], "description": k[2][:72]}
-            for k in KITS]
+def kit_por_rotulo(texto: str):
+    """Acha o kit pelo que o WhatsApp devolve quando a pessoa toca na lista.
+
+    A Meta NAO devolve o id da linha no texto: o to_evolution_shape entrega
+    o TITULO ("\U0001F697 Carro em dia") como {"conversation": ...}. Casar so
+    por id deixaria o toque virar texto livre pro LLM — foi o que aconteceu
+    com os botoes de confirmacao em 11/08 ("Isso mesmo" -> "Como vai?").
+    """
+    t = _norm(texto).strip()
+    if not t:
+        return None
+    if t.startswith("kit "):
+        t = t[4:].strip()
+    for k in KITS:
+        if t in (_norm(k[0]).strip(), _norm("kit_" + k[0]).strip()):
+            return k
+    for k in KITS:
+        if t == _norm(k[1]).strip():
+            return k
+    return None
+
+
+def opcao_por_rotulo(kit, texto: str):
+    """Qual opcao DENTRO do kit a pessoa tocou (passo 2)."""
+    if not kit:
+        return None
+    t = _norm(texto).strip()
+    if not t:
+        return None
+    for opc in kit[3]:
+        if t == _norm(opc).strip():
+            return opc
+    return None
+
+
+def linhas_opcoes(kit) -> list:
+    """Linhas da lista do passo 2 — as opcoes de um kit."""
+    if not kit:
+        return []
+    return [{"id": "opc_" + str(n), "title": o[:24]}
+            for n, o in enumerate(kit[3])]
+
+
+# ---------------------------------------------------------------------------
+# COPY DOS KITS — escrita pra tela de celular
+# ---------------------------------------------------------------------------
+# Regras aplicadas aqui (as mesmas do motor_v8):
+#   - no maximo ~35 caracteres por linha, senao quebra torto no WhatsApp
+#   - uma ideia por linha, quebra de linha de verdade
+#   - emoji como pontuacao, nunca enfeite
+#   - UMA pergunta por vez. Pedir 4 datas de uma vez e memoria demais pra
+#     quem esta no zap com o filho chorando do lado — e foi assim que a
+#     primeira versao do onboarding deu 8 cadastros e 1 item.
+def texto_passo1(kit) -> str:
+    """Depois de tocar no kit: pergunta QUAL, nao pede data ainda."""
+    if not kit:
+        return ""
+    return (kit[1] + "\n\n"
+            "Vamos pelo que mais pesa.\n"
+            "Qual desses voc\u00ea *n\u00e3o pode* esquecer?")
+
+
+def texto_passo2(kit, opcao: str) -> str:
+    """Depois de escolher a opcao: UMA pergunta, com exemplo pronto."""
+    if not kit:
+        return ""
+    return ("*" + str(opcao) + "*\n\n" + kit[4])
+
+
+# O que a pessoa marcou na landing -> quais kits fazem sentido pra ela.
+# Um interesse pode puxar mais de um kit: quem marcou "contas" tem conta de
+# casa E parcela de cartao, e mostrar so um dos dois desperdica o unico
+# momento em que ela esta olhando a lista.
+INTERESSE_PARA_KITS = {
+    "contas":     ["contas_casa", "parcelas"],
+    "burocracia": ["carro", "parcelas"],
+    "carro":      ["carro"],
+    "saude":      ["saude"],
+    "pet":        ["pet"],
+    "datas":      ["aulas"],
+    "mercado":    ["pet", "contas_casa"],
+    "encomendas": ["parcelas"],
+}
+
+
+def linhas_kits(interesses: str = "") -> list:
+    """Linhas da lista do WhatsApp, com os kits do INTERESSE dela primeiro.
+
+    Quem marcou "carro" na landing ve o kit do carro no topo. Nenhum kit
+    some — a lista aceita 10 e nos temos 6, entao o resto continua rolavel
+    logo abaixo. Ordenar e barato e muda a chance de ela tocar em algum.
+    """
+    marcados = [p.strip().lower()
+                for p in (interesses or "").split(",") if p.strip()]
+    preferidos = []
+    for m in marcados:
+        for kid in INTERESSE_PARA_KITS.get(m, []):
+            if kid not in preferidos:
+                preferidos.append(kid)
+    ordenados = ([k for kid in preferidos for k in KITS if k[0] == kid]
+                 + [k for k in KITS if k[0] not in preferidos])
+    return [{"id": "kit_" + k[0], "title": k[1][:24],
+             "description": k[2][:72]} for k in ordenados[:10]]
