@@ -1,0 +1,10 @@
+# Ambiente local de teste. NUNCA vai pro repo: sao ~200MB e o deploy do
+# EasyPanel instala tudo pelo requirements.txt.
+.venv/
+__pycache__/
+*.pyc
+
+# Banco local e segredos
+*.db
+.env
+.pytest_cache/

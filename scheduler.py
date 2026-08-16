@@ -228,9 +228,22 @@ def check_overdue(ref: Optional[date] = None) -> list[dict]:
         u = db.get_user(item["user_id"])
         if not u or not db.user_can_receive(u):
             continue
+        # UMA LINHA RUIM NAO PODE MATAR O CICLO INTEIRO (auditoria v23.4,
+        # P1-5). `map(int, venc.split("-"))` estourava ValueError com uma
+        # data fora do ISO e derrubava check_overdue no meio do laco: NINGUEM
+        # — nem os outros usuarios — recebia aviso de vencimento naquele
+        # ciclo. O item problematico e pulado e o dono e avisado; o resto do
+        # ciclo segue. Nao e `except: pass`: o erro sobe pro log com o id.
         venc = item["data_vencimento"]
-        y, m, d = map(int, venc.split("-"))
-        atraso = (ref - date(y, m, d)).days
+        try:
+            y, m, d = map(int, str(venc).split("-"))
+            atraso = (ref - date(y, m, d)).days
+        except (ValueError, TypeError, AttributeError):
+            import logging
+            logging.getLogger("resolveai").error(
+                "[vencidos] item %s com data invalida (%r) - pulado",
+                item.get("id"), venc)
+            continue
         first = (item.get("user_nome") or "").split()[0] or "Oi"
         if db.item_silenciado(item["id"]):
             continue          # M1.5 — silenciado nao cobra tambem

@@ -830,6 +830,21 @@ def handle_silent_image(ocr_content: str, user_name: str = "Kevin") -> dict:
     return res
 
 
+# ESCOLHA DO MENU: casamento INTEIRO, nunca substring.
+#
+# AUDITORIA v23.4: `c.startswith("1") or "pag" in c` lia a correcao de valor
+# "210,50" como a opcao 2 (comeca com "2") e lia "me lembra de PAGar o
+# condominio" como a opcao 1 (contem "pag"). Nos dois casos o item errado era
+# gravado e a mensagem real do usuario evaporava. Substring em decisao
+# destrutiva e o jeito mais barato de perder dado de quem confiou no bot.
+_MENU_OPCAO_1_RE = re.compile(
+    r"^\s*(1|1️⃣|despesa\s*paga|salvar\s+como\s+despesa(\s+paga)?|"
+    r"pago|paga|paguei|j[áa]\s+paguei|ja\s+paguei)\s*[.!)\-–]?\s*$", re.I)
+_MENU_OPCAO_2_RE = re.compile(
+    r"^\s*(2|2️⃣|agendar(\s+lembrete)?(\s+de\s+cobran[çc]a)?|"
+    r"lembrete(\s+de\s+cobran[çc]a)?|agenda)\s*[.!)\-–]?\s*$", re.I)
+
+
 def resolve_pending_decision(choice: str, pending: dict) -> dict:
     """Processa a resposta 1/2 do menu de decisão — e, no fluxo v6,
     a confirmação SIM/correção dos dados extraídos por visão."""
@@ -876,11 +891,11 @@ def resolve_pending_decision(choice: str, pending: dict) -> dict:
                         "*1* ✅ salvar como está\n"
                         "*2* ✏️ corrigir (me manda o dado certo)")
         return res
-    if c.startswith("1") or "pag" in c:
+    if _MENU_OPCAO_1_RE.match(c):
         item["tipo"], item["status"] = "despesa", "concluido"
         res["items"].append(item)
         res["reply"] = "Feito. Arquivado como **Despesa Paga**."
-    elif c.startswith("2") or "agend" in c or "lembr" in c:
+    elif _MENU_OPCAO_2_RE.match(c):
         item["tipo"], item["status"] = "lembrete", "pendente"
         if item.get("data_vencimento"):
             y, m, d = map(int, item["data_vencimento"].split("-"))
@@ -1141,11 +1156,16 @@ def converse(
     content: str,
     instruction: str = "",
     pending: Optional[dict] = None,
+    permitir_conclusao: bool = True,
 ) -> dict:
     """
     Ponto de entrada CONVERSACIONAL: interpreta a intenção, consulta e
     atualiza o banco quando preciso, persiste itens e devolve resposta pronta.
     Mesmo contrato de process_input.
+
+    `permitir_conclusao=False`: o chamador já verificou, em Python, que esta
+    mensagem NÃO é uma baixa (ex.: palavra de baixa seguida de frase, como
+    "feito isso, me avisa"). Sem isso a camada clássica fecha o item errado.
     """
     import db
 
@@ -1175,6 +1195,15 @@ def converse(
     text = clean_audio_transcript(content) if kind == "audio" else content
     text = normalize_br(text)
     intent = detect_intent(text)
+    # AUDITORIA v23.4 rodada 3 (P1-3): a trava que impede o bot de concluir
+    # item que o usuario nao nomeou vivia SO no caminho do motor_v8. Este
+    # aqui e o fallback de quando o v8 devolve None ou explode — ou seja, a
+    # protecao existia no caminho saudavel e faltava no degradado. Com
+    # "paguei a conta de luz 187" o estrago era duplo: fechava o item errado
+    # E perdia os R$187. Quem decide se pode concluir e Python, dos dois
+    # lados (regra 2).
+    if intent == "conclusao" and not permitir_conclusao:
+        intent = "registro"
     base = _base_result()
 
     if intent == "saudacao":

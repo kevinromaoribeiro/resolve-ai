@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import unicodedata
 from datetime import datetime, date
 import tempo
 from typing import Any, Optional
@@ -49,7 +50,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v23.3-motor1-auditado-2026-08-15"
+BUILD = "v23.4-fase1-baixa-deterministica-2026-08-16"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -128,7 +129,9 @@ KIT_JA_OFERECIDO: dict = {}
 # M1.5 — phone -> descricao do item que acabou de entrar em modo silencioso.
 # O aviso vai ANEXADO na resposta: a pessoa precisa saber que o bot parou de
 # tocar, senao "parou de funcionar" vira o diagnostico dela.
-SILENCIOU_AGORA: dict = {}
+# v23.4: era escrito aqui e lido em lugar NENHUM — o item era silenciado e a
+# pessoa nunca sabia. Agora o aviso sai na hora, no proprio fluxo do
+# adiamento, e o dicionario deixou de existir.
 
 # M1.4 — phone -> {uid, antes, esperado, txt}. Marcado quando um audio e
 # transcrito, conferido no webhook depois que o motor rodou.
@@ -246,6 +249,21 @@ def _negado(request):
 
 # Decisões pendentes por telefone (Regra de Ouro da imagem silenciosa)
 PENDING: dict[str, dict] = {}
+# Quantas vezes seguidas a pessoa respondeu algo que o menu 1/2 não entendeu.
+# 12-14/08: o PENDING não tinha saída — cada resposta fora do menu devolvia
+# "Não entendi" e RE-ARMAVA a decisão. O Kevin ficou 3 dias preso nisso, e
+# toda mensagem dele (inclusive "feito") caía no menu. Decisão pendente é
+# convite, não jaula: depois de PENDING_MAX_ERROS respostas fora do menu o bot
+# solta a decisão, salva o item como lembrete (nada se perde) e segue a
+# conversa normal.
+PENDING_ERROS: dict[str, int] = {}
+PENDING_MAX_ERROS = 2
+# Quando a decisao foi armada. Decisao pendente sem prazo deixa de ser
+# convite e vira jaula: um PENDING de dias antes sequestrava a mensagem
+# seguinte, e o menu ("pag" em "pagar") transformava um pedido novo em
+# "Despesa Paga" — com o pedido real descartado calado (14/08).
+PENDING_EM: dict[str, object] = {}
+PENDING_TTL_S = 1200        # 20 min: o tempo de responder um menu, nao 3 dias
 # Confirmações pendentes de comandos destrutivos: phone -> 'cancelar'|'apagar'
 CONFIRM: dict[str, str] = {}
 # Trial vencido nesta mensagem: phone -> primeiro nome. A mensagem é
@@ -957,6 +975,506 @@ def _resposta_de_botao(user: dict, phone: str, text: str) -> Optional[str]:
     if _ACK_ADD_RE.match(t):
         return "Manda a pr\u00f3xima. \U0001F442"
     return None
+
+
+# P0-1 (12, 13 e 14/08) — "feito" nao dava baixa.
+#
+#   Bot:   chegou a hora: Estudar Product Manager
+#          Responda feito que eu dou baixa, ou adiar 1h.
+#   Kevin: feito
+#   Bot:   Nao entendi. Responda *1* (despesa paga), *2* (agendar lembrete)
+#
+# O bot pedia a palavra e recusava a palavra, tres dias seguidos. Causa
+# provada por execucao: o bloco de decisao pendente (PENDING) roda antes de
+# tudo e manda a mensagem pro menu 1/2, que nao conhece a palavra "feito".
+#
+# Baixa e regra de negocio, entao e Python (regra 2 do CLAUDE.md) e vem ANTES
+# de qualquer PENDING. A palavra tem que estar SOZINHA na mensagem: "o bolo ta
+# feito de chocolate" nao e baixa. E so vale se um alarme REALMENTE tocou nas
+# ultimas 12h — sem isso volta o caso Fabio (05/08), em que "Feito" queria
+# dizer "terminei de listar" e o bot apagou a lista inteira da pessoa.
+# AUDITORIA v23.4 (P0-2 do auditor): o scheduler manda, com todas as letras,
+#   "Responde *feito* + o nome do que ja resolveu"        (scheduler.py:278)
+#   "Responda *feito* + o nome do item que eu dou baixa"  (scheduler.py:574)
+# A primeira versao deste regex exigia a palavra SOZINHA — ou seja, recusava
+# de novo a forma que o proprio bot pede, justamente na mensagem que sai
+# quando a pessoa tem varias coisas vencidas. Agora a cauda e aceita e vira
+# busca pelo item; se ela nao apontar pra exatamente UM pendente, ninguem
+# conclui nada e a mensagem segue o fluxo normal.
+#
+# A cauda de pontuacao aceita emoji DEPOIS da palavra ("feito ✅", "feito 👍"):
+# no WhatsApp mobile esse e o jeito mais natural de responder, e a versao
+# anterior so aceitava emoji ANTES.
+_BAIXA_RE = re.compile(
+    r"^\s*(?:✅\s*)?"
+    r"(feito|feita|pronto|pronta|fiz|ja\s+fiz|j[áa]\s+fiz|ja\s+foi|j[áa]\s+foi|"
+    r"t[áa]\s+feito|ta\s+feito|resolvi|resolvido|resolvida|conclui|conclu[íi]|"
+    r"conclu[íi]do|terminei|quitei|pago|paga|paguei|ja\s+paguei|j[áa]\s+paguei)"
+    r"\b(?P<cauda>.*)$", re.I)
+
+# Fim de mensagem que e so pontuacao/emoji — nao e nome de item.
+_SO_ENFEITE_RE = re.compile(r"^[\W_]*$", re.UNICODE)
+
+# Palavras de baixa que TAMBEM sao resposta legitima do menu 1/2 da imagem
+# ("1 = despesa paga"). Quando existe decisao pendente mais recente que o
+# alarme, o menu ganha — ver _baixa_deterministica.
+_BAIXA_AMBIGUA = {"pago", "paga", "paguei", "ja paguei", "já paguei"}
+
+
+# A pessoa mandou palavra de baixa, mas o Python NAO consegue apontar um
+# item unico. Nao e "nao e baixa" (ai o LLM assumiria e chutaria, que foi o
+# estrago do 14/08) nem "e este aqui". E "pergunte".
+AMBIGUO = object()
+# "feito" sozinho: nao ha nome pra casar, o alvo e o item do alarme.
+SEM_CAUDA = object()
+
+# Palavras que aparecem na cauda mas nao nomeiam item nenhum.
+_CAUDA_SEM_NOME = {"isso", "esse", "essa", "aquele", "aquela", "tudo", "ja",
+                   "já", "agora", "hoje", "ontem", "com", "sim", "nao", "não",
+                   "que", "pra", "por", "dos", "das", "meu", "minha"}
+
+# Escolha pendente de baixa: telefone -> {"ids": [...], "quando": datetime}.
+# Sem isto a pergunta "qual deles?" nao tem saida — a pessoa responde, o bot
+# reavalia a mesma cauda ambigua e devolve a mesma pergunta. Numero e a saida
+# mais curta (regra 7: menos digitacao, menos ambiguidade).
+BAIXA_ESCOLHA: dict[str, dict] = {}
+BAIXA_ESCOLHA_TTL_S = 600
+
+
+def _sem_acento(palavra: str) -> str:
+    """"agua" tem que casar com "Água".
+
+    AUDITORIA v23.4 rodada 3 (P1-2): o placar comparava com acento, entao
+    "feito agua" nao casava com "Conta de Água", o caminho deterministico
+    devolvia None e a decisao voltava pro motor — justamente o que o P0-2
+    existia pra evitar. No WhatsApp brasileiro digitar sem acento e a regra,
+    nao a excecao.
+    """
+    return "".join(c for c in unicodedata.normalize("NFD", palavra.lower())
+                   if unicodedata.category(c) != "Mn")
+
+
+def _baixa_sem_alvo(user: dict, texto: str) -> bool:
+    """Casou palavra de baixa, tem cauda, e o Python NAO achou o item.
+
+    AUDITORIA v23.4 rodada 4 (P1-1): a versao anterior perguntava "isso
+    parece frase?" (virgula ou mais de 4 palavras) — e por isso deixava
+    passar "feito o pagamento da luz" e "fiz o cadastro no site", que
+    fechavam o item errado no caminho degradado. A pergunta certa nao e
+    sobre a forma da mensagem: e se o Python conseguiu apontar o item. Se
+    ele nao conseguiu, o LLM tambem nao pode concluir.
+
+    Sem cauda ("feito" sozinho) devolve False de proposito: ai a baixa e
+    legitima e quem resolve o alvo e o caminho de sempre.
+
+    ASSIMETRIA PROPOSITAL (auditoria v23.4 rodada 5, P2-1): aqui NAO existe
+    o portao do alarme que o `_alvo_da_baixa` aplica. Sem alarme tocado, o
+    caminho deterministico se recusa a fechar qualquer coisa (caso Fabio),
+    mas o LLM continua autorizado quando a pessoa NOMEIA o item — "paguei a
+    conta de luz" tem que dar baixa mesmo sem alarme nenhum, e isso esta na
+    lista de capacidades que o bot anuncia. O que a lista do Fabio precisa e
+    que "Feito" SOZINHO nao feche nada, e isso continua garantido.
+    """
+    m = _BAIXA_RE.match((texto or "").strip())
+    if not m:
+        return False
+    achado = _casar_cauda(user, m.group("cauda"))
+    if achado is SEM_CAUDA:
+        return False
+    return achado is None or achado is AMBIGUO
+
+
+def _alvo_da_baixa(user: dict, cauda: str):
+    """Qual item a pessoa quis fechar: o do alarme, ou o que ela nomeou.
+
+    Sem cauda -> o item cujo alarme tocou (comportamento do alarme unico).
+    Com cauda -> tem que apontar pra exatamente UM pendente. Zero ou dois
+    significa que o bot NAO sabe, e chutar aqui e concluir item errado —
+    o estrago do 14/08.
+    """
+    try:
+        alarmado = db.ultimo_alarme_disparado(user["id"])
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[baixa] falha ao buscar o alarme mais recente", exc_info=True)
+        return None
+    if not alarmado:
+        return None            # sem alarme nao existe baixa (caso Fabio)
+    achado = _casar_cauda(user, cauda)
+    return alarmado if achado is SEM_CAUDA else achado
+
+
+def _casar_cauda(user: dict, cauda_bruta: str):
+    """Casa o que veio depois da palavra de baixa contra os pendentes.
+
+    Devolve: o item | AMBIGUO (mais de um) | None (nenhum) | SEM_CAUDA.
+    """
+    # A VIRGULA E TESTADA NA CAUDA BRUTA. O strip abaixo comia justamente a
+    # virgula colada na palavra ("feito, me avisa" virava "me avisa") e a
+    # metade "virgula" da regra nunca valia nesse caso.
+    tem_virgula = "," in (cauda_bruta or "")
+    cauda = (cauda_bruta or "").strip(" .!,…✅\U0001F44D")
+    if not cauda or _SO_ENFEITE_RE.match(cauda):
+        return SEM_CAUDA
+    # Frase, nao nome: "feito isso, me avisa" nao nomeia item nenhum — e
+    # alguem combinando uma proxima etapa.
+    if tem_virgula or len(cauda.split()) > 4:
+        return None
+    palavras = {_sem_acento(p) for p in re.findall(r"\w+", cauda)
+                if len(p) >= 3 and _sem_acento(p) not in _CAUDA_SEM_NOME}
+    if not palavras:
+        return None
+    try:
+        pendentes = db.list_items(user["id"], status="pendente")
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[baixa] falha ao listar pendentes", exc_info=True)
+        return None
+
+    # AUDITORIA v23.4 rodada 2 (P0-2): decidir por "casou / nao casou" fazia
+    # "feito conta de luz" empatar com "conta de agua" — as duas tem "conta" —
+    # e o bot devolvia a MESMA pergunta pra sempre, inclusive quando a pessoa
+    # respondia exatamente o rotulo que ele acabou de listar. Vocabulario de
+    # conta e curto (luz, agua, gas, PIX), entao o corte de 4 letras apagava
+    # justamente o que distingue. Agora conta SOBREPOSICAO, com corte em 3.
+    placar = []
+    for item in pendentes:
+        alvo_pal = {_sem_acento(p) for p in re.findall(
+            r"\w+", item.get("descricao") or "")}
+        n = sum(1 for p in palavras
+                if p in alvo_pal or any(len(a) >= 4 and len(p) >= 4
+                                        and a[:4] == p[:4] for a in alvo_pal))
+        if n:
+            # desempate: em empate de pontos, ganha a descricao com menos
+            # palavra sobrando — o nome EXATO vence o superset ("conta de
+            # luz" ganha de "conta de luz do escritorio").
+            placar.append((n, -max(0, len(alvo_pal) - n), item))
+    if not placar:
+        # AUDITORIA v23.4 rodada 2 (P0-1): aqui devolvia AMBIGUO, e o bot
+        # respondia "qual deles?" a um "paguei 250 no mercado" — comendo o
+        # registro da despesa. Se a cauda nao aponta pra NADA da lista, a
+        # mensagem nao e sobre a lista.
+        return None
+    placar.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    if len(placar) == 1 or (placar[0][0], placar[0][1]) > (placar[1][0],
+                                                           placar[1][1]):
+        return placar[0][2]
+    return AMBIGUO
+
+
+def _escolha_de_baixa(user: dict, phone: str, text: str) -> Optional[str]:
+    """A pessoa respondeu o numero da pergunta "qual deles eu dou baixa?".
+
+    So vale logo depois da pergunta (BAIXA_ESCOLHA_TTL_S) e so para os ids
+    que o bot listou — um "2" solto no meio de outra conversa nao conclui
+    nada. Fora da janela, o estado morre em vez de ficar armado.
+    """
+    estado = BAIXA_ESCOLHA.get(phone)
+    if not estado:
+        return None
+    try:
+        velho = (tempo.agora() - estado["quando"]).total_seconds() \
+            > BAIXA_ESCOLHA_TTL_S
+    except Exception:
+        velho = True
+    if velho:
+        BAIXA_ESCOLHA.pop(phone, None)
+        return None
+    m = re.fullmatch(r"\s*([1-9])\s*[.!)\-–]?\s*", text or "")
+    if not m:
+        return None
+    ids = estado.get("ids") or []
+    idx = int(m.group(1)) - 1
+    if idx < 0 or idx >= len(ids):
+        return None
+    BAIXA_ESCOLHA.pop(phone, None)
+    item_id = ids[idx]
+    # Dono do item conferido contra o banco, nao contra o que veio na tela.
+    if not _meu_item(user["id"], item_id):
+        return None
+    try:
+        alvo = next((i for i in db.list_items(user["id"])
+                     if i["id"] == item_id), None)
+        db.update_item_status(item_id, "concluido")
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[baixa] falha ao concluir item %s pela escolha", item_id,
+            exc_info=True)
+        return None
+    desc = ((alvo or {}).get("descricao") or "").strip()
+    return f"Dei baixa em *{desc}*. ✅" if desc else "Dei baixa. ✅"
+
+
+def _baixa_deterministica(user: dict, phone: str, text: str) -> Optional[str]:
+    """Da baixa no item que a pessoa acabou de resolver. Sem LLM, sem menu.
+
+    Devolve a resposta pronta, ou None quando a mensagem nao e uma baixa
+    (ai o fluxo normal segue intacto).
+    """
+    t = (text or "").strip()
+    m = _BAIXA_RE.match(t) if t else None
+    if not m:
+        return None
+
+    # AUDITORIA v23.4 (P1-4 do auditor): se a pessoa esta respondendo ao menu
+    # 1/2 de uma foto, "pago" e resposta do MENU, nao baixa do alarme. Roubar
+    # essa palavra concluia um item que ela nao citou e ainda rebaixava a
+    # despesa da foto pra lembrete. Regra: so a decisao mais NOVA manda.
+    if phone in PENDING and m.group(1).lower() in _BAIXA_AMBIGUA:
+        armado = PENDING_EM.get(phone)
+        if armado and not _alarme_depois_de(user, armado):
+            return None
+
+    alvo = _alvo_da_baixa(user, m.group("cauda"))
+    if alvo is None:
+        return None
+    if alvo is AMBIGUO:
+        # PERGUNTAR e a unica saida honesta. Devolver None aqui entregaria a
+        # decisao pro motor, e foi assim que "feito" fechou o item errado.
+        # A pergunta e NUMERADA e a escolha fica guardada: sem isso a pessoa
+        # responde o proprio rotulo que o bot listou, a cauda continua
+        # ambigua, e a mesma pergunta volta pra sempre (rodada 2, P0-2).
+        try:
+            pend = [i for i in db.list_items(user["id"], status="pendente")
+                    if (i.get("descricao") or "").strip()][:3]
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[baixa] falha ao listar pendentes pra pergunta", exc_info=True)
+            pend = []
+        if not pend:
+            return None
+        BAIXA_ESCOLHA[phone] = {"ids": [i["id"] for i in pend],
+                                "quando": tempo.agora()}
+        opcoes = "\n".join(f"*{n}* — {i['descricao']}"
+                           for n, i in enumerate(pend, 1))
+        return (f"Qual deles eu dou baixa?\n\n{opcoes}\n\n"
+                f"_Responde o número._")
+    try:
+        db.update_item_status(alvo["id"], "concluido")
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[baixa] falha ao concluir item %s", alvo.get("id"), exc_info=True)
+        return None
+    try:
+        db.touch_user(user["id"])
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[baixa] falha ao atualizar ultima_interacao", exc_info=True)
+
+    # A decisao pendente perde a vez — mas o que estava nela NAO evapora em
+    # silencio (regra 5). Vira lembrete, que e o unico destino que nao mente:
+    # nada e marcado como pago sem a pessoa ter dito que pagou.
+    resgatado = _resgatar_pendencia(user, phone)
+
+    desc = (alvo.get("descricao") or "isso").strip()
+    resposta = f"Dei baixa em *{desc}*. ✅"
+    if resgatado:
+        resposta += f"\n\n_(Guardei também: {resgatado})_"
+    return resposta
+
+
+# Resposta de menu 1/2: "1", "2", os rotulos que o menu oferece, ou uma
+# correcao com numero ("valor 210,50 vence 25/07"). O resto e mensagem nova.
+_MENU_ESCOLHA_RE = re.compile(
+    r"^\s*(?:1️⃣|2️⃣|[12])\s*[.!)\-–]?\s*$")
+_MENU_ROTULO_RE = re.compile(
+    r"^\s*(despesa\s*paga|salvar\s+como\s+despesa(\s+paga)?|"
+    r"agendar(\s+lembrete)?(\s+de\s+cobran[çc]a)?|lembrete\s+de\s+cobran[çc]a|"
+    r"pago|paga|paguei|lembrete)\s*[.!]?\s*$", re.I)
+# Confirmacao do fluxo v6 (dados extraidos de imagem): "sim", "confere"...
+_MENU_CONFIRMA_RE = re.compile(
+    r"^\s*(sim|s|confere|confirmo|ok|isso|isso\s*mesmo|pode|certo|exato|"
+    r"n[aã]o|errado|errada|corrigir)\s*[.!]?\s*$", re.I)
+# Pedido novo nunca e resposta de menu, mesmo carregando numero e data.
+_PEDIDO_NOVO_RE = re.compile(
+    r"\b(me\s+lembr|lembra|anota|agenda|marca|guarda|preciso|tenho\s+que|"
+    r"comprar|pagar)\w*", re.I)
+
+
+def _e_resposta_de_menu(text: str, pending) -> bool:
+    """A mensagem responde ao menu, ou e assunto novo?
+
+    AUDITORIA v23.4 (P0-1 do auditor): esta pergunta nao existia. O
+    `resolve_pending_decision` do ai_engine testa `"pag" in c`, entao
+    "me lembra de PAGar o condominio dia 25" era lido como "1 = despesa
+    paga": o boleto velho virava despesa concluida e o pedido novo do
+    usuario era descartado sem uma linha de aviso. Quem separa resposta de
+    menu de mensagem nova e Python (regra 2), e o criterio e estreito.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _MENU_ESCOLHA_RE.match(t) or _MENU_ROTULO_RE.match(t):
+        return True
+    if isinstance(pending, dict) and "_confirm" in pending \
+            and _MENU_CONFIRMA_RE.match(t):
+        return True
+    # Correcao de dado ("valor 210,50 vence 25/07"): numero + palavra de
+    # valor/data, em mensagem CURTA. O teto de palavras nao e enfeite — sem
+    # ele "me lembra de pagar o condominio dia 25" (8 palavras) entrava aqui
+    # por causa do "dia 25", virava correcao do boleto velho e o pedido real
+    # sumia. Correcao de dado e telegrafica; pedido e frase.
+    if (len(t) <= 60 and len(t.split()) <= 6 and re.search(r"\d{2,}", t)
+            # "reais"/"conto"/"pila" na lista: sem elas, "é 250 reais" nao era
+            # lido como correcao, a pendencia da foto virava lembrete e o
+            # motor ainda criava um item chamado "é" na lista da pessoa.
+            and re.search(r"(r\$|valor|vence|venc|dia|reais?|conto|pila|/|,\d{2})",
+                          t, re.I)
+            and not _PEDIDO_NOVO_RE.search(t)):
+        return True
+    return False
+
+
+def _armar_pending(phone: str, payload) -> None:
+    """Arma a decisao pendente COM hora. Decisao sem prazo vira jaula.
+
+    AUDITORIA v23.4 (P0-1 do auditor): sem carimbo de tempo, um PENDING de
+    dias antes continuava valendo e sequestrava a primeira mensagem seguinte
+    — foi assim que "me lembra de pagar o condominio dia 25" virou
+    "Feito. Arquivado como Despesa Paga" (o `"pag" in c` do menu casou com
+    "pagar") e o pedido real do Kevin foi descartado calado.
+    """
+    if not isinstance(payload, dict):
+        PENDING.pop(phone, None)
+        PENDING_EM.pop(phone, None)
+        PENDING_ERROS.pop(phone, None)
+        return
+    PENDING[phone] = payload
+    PENDING_EM[phone] = tempo.agora()
+    PENDING_ERROS.pop(phone, None)
+    # AUDITORIA v23.4 rodada 3 (P1-1): decisao nova mata pergunta velha. Sem
+    # este pop, a pessoa mandava foto DEPOIS da pergunta "qual deles?", via o
+    # menu 1/2 na tela, respondia "1" pra ele — e o "1" era capturado pela
+    # pergunta antiga, concluindo um item que ela nao citou e deixando o
+    # boleto da foto pendurado. Mesma regra que ja governa PENDING_EM.
+    BAIXA_ESCOLHA.pop(phone, None)
+
+
+def _pending_vencido(phone: str) -> bool:
+    armado = PENDING_EM.get(phone)
+    if armado is None:
+        return phone in PENDING     # sem carimbo (processo antigo): expira ja
+    try:
+        return (tempo.agora() - armado).total_seconds() > PENDING_TTL_S
+    except Exception:
+        return True
+
+
+def _alarme_depois_de(user: dict, quando) -> bool:
+    """Tocou algum alarme depois deste instante?"""
+    try:
+        alvo = db.ultimo_alarme_disparado(user["id"])
+        if not alvo:
+            return False
+        ultimo = db.ultimo_disparo_em(user["id"], alvo["id"])
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[baixa] falha ao datar o ultimo alarme", exc_info=True)
+        return False
+    return bool(ultimo and ultimo > quando)
+
+
+def _numero_ou_none(valor):
+    """Payload de decisao pendente nao e dado confiavel: veio do LLM/OCR."""
+    if valor is None:
+        return None
+    try:
+        return float(str(valor).replace("R$", "").replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+_DATA_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _data_iso_ou_none(valor):
+    """AUDITORIA v23.4 (P1-5 do auditor): '20/08/2026' gravado neste campo
+    derrubava o `check_overdue` INTEIRO (`map(int, venc.split("-"))`), e
+    ninguem — nenhum usuario — recebia aviso de vencimento naquele ciclo.
+    Data que nao e ISO nao entra no banco."""
+    if not valor:
+        return None
+    v = str(valor)[:10]
+    return v if _DATA_ISO_RE.match(v) else None
+
+
+def _resgatar_pendencia(user: dict, phone: str) -> str:
+    """Tira a decisao pendente do caminho sem perder o que havia nela.
+
+    Em 14/08 o payload preso no PENDING era de OUTRO assunto (uma foto de
+    dias antes). Ele sequestrou a conversa e, quando o Kevin respondeu "1",
+    virou uma "Despesa Paga" que ninguem tinha pago. Descartar calado
+    tambem nao serve: seria perder dado. Entao o item pendente e salvo como
+    LEMBRETE pendente — reversivel, e nao afirma nada que a pessoa nao disse.
+    """
+    pend = PENDING.pop(phone, None)
+    PENDING_ERROS.pop(phone, None)
+    PENDING_EM.pop(phone, None)
+    if not isinstance(pend, dict):
+        return ""
+    desc = (pend.get("descricao") or "").strip()
+    if not desc:
+        return ""
+    try:
+        db.add_item(user_id=user["id"], tipo="lembrete",
+                    categoria=pend.get("categoria") or "Outros",
+                    descricao=desc[:120],
+                    valor_reais=_numero_ou_none(pend.get("valor_reais")),
+                    data_vencimento=_data_iso_ou_none(
+                        pend.get("data_vencimento")),
+                    hora_alvo=pend.get("hora_alvo"),
+                    status="pendente")
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[pending] falha ao resgatar decisao pendente", exc_info=True)
+        return ""
+    return desc
+
+
+# P0-3 (11/08 23:44) — o motor devolveu JSON com `reply` vazio:
+#   {"intent":"conversa","reply":"","itens":[],...}
+# e a pessoa recebeu "Entendi, mas nao ficou claro o que voce gostaria de
+# registrar ou resolver. Tem algo especifico em mente?" — uma pergunta
+# generica logo depois de ela ter CONFIRMADO um item. O gatilho daquele dia
+# (botao "Isso mesmo") morreu no v23.3, mas o modo de falha nao: qualquer
+# resposta vazia do LLM ainda vira improviso.
+#
+# Resposta vazia nao pode virar pergunta improvisada. O Python sabe o estado
+# da conversa — usa o que sabe.
+def _resposta_de_emergencia(user: dict) -> str:
+    try:
+        pendentes = db.list_items(user["id"], status="pendente")
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[emergencia] falha ao ler pendentes", exc_info=True)
+        pendentes = []
+    # AUDITORIA v23.4 (P2-8 do auditor): `list_items` ordena por
+    # COALESCE(data_vencimento, data_criacao) — e data_criacao e datetime de
+    # HOJE, entao "comprar pao" (sem data, criado agora) passava na frente da
+    # luz que vence amanha. Chamar isso de "seu proximo pendente" e mentir.
+    # Proximo e o que tem data mais proxima; sem data nao ha "proximo".
+    com_data = [i for i in pendentes if i.get("data_vencimento")]
+    if com_data:
+        prox = com_data[0]
+        venc = ""
+        if prox.get("data_vencimento"):
+            venc = (f" (vence {prox['data_vencimento'][8:10]}/"
+                    f"{prox['data_vencimento'][5:7]})")
+        return (f"Tá guardado. 👍\n\n"
+                f"Seu próximo pendente é *{prox['descricao']}*{venc}. "
+                f"Se quiser, responda *feito* que eu dou baixa.")
+    return ("Tá guardado. 👍\n\n"
+            "Se quiser me passar mais alguma coisa, é só mandar — conta, "
+            "consulta, lembrete.")
 
 
 def _nao_e_nome_de_formulario(nome: str) -> bool:
@@ -1846,17 +2364,82 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     if status == "trial" and db.trial_days_left(user, TRIAL_DAYS) <= 0:
         TRIAL_VENCIDO[phone] = first_name
 
+    # --- BAIXA: Python, e antes de qualquer decisao pendente ---------------
+    # O bot PEDE a palavra no alarme ("responda feito"). Recusar a propria
+    # palavra que pediu foi o pior bug do produto: aconteceu 3x com o Kevin.
+    # AUDITORIA v23.4 (P0-3 do auditor): a guarda era `not onboarding_step`,
+    # mas "done" tambem e cadastro fechado — e a base antiga tem esse valor
+    # (ver db.py:305/384 e o comentario do reconsentimento). Com a guarda
+    # velha, quem tem "done" recebia o menu 1/2 no lugar da baixa: a correcao
+    # inteira ficava desligada, em silencio, justo pros usuarios mais antigos.
+    _cadastro_fechado = (user.get("onboarding_step") or "done") == "done"
+    if kind == "texto" and _cadastro_fechado:
+        # o numero respondido a "qual deles eu dou baixa?" vem primeiro: e a
+        # resposta a uma pergunta que o bot acabou de fazer.
+        _esc = _escolha_de_baixa(user, phone, content)
+        if _esc:
+            return {"number": phone, "text": _esc}
+        _baixa = _baixa_deterministica(user, phone, content)
+        if _baixa:
+            return {"number": phone, "text": _baixa}
+
+    # Decisao pendente vencida nao decide mais nada: solta antes de tudo.
+    if kind == "texto" and phone in PENDING and _pending_vencido(phone):
+        _velho = _resgatar_pendencia(user, phone)
+        if _velho:
+            _enviar_avulsa(
+                phone,
+                f"_(Aquela pendência de *{_velho}* ficou sem resposta, "
+                f"então guardei como lembrete pra não perder.)_",
+                user.get("id"))
+
     # --- decisão pendente (menu 1/2) tem prioridade -----------------------
     if kind == "texto" and phone in PENDING:
-        result = ai_engine.converse(
-            user["id"], first_name, "decisao", content,
-            pending=PENDING[phone],
-        )
-        if not result["needs_decision"]:
-            PENDING.pop(phone, None)
+        # Adiar tambem nao pode ser sequestrado: quem respondeu "adiar 1h" ao
+        # alarme nao esta respondendo ao menu de despesa. Solta a decisao e
+        # deixa o fluxo de snooze (M1.5) fazer o trabalho dele.
+        if _ADIOU_RE.match(content.strip()) and db.ultimo_alarme_disparado(
+                user["id"]):
+            _resgatar_pendencia(user, phone)
+        elif not _e_resposta_de_menu(content, PENDING[phone]):
+            # AUDITORIA v23.4 (P0-1 do auditor): o menu aceitava QUALQUER
+            # coisa como resposta — `"pag" in c` fazia "me lembra de pagar o
+            # condominio" virar "Despesa Paga" e o pedido real sumia. Quem
+            # decide se aquilo e resposta de menu e Python, e o criterio e
+            # estreito: 1, 2, o titulo do botao ou uma correcao com numero.
+            _resg = _resgatar_pendencia(user, phone)
+            if _resg:
+                _enviar_avulsa(
+                    phone,
+                    f"_(Guardei *{_resg}* como lembrete — a gente resolve "
+                    f"depois.)_", user.get("id"))
         else:
-            PENDING[phone] = result["pending_payload"]
-        return {"number": phone, "text": result["reply"]}
+            result = ai_engine.converse(
+                user["id"], first_name, "decisao", content,
+                pending=PENDING[phone],
+            )
+            if not result["needs_decision"]:
+                PENDING.pop(phone, None)
+                PENDING_ERROS.pop(phone, None)
+                PENDING_EM.pop(phone, None)
+                return {"number": phone, "text": result["reply"]}
+            # Menu que nao entendeu a resposta NAO pode se re-armar pra
+            # sempre: foi assim que o Kevin ficou 3 dias preso. Depois de
+            # PENDING_MAX_ERROS tentativas o bot solta a decisao, salva o
+            # item como lembrete (nada se perde) e trata a mensagem atual
+            # como uma mensagem normal.
+            _erros = PENDING_ERROS.get(phone, 0) + 1
+            if _erros < PENDING_MAX_ERROS:
+                _armar_pending(phone, result["pending_payload"])
+                PENDING_ERROS[phone] = _erros
+                return {"number": phone, "text": result["reply"]}
+            _resg = _resgatar_pendencia(user, phone)
+            if _resg:
+                _enviar_avulsa(
+                    phone,
+                    f"Deixei *{_resg}* guardado como lembrete pra não perder. "
+                    f"Se já pagou, é só me dizer que eu dou baixa. 👍",
+                    user.get("id"))
 
     # --- 1b. CLIQUE NOS BOTOES DE CONFIRMACAO -----------------------------
     # Deterministico, e antes do motor. Sem isto o titulo do botao vira
@@ -1867,7 +2450,14 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     # depois do bloco de decisao PENDENTE. Acima deles, este ACK responderia
     # a usuario bloqueado, roubaria a mensagem de quem cancelou, e engoliria
     # a resposta de uma decisao pendente — deixando o PENDING travado.
-    if kind == "texto" and not user.get("onboarding_step"):
+    #
+    # AUDITORIA v23.4 rodada 2 (P0-3): a guarda aqui era `not onboarding_step`
+    # e deixava a base antiga (step="done") fora de TUDO que esta neste bloco
+    # — kits, delegacao, ACK de botao, resposta ao escalonamento e, o pior, o
+    # CONTADOR de adiamento do M1.5. Medido: 4 "adiar" seguidos com
+    # step="done" davam adiamentos=0, silenciado=False. O escalonamento
+    # inteiro era codigo inalcancavel pra essa base.
+    if kind == "texto" and _cadastro_fechado:
         # M1.3 — toque na lista de kits. Vem antes do motor pelo mesmo
         # motivo do ACK: o titulo da lista chega como texto livre e o LLM
         # nao tem como saber que aquilo foi um toque, nao uma frase.
@@ -1913,6 +2503,7 @@ def handle_incoming(payload: dict) -> Optional[dict]:
         # M1.5 — CONTA o adiamento. Sem contador nao existe terceira vez, e
         # sem terceira vez o escalonamento nunca acontece.
         if _ADIOU_RE.match(content.strip()):
+            _calou = ""
             try:
                 _alvo = (db.ultimo_alarme_disparado(user["id"])
                          or db.ultimo_item(user["id"]))
@@ -1921,11 +2512,22 @@ def handle_incoming(payload: dict) -> Optional[dict]:
                     if _n > db.SNOOZE_LIMITE:
                         # passou do limite e ainda empurrou: para de tocar.
                         db.silenciar_item(_alvo["id"], user["id"])
-                        SILENCIOU_AGORA[phone] = (_alvo.get("descricao") or "")
+                        _calou = (_alvo.get("descricao") or "").strip()
             except Exception:
                 import logging
                 logging.getLogger("resolveai").warning(
                     "[snooze] falha ao registrar adiamento", exc_info=True)
+            # AUDITORIA v23.4 (P1-7 do auditor): o silenciamento era gravado
+            # num dicionario que NINGUEM lia (`SILENCIOU_AGORA`, escrito e
+            # nunca consumido em todo o repo). Ou seja: o bot parava de tocar
+            # pra sempre e a pessoa continuava achando que seria lembrada.
+            # Parar de tocar e legitimo; nao avisar e falha silenciosa.
+            if _calou:
+                return {"number": phone, "text":
+                        (f"Beleza — paro de te cobrar sobre *{_calou}*. 🤝\n\n"
+                         f"Ele continua na sua lista, sem alarme. Quando "
+                         f"quiser, me diga _\"me lembra de {_calou[:40]}\"_ "
+                         f"que eu volto a avisar.")}
 
         ack = _resposta_de_botao(user, phone, content)
         if ack:
@@ -1972,7 +2574,7 @@ def handle_incoming(payload: dict) -> Optional[dict]:
             user["id"], first_name, kind, content, instruction=instruction
         )
         if result["needs_decision"]:
-            PENDING[phone] = result["pending_payload"]
+            _armar_pending(phone, result["pending_payload"])
         return {"number": phone, "text": result["reply"]}
 
     elif kind == "documento":
@@ -2045,17 +2647,27 @@ def handle_incoming(payload: dict) -> Optional[dict]:
             # Concluir e ADIAR sao acoes destrutivas/irreversiveis pra quem
             # esta usando. Quem decide isso e Python lendo a palavra do
             # usuario, nao o LLM interpretando intencao.
-            v8 = _travar_acao_destrutiva(content if kind == "texto" else "", v8)
+            v8 = _travar_acao_destrutiva(
+                content if kind == "texto" else "", v8, user)
             _aplicar_v8(user["id"], v8)
             if v8.get("needs_decision"):
-                PENDING[phone] = v8.get("pending_payload")
-            return {"number": phone, "text": v8["reply"]}
+                _armar_pending(phone, v8.get("pending_payload"))
+            return {"number": phone,
+                    "text": ((v8.get("reply") or "").strip()
+                             or _resposta_de_emergencia(user))}
 
     # Texto e áudio passam pela camada de interpretação clássica (intenção + banco)
-    result = ai_engine.converse(user["id"], first_name, kind, content)
+    result = ai_engine.converse(
+        user["id"], first_name, kind, content,
+        # Mesma regra da _travar_acao_destrutiva, agora TAMBEM no caminho
+        # degradado (v8 fora do ar): "feito isso, me avisa" nao fecha nada.
+        permitir_conclusao=not _baixa_sem_alvo(
+            user, content if kind == "texto" else ""))
     if result["needs_decision"]:
-        PENDING[phone] = result["pending_payload"]
-    return {"number": phone, "text": result["reply"]}
+        _armar_pending(phone, result["pending_payload"])
+    return {"number": phone,
+            "text": ((result.get("reply") or "").strip()
+                     or _resposta_de_emergencia(user))}
 
 
 _ADIAR_RE = re.compile(
@@ -2078,7 +2690,7 @@ _PARECE_CONTEUDO_RE = re.compile(
     r"(,\s*\S+\s*,)|(\b\d{2,}\b.*\b\d{2,}\b)|(\bnormalmente\b)|(\bou\b.*\bou\b)", re.I)
 
 
-def _travar_acao_destrutiva(texto: str, v8: dict) -> dict:
+def _travar_acao_destrutiva(texto: str, v8: dict, user: dict) -> dict:
     """Impede o LLM de concluir/adiar quando o usuario nao pediu aquilo.
 
     Dois estragos reais em 05/08:
@@ -2105,6 +2717,23 @@ def _travar_acao_destrutiva(texto: str, v8: dict) -> dict:
         _lg.getLogger("resolveai").warning(
             "[trava] usuario pediu ADIAR e o motor tentou CONCLUIR")
         return v8
+
+    # AUDITORIA v23.4: "feito isso, me avisa" nao conclui nada. Palavra de
+    # baixa seguida de FRASE (virgula ou mais de 4 palavras) e alguem
+    # combinando a proxima etapa, nao fechando item. O caminho
+    # deterministico ja recusa isso; aqui a mesma regra vale pro LLM.
+    # AUDITORIA v23.4 rodada 4: a mesma pergunta do caminho degradado. Se o
+    # Python olhou a lista e nao achou o item que a pessoa nomeou, o LLM
+    # tambem nao conclui.
+    #
+    # `user` e OBRIGATORIO (rodada 5, P2-2): quando era opcional, chamar sem
+    # ele desligava a regra da baixa em silencio — a trava continuava de pe
+    # so pro adiar. Parametro opcional que desliga protecao e buraco mudo
+    # esperando o proximo refactor.
+    if v8.get("concluir") and _baixa_sem_alvo(user, t):
+        v8.pop("concluir", None)
+        _lg.getLogger("resolveai").info(
+            "[trava] palavra de baixa sem alvo identificavel: %r", t[:60])
 
     # O LLM entendeu que era baixa. Python so vetoa se houver sinal claro
     # de que NAO era — nao tenta reinterpretar a frase por conta propria.
@@ -2562,6 +3191,39 @@ def maybe_admin_report() -> bool:
 DASH_URL_BASE = os.environ.get("DASH_URL_BASE", "").rstrip("/")
 
 
+def _linha_risco(env: dict) -> str:
+    """P1-5 — a régua tem que dizer POR QUE está naquela cor.
+
+    Antes: "🔴 alto · pico 1/min · 9 proativas" — o número mostrado não era o
+    número que decidiu a cor. Agora o motivo vem primeiro e os brutos ficam
+    entre parênteses, pra conferência.
+    """
+    motivo = env.get("motivo") or "ritmo normal"
+    return (f"{env['risco']} Número: {motivo}\n"
+            f"_(24h: {env['proativas']} proativas · {env['entradas']} "
+            f"recebidas · pico {env['pico_por_minuto']}/min)_")
+
+
+def _linha_engajamento(eng: dict, total_users: int = 0) -> str:
+    """P1-6 — "0 pessoa(s)" e "11 pessoa(s)" na mesma tela.
+
+    As duas contas estavam certas e mediam coisas diferentes: 11 é a base
+    cadastrada, 0 é quem mandou mensagem nos últimos 7 dias sem contar o
+    dono. O que faltava era a copy dizer isso. Métrica que se contradiz na
+    tela é métrica que ninguém usa pra decidir.
+    """
+    ativos = eng.get("pessoas", 0)
+    # A base tem que ser a MESMA populacao que o numerador: se o dono sai de
+    # um lado, sai do outro. `base_comparavel` ja vem descontada do db.
+    base = eng.get("base_comparavel")
+    if base is None:
+        base = total_users
+    sem_dono = " (sem contar você)" if eng.get("dono_excluido") else ""
+    return (f"*{eng['por_pessoa_dia']}* demandas por pessoa/dia\n"
+            f"_(7d · {ativos} de {base} pessoa(s) mandaram algo"
+            f"{sem_dono})_")
+
+
 def relatorio_matinal() -> bool:
     """O dash resumido no WhatsApp, todo dia às 8h. 1x por dia.
 
@@ -2601,15 +3263,13 @@ def relatorio_matinal() -> bool:
     # 1. o que pode estar quebrado
     linhas.append(f"{'🟢' if wa == 'open' else '🔴'} WhatsApp: "
                   f"{'conectado' if wa == 'open' else wa.upper() + ' — REESCANEIE O QR'}")
-    linhas.append(f"{env['risco']} Número: pico {env['pico_por_minuto']}/min "
-                  f"· {env['proativas']} proativas em 24h")
+    linhas.append(_linha_risco(env))
     if ontem.get("falhas"):
         linhas.append(f"⚠️ *{ontem['falhas']} falha(s) de envio* ontem")
     linhas.append("")
     # 2. o que decide o negócio
     linhas.append(f"{eng['veredito']}")
-    linhas.append(f"*{eng['por_pessoa_dia']}* demandas por pessoa/dia "
-                  f"_(7d · {eng['pessoas']} pessoa(s))_")
+    linhas.append(_linha_engajamento(eng, m.get("total_users", 0)))
     linhas.append("")
     # 3. movimento
     linhas.append(f"*Ontem:* {ontem.get('novos', 0)} novo(s) · "

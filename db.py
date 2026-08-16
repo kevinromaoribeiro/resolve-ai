@@ -842,6 +842,28 @@ def ultimo_alarme_disparado(user_id: int,
     return dict(row) if row else None
 
 
+def ultimo_disparo_em(user_id: int, item_id: int) -> Optional[datetime]:
+    """Quando o alarme deste item tocou pela ultima vez.
+
+    Existe para responder UMA pergunta: o alarme e mais novo que a decisao
+    pendente que esta na tela? Quem chegou por ultimo e que manda — sem isso
+    a palavra "pago" era roubada do menu da foto e concluia outro item.
+    """
+    with get_conn() as conn:
+        r = conn.execute(
+            """SELECT sent_at FROM dispatches
+               WHERE user_id=? AND item_id=?
+                 AND kind IN ('hora','vencimento','vencido')
+               ORDER BY sent_at DESC, id DESC LIMIT 1""",
+            (user_id, item_id)).fetchone()
+    if not r or not r[0]:
+        return None
+    try:
+        return datetime.strptime(str(r[0])[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
 def last_alarmed_item(user_id: int) -> Optional[dict]:
     """Ultimo item que o bot ALARMOU e ainda esta pendente - o alvo natural
     de um 'feito' ou 'adiar' logo apos o alarme tocar. Prioriza o item cujo
@@ -1015,6 +1037,15 @@ def log_message(user_id, telefone, direcao, tipo, preview):
         pass
 
 
+# Limiares do termômetro anti-bloqueio. Ficam aqui, com nome, porque são
+# regra de negócio: quem muda o número tem que ver o motivo ao lado.
+# Calibrados no incidente de 04/08 (restrição da Meta com pico de 4/min).
+PICO_ALTO = 10          # msg no mesmo minuto: assinatura de robô
+PICO_ATENCAO = 6
+RAZAO_ALTA = 3.0        # proativas por mensagem recebida: broadcaster
+RAZAO_ATENCAO = 1.5
+
+
 def pulso_envio(horas: int = 24) -> dict:
     """Termômetro anti-bloqueio: o quanto o número está "falando" sozinho.
 
@@ -1049,12 +1080,23 @@ def pulso_envio(horas: int = 24) -> dict:
     # Bot que só responde é seguro; bot que só inicia é broadcaster.
     razao = round(proativas / entradas, 2) if entradas else (
         999 if proativas else 0)
-    if pico >= 10 or razao >= 3:
-        risco = "🔴 alto"
-    elif pico >= 6 or razao >= 1.5:
-        risco = "🟡 atenção"
+    # P1-5 (relatório de 13/08): a régua saía assim, e se lia como mentira —
+    #     12/08  🟢 ok    pico 4/min · 6 proativas em 24h
+    #     13/08  🔴 alto  pico 1/min · 9 proativas em 24h
+    # Pico 4 verde e pico 1 vermelho. A conta estava certa (o 13/08 fechou no
+    # RITMO proativo, não no pico), mas quem lê só via os dois números que o
+    # texto mostrava. Número que o Kevin lê todo dia e não confia é pior que
+    # número nenhum: agora quem decide o risco DIZ o que decidiu.
+    if pico >= PICO_ALTO:
+        risco, motivo = "🔴 alto", f"pico de {pico} msg no mesmo minuto"
+    elif razao >= RAZAO_ALTA:
+        risco, motivo = "🔴 alto", f"{razao}x mais proativas que respostas"
+    elif pico >= PICO_ATENCAO:
+        risco, motivo = "🟡 atenção", f"pico de {pico} msg no mesmo minuto"
+    elif razao >= RAZAO_ATENCAO:
+        risco, motivo = "🟡 atenção", f"{razao}x mais proativas que respostas"
     else:
-        risco = "🟢 ok"
+        risco, motivo = "🟢 ok", "ritmo normal"
     return {
         "janela_horas": horas,
         "pico_por_minuto": pico,
@@ -1062,6 +1104,7 @@ def pulso_envio(horas: int = 24) -> dict:
         "entradas": entradas,
         "proativas": proativas,
         "razao_proativa_por_recebida": razao,
+        "motivo": motivo,
         "usuario_mais_notificado": (dict(zip(("user_id", "n"), pior_user))
                                     if pior_user else None),
         "risco": risco,
@@ -1153,7 +1196,16 @@ def engajamento(excluir_telefones: Optional[list] = None) -> dict:
             (ini,)).fetchone()
         total = int(rt[0]) if rt else 0
     por_dia = round(n / (u * 7), 2) if u else 0.0
+    # BASE COMPARÁVEL (auditoria v23.4, P2-9): o denominador do painel era
+    # COUNT(*) FROM users, que INCLUI o dono — enquanto `pessoas` o exclui.
+    # Dava "0 de 11 (sem contar você)" com o você dentro dos 11. Duas contas
+    # certas medindo populações diferentes é o jeito mais fácil de fazer o
+    # dono parar de confiar no próprio painel.
+    with get_conn() as conn:
+        r_tot = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+    base = max(0, int(r_tot[0] if r_tot else 0) - len(ids_fora))
     return {"despejos_7d": n, "pessoas": u, "por_pessoa_dia": por_dia,
+            "base_comparavel": base,
             "dono_excluido": bool(ids_fora),
             "mensagens_do_dono_7d": max(0, total - n),
             "veredito": ("🟢 virou hábito" if por_dia >= 2 else
