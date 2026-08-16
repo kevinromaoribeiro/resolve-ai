@@ -43,7 +43,40 @@ entende, guarda e avisa **antes** de vencer.
 
 - 11 usuários em trial, **0 pagantes**
 - MRR R$ 0,00 · custo ~R$ 101/mês · empata com 6 assinantes
-- Produção: `v23.3-motor1-auditado-2026-08-15`
+- Produção: `v23.4-fase1-baixa-deterministica-2026-08-16` (commit `63fb753`,
+  BUILD confirmado no `/health`: status ok · whatsapp open · llm on)
+
+### O que a FASE 1 fechou (16/08/2026)
+
+Baixa (`feito`) virou regra de Python, antes de qualquer decisão pendente e com
+suporte a `feito + nome do item`. Decisão pendente ganhou prazo (20 min) e porta
+estreita — o menu 1/2 só aceita resposta de menu, e o que sobra dele vira lembrete,
+nunca "despesa paga". Base antiga (`onboarding_step="done"`) voltou a receber baixa
+e o M1.5 inteiro, que estavam desligados em silêncio pra ela.
+
+**Agora existe suíte de testes.** `tests/`, 98 casos que executam o `handle_incoming`
+contra SQLite de verdade. Rodar antes de cada deploy:
+
+```
+.venv\Scripts\python.exe -m pytest tests/ -q
+```
+
+Contra o v23.3 original, 60 desses testes falham — é a medida do que a fase consertou.
+O auditor rodou 5 vezes e reprovou 3; **duas das reprovações foram em consertos da
+própria fase**, não no código original. Auditoria de conserto não é formalidade.
+
+Armadilha de teste que já custou uma rodada: `wa_bot` faz `import canal as wasender`,
+e `canal.py` amarra as funções no import (`send_text = _mod.send_text`). Patch no
+módulo `wasender` **não** chega no `wa_bot` — o alvo certo é `canal`. Teste que acha
+que cortou a rede e não cortou manda mensagem de verdade.
+
+### Backlog declarado (não é bug novo, é dívida conhecida)
+
+- Caminho degradado (v8 fora do ar) grava descrição suja: `paguei a conta de luz 187`
+  vira item chamado `a conta de luz 187`, sem valor. Nada some, e a resposta avisa.
+- `app.py` (painel) não passa pela trava de conclusão — painel e WhatsApp divergem.
+- `teste_v16_7.py` falha todo mês: assume que "vence 15" não rolou pro mês seguinte.
+  Falha igual no v23.3; não é regressão.
 
 O número disso importa: **cada bug que chega no usuário custa um dos 11.** Não há base pra
 absorver erro. E o número do WhatsApp já levou **duas restrições da Meta** — a terceira é
