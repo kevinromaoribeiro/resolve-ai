@@ -73,6 +73,17 @@ _REGRAS = [
          ("N\u00e3o concordo", "n\u00e3o concordo")],
     ),
     (
+        "escalonamento_snooze",
+        # M1.5 — PRIMEIRA entre as de alarme de proposito. Depois de tres
+        # adiamentos a mensagem nao e mais "chegou a hora", e uma pergunta
+        # de duas saidas. Se a regra do alarme casasse antes, a pessoa
+        # receberia "Feito / Adiar 1h" numa mensagem que nao oferece isso —
+        # botao que nao responde a pergunta e pior que nenhum botao.
+        re.compile(r"remarcar\* ou \*tirar da lista|n\u00e3o \u00e9 prioridade", re.I),
+        [("\U0001F4C5 Remarcar", "remarcar"),
+         ("\u2716\uFE0F Tirar da lista", "tirar da lista")],
+    ),
+    (
         "alarme_na_hora",
         # "\u23f0 DC, chegou a hora: *Comprar racao* — voce me pediu pra
         #  avisar as 17:30. Responda *feito* que eu dou baixa, ou *adiar 1h*."
