@@ -215,3 +215,41 @@ def test_veto_avisa_qual_conta_ficou_pendente(usuario, monkeypatch):
     reply = _foto(monkeypatch, _comprovante("SABESP", "92,10", venc), "AV2")
     assert "Saneamento" in reply and "paguei" in reply.lower(), (
         f"a conta continuou pendente e a mensagem nao deu sinal: {reply!r}")
+
+
+# --- trava do P1-7 da auditoria do M2.2: rotulo composto -----------------
+
+@pytest.mark.parametrize("empresa", [
+    "Supermercado Total Atacado 2 Ltda",
+    "Colegio Data Vida 3 Marias",
+    "Escola Recibo Azul 2 Irmaos Ltda",
+    "Financeira Valor Justo 10 Ltda",
+    "Cooperativa de Credito Valor Mais",
+    "Enel Distribuicao Sao Paulo",
+    "Light Servicos",
+])
+def test_razao_social_nao_e_truncada_por_rotulo_composto(empresa):
+    """O elo do rotulo composto ("Vencimento DO TITULO: 21/09") com o
+    conectivo OPCIONAL aceitava duas palavras quaisquer entre o rotulo e o
+    numero — e truncava razao social: "Supermercado Total Atacado 2 Ltda"
+    virava "Supermercado". Nome truncado reabre o item fantasma."""
+    import boleto
+    texto = (f"Boleto Ficha de Compensacao. Beneficiario: {empresa}. "
+             f"Vencimento do titulo: 20/09/2026. "
+             f"Valor do Documento R$ 100,00")
+    benef = (boleto.extrair(texto).get("beneficiario") or "").rstrip(".")
+    assert benef.lower().startswith(empresa.split()[0].lower()), benef
+    assert len(benef.split()) >= len(empresa.split()) - 1, (
+        f"'{empresa}' foi truncado para {benef!r}")
+
+
+@pytest.mark.parametrize("texto,proibido", [
+    ("Boleto. Beneficiario: Enel Distribuicao. Vencimento do titulo: "
+     "20/09/2026. Valor do Documento R$ 100,00", "vencimento"),
+    ("Boleto. Beneficiario: SABESP. Data do pagamento: 20/08/2026. "
+     "Valor do Documento R$ 100,00", "pagamento"),
+])
+def test_rotulo_composto_continua_sendo_cortado(texto, proibido):
+    import boleto
+    benef = (boleto.extrair(texto).get("beneficiario") or "").lower()
+    assert proibido not in benef, benef

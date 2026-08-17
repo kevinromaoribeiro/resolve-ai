@@ -31,6 +31,7 @@ import tempo         # noqa: E402
 import wa_bot        # noqa: E402
 import wasender      # noqa: E402
 import canal         # noqa: E402
+import calendario    # noqa: E402
 import meta_cloud    # noqa: E402
 import motor_v8      # noqa: E402
 
@@ -79,6 +80,12 @@ def limpo(monkeypatch):
     # sobrescreve `motor_v8.route`. Assim nenhum teste vira chamada paga.
     monkeypatch.setattr(motor_v8, "route",
                         lambda *a, **kw: None, raising=False)
+    # NADA A CORTAR AQUI (M2.2, rodada 2): o `calendario` deixou de ter
+    # fonte externa. A defesa contra rede em teste virou um teste que
+    # instrumenta o `httpx` inteiro e roda os caminhos de produção — vigiar
+    # o alvo em vez do dublê. Ver test_nenhum_caminho_de_producao_vai_na_rede.
+    assert not hasattr(calendario, "_buscar_feriados_online"), (
+        "voltou fonte externa ao calendario: reative o corte de rede aqui")
     yield enviadas
 
 

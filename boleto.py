@@ -332,7 +332,19 @@ def _beneficiario(texto: str, campos: dict) -> Optional[str]:
     _corte = re.search(
         r"(?i)\s\b(?:vencimento|vence|venc|vcto|valor|nosso\s+n[úu]mero|"
         r"data|linha|c[óo]digo|cnpj|cpf|ag[êe]ncia|pagamento|refer[êe]nte|"
-        r"recibo|total|autentica[çc][ãa]o|pag[oa]\s+em)\b\s*[:\d]", bruto)
+        r"recibo|total|autentica[çc][ãa]o|pag[oa]\s+em)\b"
+        # Rótulo composto: "Vencimento DO TÍTULO: 21/09", "Data DO
+        # PAGAMENTO: ...". Exigindo `[:\d]` colado, esses passavam inteiros
+        # pro nome do beneficiário.
+        #
+        # O CONECTIVO É OBRIGATÓRIO no elo. Com ele opcional, o padrão
+        # aceitava DUAS PALAVRAS QUAISQUER entre o rótulo e o número — e aí
+        # truncava razão social legítima: "Supermercado Total Atacado 2
+        # Ltda" virava "Supermercado", "Colegio Data Vida 3 Marias" virava
+        # "Colegio". Nome truncado reabre o item fantasma do M2.1 (duas
+        # contas com a mesma descrição e a mesma frase de baixa). Rótulo
+        # composto real sempre tem o conectivo; razão social não.
+        r"(?:\s+d[eoa]s?\s+\w+){0,2}\s*[:\d]", bruto)
     if _corte and _corte.start() > 0:
         bruto = bruto[:_corte.start()]
 

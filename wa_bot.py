@@ -39,6 +39,7 @@ import db
 import textos
 import ai_engine
 import boleto  # M2.1: le conta de foto/PDF. Le e lembra — nunca paga.
+import calendario  # M2.2: datas que o bot sabe sozinho (IPVA, feriados)
 import scheduler
 import canal as wasender  # camada de canal: Meta oficial OU WasenderAPI (ver canal.py)
 import meta_cloud  # handshake e assinatura do webhook da Meta
@@ -51,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v23.6.3-m21-boleto-2026-08-16"
+BUILD = "v23.7-m22-calendario-2026-08-17"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -2269,6 +2270,136 @@ def _sugestao_de_baixa(descricao: str) -> str:
     return "paguei " + " ".join(palavras[:2]) if palavras else "paguei"
 
 
+# M2.2 — só entra no caminho do calendário quem FALOU de placa/IPVA. Sem
+# esta guarda, qualquer texto com 3 letras e 4 dígitos ("nota 1234 do ABC")
+# viraria pedido de lembrete de carro.
+_PLACA_PEDIDO_RE = re.compile(
+    r"\b(placa|ipva|licenciamento|emplacamento)\b", re.I)
+
+
+def _lembretes_do_calendario(user: dict, texto: str) -> Optional[str]:
+    """Placa -> IPVA e licenciamento, com data de tabela.
+
+    INVARIANTE DO BLOCO (M2.2): fonte fora do ar não pode fazer lembrete
+    sumir NEM nascer com data errada. Aqui isso vira três recusas:
+      - sem tabela do ano, não cria nada (o calendário muda todo ano; usar o
+        do ano passado é o jeito mais fácil de avisar no dia errado);
+      - data no passado não vira lembrete (nasceria vencido e cobraria na
+        hora);
+      - item que a PESSOA já criou não é tocado — o bot não corrige o dono.
+    """
+    final = calendario.final_da_placa(texto)
+    if final is None:
+        return None
+    hoje = tempo.hoje()
+    try:
+        venc = (calendario.vencimentos("SP", final, hoje.year)
+                + calendario.vencimentos("SP", final, hoje.year + 1))
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[calendario] falha ao consultar a tabela", exc_info=True)
+        venc = []
+    if not venc:
+        return ("Anotei o final *" + str(final) + "* da sua placa. 🚗\n\n"
+                "Ainda não tenho o calendário oficial desse ano aqui — "
+                "quando sair, eu te aviso. Se você já sabe a data, me manda "
+                "que eu guardo (_\"IPVA vence 20/03\"_).")
+
+    # SÓ A PRÓXIMA OCORRÊNCIA DE CADA TIPO.
+    #
+    # A consulta cobre dois anos (o corrente e o seguinte) porque em agosto
+    # o IPVA que interessa já é o do ano que vem. Mas para os finais 9 e 0 o
+    # licenciamento dos DOIS anos ainda está no futuro — e aí nasciam dois
+    # itens com a descrição idêntica ("Licenciamento (final 9)"). Três
+    # estragos de uma vez: lista com dois itens indistinguíveis, `ver tudo`
+    # sem o ano, e a BAIXA quebrada — "feito Licenciamento" não fechava
+    # nenhum e ainda criava um item chamado "feito Licenciamento".
+    #
+    # No bot cujo contrato é "me diz *feito* que eu tiro da sua lista", isso
+    # é o pior defeito possível. E lembrete com 16 meses de antecedência não
+    # é serviço nenhum: quando chegar a hora, o do ano seguinte é criado.
+    futuros = [v for v in venc if v["data"] >= hoje.isoformat()]
+    proximos = {}
+    for v in sorted(futuros, key=lambda x: x["data"]):
+        proximos.setdefault(v["tipo"], v)
+    venc = list(proximos.values())
+
+    criados = []
+    ja_tinha = False
+    for v in venc:
+        if v["data"] < hoje.isoformat():
+            continue                       # não nasce vencido
+        # JÁ TEM = mesmo assunto NO MESMO ANO, em qualquer status.
+        #
+        # Comparar sem o ANO fazia o IPVA de 2026 já concluído bloquear a
+        # criação do IPVA de 2027 — quem usa o produto direito (deu baixa
+        # quando pagou) era exatamente quem perdia o lembrete do ano
+        # seguinte, e a resposta abria com "Pronto, guardei" listando só o
+        # outro item: não havia como perceber.
+        #
+        # SEM filtro de status. Quem resolve o P1-4 (item do ano passado
+        # bloqueando o do ano novo) é a comparação de ANO, sozinha — medido
+        # por mutação. Filtrar por `pendente` tornava invisível o item que a
+        # pessoa FECHOU, e o bot recriava idêntico: em SP existe desconto
+        # por antecipação, então pagar o IPVA do ano seguinte em dezembro e
+        # dar baixa é o comportamento premiado — e era exatamente ele que
+        # ganhava um item fantasma de volta.
+        try:
+            ja_tem = [i for i in db.list_items(user["id"])
+                      if v["tipo"] in (i.get("descricao") or "").lower()
+                      and (i.get("data_vencimento") or "")[:4] == v["data"][:4]]
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[calendario] falha ao checar itens existentes",
+                exc_info=True)
+            ja_tem = [1]                   # na dúvida, não mexe
+        if ja_tem:
+            ja_tinha = True
+            continue
+        try:
+            db.add_item(user_id=user["id"], tipo="lembrete",
+                        # "Carro" NÃO existe em db.VALID_CATEGORIES: era
+                        # trocado por "Outros" em silêncio, e o dash de
+                        # gastos por categoria perdia o veículo.
+                        categoria="Veículo", descricao=v["rotulo"],
+                        data_vencimento=v["data"], status="pendente")
+            criados.append(v)
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[calendario] falha ao gravar %s", v["tipo"], exc_info=True)
+
+    if not criados:
+        # Distinguir "já está na lista" de "o calendário acabou". Sem isso,
+        # de julho a dezembro do último ano da tabela o bot afirmava ter
+        # itens que não tinha — justamente quando a manutenção anual está
+        # atrasada e o aviso mais importa.
+        if ja_tinha:
+            return ("Esses eu já tenho na sua lista. 👍 Se quiser conferir, "
+                    "manda *ver tudo*.")
+        return ("Anotei o final *" + str(final) + "* da sua placa. 🚗\n\n"
+                "As datas que eu tinha pra esse final já passaram, e o "
+                "calendário do ano que vem ainda não saiu. Quando sair, eu "
+                "te aviso — ou me manda a data que você souber.")
+    def _linha(v):
+        # COM O ANO: uma mensagem só lista datas de anos diferentes (o
+        # licenciamento deste ano e o IPVA do que vem). Sem o ano, "19/01"
+        # lida em agosto parece data que já passou.
+        base = (f"• *{v['rotulo']}* — {v['data'][8:10]}/{v['data'][5:7]}/"
+                f"{v['data'][:4]}")
+        fer = calendario.aviso_de_feriado(v["data"])
+        if not fer:
+            return base
+        artigo = "no" if fer in ("sábado", "domingo") else "em"
+        return f"{base} _(cai {artigo} {fer} — banco fechado)_"
+    linhas = "\n".join(_linha(v) for v in criados)
+    return (f"Pronto 🚗 Guardei pelo final da sua placa:\n\n{linhas}\n\n"
+            f"Eu te aviso antes de cada uma. _(Calendário de SP; se o seu "
+            f"carro é de outro estado, me diz a data certa que eu ajusto.)_")
+
+
 def _registrar_documento_financeiro(user: dict, phone: str, texto_lido: str,
                                     legenda: str = "") -> Optional[str]:
     """M2.1 — foto/PDF de conta vira item com data. Nunca vira pagamento.
@@ -2375,6 +2506,18 @@ def _registrar_documento_financeiro(user: dict, phone: str, texto_lido: str,
         # lembrete cobrasse. A escolha registrada no DECISOES.md é ficar com
         # o erro corrigível; então ele precisa aparecer na hora, com o
         # comando pronto.
+        # P2-1 DA AUDITORIA DO M2.1, CONSIDERADO E RECUSADO.
+        #
+        # O auditor apontou que a dica pode nomear justamente o par que o
+        # veto recusou. É verdade — e é de propósito. As duas coisas não são
+        # a mesma: o VETO impede o bot de decidir sozinho; a DICA entrega a
+        # decisão pra pessoa, com a conta nomeada por extenso e uma frase
+        # condicional que ela precisa digitar.
+        #
+        # Suprimir a dica no caso do veto tira exatamente a correção que a
+        # decisão registrada no DECISOES.md promete ("fico com o erro
+        # visível porque ele é corrigível"). Sem ela o erro volta a ser
+        # invisível, e aí a escolha entre os dois erros perde o sentido.
         _sobrou = _pendente_de_mesmo_valor(user["id"], dados["valor_reais"])
         _dica = ""
         if _sobrou:
@@ -2389,9 +2532,15 @@ def _registrar_documento_financeiro(user: dict, phone: str, texto_lido: str,
     # perguntava "já pagou ou é pra lembrar?", e quem lê um boleto legível
     # não precisa dessa pergunta — mas quem fotografou uma conta JÁ paga
     # precisa de um jeito de dizer isso sem procurar comando nenhum.
+    # M2.2 — conta que vence em feriado ou fim de semana não pode ser paga
+    # no dia. Quem descobre isso na hora paga multa; o bot sabe a data e
+    # sabe o feriado, então juntar as duas é o serviço.
+    _fer = calendario.aviso_de_feriado(dados.get("data_vencimento"))
+    _alerta = (f"\n⚠️ Esse dia é *{_fer}* — banco fechado. Se der, pague "
+               f"antes." if _fer else "")
     return (f"Guardei sua conta 📄\n"
             f"*{desc}*{_fmt_dinheiro(dados['valor_reais'])}"
-            f"{_fmt_venc(dados['data_vencimento'])}.\n\n"
+            f"{_fmt_venc(dados['data_vencimento'])}.{_alerta}\n\n"
             f"Eu te aviso antes de vencer. _(Eu lembro e organizo — quem "
             f"paga é você.)_\n"
             f"Se essa já está paga, é só me dizer "
@@ -2871,6 +3020,13 @@ def handle_incoming(payload: dict) -> Optional[dict]:
                     exc_info=True)
             return {"number": phone,
                     "text": ai_engine.texto_pendentes(user["id"])}
+
+        # M2.2 — a pessoa mandou a placa. O bot já sabe as datas de IPVA e
+        # licenciamento: elas são tabela pública por final de placa.
+        if _PLACA_PEDIDO_RE.search(content):
+            _cal = _lembretes_do_calendario(user, content)
+            if _cal:
+                return {"number": phone, "text": _cal}
 
         # M1.7 — pedido de avisar outra pessoa. MOVIDO de _handle_commands
         # (auditoria v23.0, P1-2): aqui ja passou pelo aceite LGPD e pelos

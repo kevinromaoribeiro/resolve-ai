@@ -1,5 +1,30 @@
 # DECISÕES PENDENTES — só o Kevin resolve
 
+## M2.2 — a tabela do IPVA precisa de manutenção anual (e de conferência sua)
+
+- **O que preciso de você, uma vez por ano:** conferir o calendário de IPVA
+  e licenciamento publicado pela Sefaz/Detran e atualizar `calendario.py`.
+  Os anos cobertos hoje são **2026 e 2027**, e só para **SP**.
+- **Por que não peguei de API:** não existe API oficial gratuita desse
+  calendário — é tabela publicada em edital. Preferi tabela versionada a
+  raspagem de site, que quebra sem avisar e no silêncio vira data errada.
+- **Enquanto não atualizar:** sem a tabela do ano, o bot **não cria lembrete
+  nenhum** e avisa a pessoa que ainda não tem o calendário. Nada de chutar a
+  data do ano anterior.
+- **Onde a rede faria diferença de verdade (decisão sua):** o M2.2 acabou sem
+  API externa nenhuma — feriado é calculado e IPVA é tabela. O risco de dado
+  velho não está no feriado, está **nesta tabela**. Se você quiser dinamismo
+  de verdade, o alvo é raspar o edital da Sefaz com validação automática
+  contra as invariantes que os testes já checam (10 datas distintas por
+  tipo/ano, final 0 por último, nenhuma em feriado ou fim de semana) — e
+  fora do caminho síncrono de resposta. Enquanto isso não existir, quem
+  segura a promessa é este arquivo e a sua conferência anual.
+- **Decisão sua:** vale cobrir outros estados? Hoje quem é de fora de SP
+  recebe as datas de SP com o aviso _"se o seu carro é de outro estado, me
+  diz a data certa"_. Cobrir mais estados é copiar tabela — o custo é
+  conferir cada uma, e conferir errado é pior que não ter.
+
+
 ## M2.1 — custo declarado: `month_spend` ignora o status
 
 `db.month_spend` soma `tipo='despesa'` do mês **sem filtrar status**. Então,
