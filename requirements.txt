@@ -5,6 +5,10 @@ litellm>=1.40
 openai>=1.30
 pandas>=2.0
 plotly>=5.20
+# M2.1: le boleto em PDF (Python puro, sem binario — risco baixo no build).
+# O codigo funciona sem ele: import protegido, e sem a lib o PDF volta a
+# pedir print da tela.
+pypdf>=4.0
 streamlit>=1.35
 uvicorn>=0.30
 requests>=2.31

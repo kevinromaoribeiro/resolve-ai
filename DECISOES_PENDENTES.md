@@ -1,5 +1,22 @@
 # DECISÕES PENDENTES — só o Kevin resolve
 
+## M2.1 — custo declarado: `month_spend` ignora o status
+
+`db.month_spend` soma `tipo='despesa'` do mês **sem filtrar status**. Então,
+sempre que uma conta pendente e o comprovante dela existem como itens
+separados, o mesmo pagamento entra duas vezes no gasto do mês.
+
+- **Por que isso não foi consertado aqui:** mudar `month_spend` altera o
+  número que o painel e o resumo mostram, e não é escopo do M2.1. O M2.1 só
+  reduziu a frequência (o comprovante que casa valor + vencimento do título
+  dá baixa no pendente em vez de criar irmão).
+- **Quando ainda acontece:** comprovante sem vencimento do título, ou de
+  credor diferente do que está na lista.
+- **Decisão sua:** `month_spend` deve contar só `concluido`, ou contar tudo?
+  Isso muda a leitura do "quanto gastei este mês" — é decisão de produto, não
+  de código.
+
+
 Coisas que travam em credencial, chave de API ou decisão de produto com dinheiro.
 Nada aqui bloqueou a entrega: cada item diz o que foi entregue no lugar.
 

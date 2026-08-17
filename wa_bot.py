@@ -38,6 +38,7 @@ from typing import Any, Optional
 import db
 import textos
 import ai_engine
+import boleto  # M2.1: le conta de foto/PDF. Le e lembra — nunca paga.
 import scheduler
 import canal as wasender  # camada de canal: Meta oficial OU WasenderAPI (ver canal.py)
 import meta_cloud  # handshake e assinatura do webhook da Meta
@@ -50,7 +51,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v23.5-m20-templates-2026-08-16"
+BUILD = "v23.6.3-m21-boleto-2026-08-16"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -2070,6 +2071,347 @@ def _transcribe_audio(b64: str) -> Optional[str]:
         return None
 
 
+# A pessoa mandando a foto E dizendo que já pagou. O que ela escreve sobre a
+# própria conta vale mais do que a leitura da imagem.
+# `paga` SOZINHA saiu: "essa conta é paga todo mês no débito automático" é
+# presente habitual, não passado — e marcava como quitada uma conta que
+# nunca mais seria lembrada. "está paga" continua valendo.
+_LEGENDA_JA_PAGO_RE = re.compile(
+    r"\b(paguei|pago|quitei|quitado|j[áa]\s+foi|est[áa]\s+paga|"
+    r"foi\s+paga)\b", re.I)
+
+# NEGAÇÃO ANTES DO VERBO. "essa eu ainda não paguei" contém "paguei", e sem
+# esta guarda a conta era marcada como paga — some da lista, nenhum lembrete
+# dispara. E é a legenda MAIS provável: quem fotografa boleto costuma
+# comentar que falta pagar.
+_NEGACAO_RE = re.compile(
+    r"\b(n[ãa]o|ainda|nunca|falta|preciso|tenho\s+que|vou|quero|"
+    r"esqueci|lembra)\b", re.I)
+
+
+def _legenda_diz_que_pagou(legenda: str) -> bool:
+    """A legenda afirma que ESTA conta já foi paga?
+
+    Na dúvida, NÃO. O erro caro aqui é assimétrico: marcar como paga uma
+    conta pendente tira ela da lista e nenhum lembrete dispara; deixar
+    pendente uma conta paga custa uma mensagem a mais.
+    """
+    texto = (legenda or "").strip()
+    m = _LEGENDA_JA_PAGO_RE.search(texto)
+    if not m:
+        return False
+    antes, depois = texto[:m.start()], texto[m.end():]
+    # "ainda não paguei", "preciso pagar essa"
+    if _NEGACAO_RE.search(antes):
+        return False
+    # "paguei? não, ainda não" — pergunta não é afirmação.
+    if "?" in texto[:m.end() + 2] or _NEGACAO_RE.search(depois[:20]):
+        return False
+    # "paguei A LUZ, essa aqui é a água" — o verbo tem OBJETO antes do
+    # contraste, ou seja, ela pagou outra coisa. Sem objeto ("paguei, essa
+    # era a última" / "quitei, essa fechou o mês") o contraste é sobre a
+    # mesma conta e a legenda vale. A primeira versão recusava as duas.
+    _contraste = re.search(r",\s*(essa|esta|este|esse|aqui)\b", depois, re.I)
+    if _contraste and depois[:_contraste.start()].strip(" ,"):
+        return False
+    return True
+
+
+def _conta_ja_guardada(user_id: int, descricao: str, valor, data_venc):
+    """Mesma conta = mesma descrição E mesmo valor E mesmo vencimento.
+
+    Busca nos dois status: comprovante entra como `concluido`, e procurar só
+    entre pendentes deixava o gasto do mês dobrar quando a pessoa mandava o
+    comprovante duas vezes.
+    """
+    try:
+        for item in db.list_items(user_id):
+            if (_norm_desc(item.get("descricao") or "") == _norm_desc(descricao)
+                    and item.get("valor_reais") == valor
+                    and (item.get("data_vencimento") or None) == (data_venc or None)):
+                return item
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[boleto] falha ao procurar conta repetida", exc_info=True)
+    return None
+
+
+def _conta_pendente_equivalente(user_id: int, dados: dict):
+    """O pendente que este comprovante quita — só com evidência ESTRUTURAL.
+
+    Casa por VALOR + VENCIMENTO DO TÍTULO, os dois impressos no próprio
+    comprovante. Nada de comparar nome.
+
+    POR QUE SEM NOME (16/08/2026, depois de 3 rodadas de auditoria):
+    esta é a única parte do M2.1 que ESCREVE estado a partir de inferência —
+    o resto só lê e grava o que leu. E foi a única que produziu achado grave
+    em três rodadas seguidas, sempre pela mesma porta:
+      - interseção de uma palavra: fechava "ENEL SP" com comprovante da
+        "ENEL RJ", porque a sigla tem 2 letras e era descartada;
+      - placar por sobreposição: `conta` é palavra de TODA descrição
+        (`descricao_de` gera "conta <quem>"), então um comprovante da ENEL
+        casava com a conta da SABESP e o bot dizia "o comprovante confere".
+    Cada rodada consertou uma via e abriu outra, porque o critério era
+    semelhança de texto. Valor + vencimento é chave, não semelhança: o
+    documento ou traz os dois iguais, ou não quita nada.
+
+    Sem vencimento do título no comprovante, não fecha nada. O caminho de
+    saída continua existindo e está testado: a pessoa responde "paguei X",
+    que é o que a própria mensagem do bot ensina.
+    """
+    venc_titulo = dados.get("vencimento_titulo")
+    valor = dados.get("valor_reais")
+    if not venc_titulo or not valor:
+        return None
+    try:
+        casados = [i for i in db.list_items(user_id, status="pendente")
+                   if i.get("valor_reais") == valor
+                   and i.get("data_vencimento") == venc_titulo]
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[boleto] falha ao procurar pendente equivalente", exc_info=True)
+        return None
+    if len(casados) != 1:
+        if casados:
+            import logging
+            logging.getLogger("resolveai").info(
+                "[boleto] %d pendentes com mesmo valor e vencimento — nao "
+                "dou baixa no escuro", len(casados))
+        return None
+
+    # VETO POR CONTRADIÇÃO DE NOME — não é placar.
+    #
+    # A chave (valor + vencimento) SELECIONA, mas não identifica: vencimento
+    # se concentra em 10/15/20 e valor redondo se repete (condomínio,
+    # mensalidade, seguro). Medido: comprovante da ENEL de R$ 150,00 vencendo
+    # 20/09 quitava a conta da SABESP de R$ 150,00 vencendo 20/09.
+    #
+    # A diferença pro que falhou nas rodadas 6 e 7: aqui o nome só pode
+    # VETAR, nunca causar. Palavra genérica não fecha nada sozinha — por isso
+    # as genéricas saem dos dois lados antes da comparação.
+    # AUSÊNCIA DE EVIDÊNCIA NÃO É EVIDÊNCIA DE COMPATIBILIDADE.
+    #
+    # `if quem and alvo` tratava conjunto vazio como permissão: um
+    # beneficiário como "Agora Ltda" — cujas duas palavras são genéricas —
+    # zerava os tokens, o veto não rodava e o comprovante fechava a conta da
+    # SABESP. Fail-open no lugar exato onde o bloco inteiro declarou
+    # fail-closed.
+    #
+    # Distinção que importa: comprovante SEM beneficiário é contrato
+    # declarado (a chave decide sozinha, não há contradição possível).
+    # Beneficiário PREENCHIDO que não sobrou token é o bot não sabendo nada
+    # sobre aquele nome — e aí não fecha.
+    tem_nome = bool((dados.get("beneficiario") or "").strip())
+    quem = _tokens_de_nome(dados.get("beneficiario"))
+    alvo = _tokens_de_nome(casados[0].get("descricao"))
+    if tem_nome and not (quem & alvo):
+        import logging
+        logging.getLogger("resolveai").info(
+            "[boleto] comprovante de %r nao bate com o pendente %r — nao "
+            "fecho", dados.get("beneficiario"), casados[0].get("descricao"))
+        return None
+    return casados[0]
+
+
+# Palavras que aparecem em toda descrição de conta e não distinguem nada.
+#
+# CONECTIVO É O QUE MAIS APARECE em razão social brasileira ("Companhia DE
+# Saneamento", "Banco DO Brasil", "Cia DE Gás") — e `de` tem 2 letras, então
+# passava no filtro e virava token válido dos dois lados. Medido: um
+# comprovante de "PGTO DE ENERGIA" quitou a conta da "Companhia de
+# Saneamento Basico" tendo `de` como ÚNICO token em comum. Sufixo societário
+# (ltda, s.a., cia, eireli, me, epp) tem o mesmo problema.
+_NOME_GENERICO = ({"conta", "contas", "pagamento", "pgto", "boleto",
+                   "fatura", "documento", "titulo", "título", "para", "com",
+                   "de", "da", "do", "das", "dos", "em", "no", "na", "nas",
+                   "nos", "ltda", "sa", "cia", "eireli", "epp", "ref",
+                   "referente"}
+                  | {p for p in _CAUDA_SEM_NOME})
+
+
+def _pendente_de_mesmo_valor(user_id: int, valor):
+    """Um pendente com este valor exato — pra oferecer a baixa manual.
+
+    Só serve pra sugerir texto ao usuário; não decide nada sozinho.
+    """
+    if not valor:
+        return None
+    try:
+        iguais = [i for i in db.list_items(user_id, status="pendente")
+                  if i.get("valor_reais") == valor]
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[boleto] falha ao procurar pendente de mesmo valor",
+            exc_info=True)
+        return None
+    return iguais[0] if len(iguais) == 1 else None
+
+
+def _tokens_de_nome(texto):
+    return {_sem_acento(p) for p in re.findall(r"[\wÀ-ÿ]{2,}", texto or "")
+            if _sem_acento(p) not in _NOME_GENERICO}
+
+
+def _sugestao_de_baixa(descricao: str) -> str:
+    """A frase que a mensagem manda a pessoa responder pra dar baixa.
+
+    Tem que caber na cauda que o `_casar_cauda` aceita (até 4 palavras) —
+    "paguei conta Condomínio Residencial São José 450" estourava o limite, o
+    bot respondia "Registrado" criando item fantasma, e a conta REAL ficava
+    pendente. A pessoa lia "Registrado" e achava que tinha quitado.
+    """
+    palavras = [p for p in re.findall(r"[\wÀ-ÿ]+", descricao or "")
+                if p.lower() not in ("conta", "pagamento", "para", "de", "da",
+                                     "do")]
+    return "paguei " + " ".join(palavras[:2]) if palavras else "paguei"
+
+
+def _registrar_documento_financeiro(user: dict, phone: str, texto_lido: str,
+                                    legenda: str = "") -> Optional[str]:
+    """M2.1 — foto/PDF de conta vira item com data. Nunca vira pagamento.
+
+    Devolve a resposta pronta, ou None quando o texto NÃO é documento
+    financeiro (aí o fluxo antigo segue: menu 1/2 da Regra de Ouro).
+
+    O que este caminho NÃO faz, por decisão de produto: não devolve linha
+    digitável, não oferece pagar, não gera PIX. O `boleto.extrair` já
+    descarta o código de pagamento antes de qualquer coisa chegar aqui.
+    """
+    try:
+        dados = boleto.extrair(texto_lido)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[boleto] falha ao extrair — caio no fluxo antigo", exc_info=True)
+        return None
+    if not dados or not dados.get("valor_reais"):
+        return None
+    # Sem data não dá pra prometer aviso: o menu antigo pergunta melhor do
+    # que este caminho chutaria.
+    if not dados.get("data_vencimento") and dados["tipo"] != "comprovante":
+        return None
+
+    desc = boleto.descricao_de(dados)
+    concluido = dados["status_sugerido"] == "concluido"
+    # A legenda da pessoa vale mais que a leitura da imagem: se ela escreveu
+    # "essa eu já paguei", o bot não pode agendar cobrança em cima disso.
+    # `search` com guarda de negação: a legenda é frase inteira ("essa eu já
+    # paguei ontem"), não comando no início da mensagem.
+    pago_pela_legenda = bool(legenda) and _legenda_diz_que_pagou(legenda)
+    if pago_pela_legenda:
+        concluido = True
+
+    # DEDUP POR (descrição + valor + vencimento), não só descrição.
+    #
+    # Mandar a mesma foto duas vezes acontece (o WhatsApp reenvia, a pessoa
+    # confere se chegou) e dobrar a conta seria transformar zelo em erro.
+    # Mas comparar SÓ a descrição fundia contas diferentes: Enel de agosto e
+    # Enel de setembro viravam um item só, e a segunda sumia. Perder conta
+    # do usuário é pior do que ter uma repetida.
+    # COMPROVANTE DO QUE JÁ ESTÁ NA LISTA = BAIXA, não item novo.
+    #
+    # É o fluxo que a própria mensagem convida: guardar a conta e, depois,
+    # mandar o comprovante. Como a data do recibo é a do PAGAMENTO e a da
+    # conta é a do VENCIMENTO, as chaves do dedup divergem por construção e
+    # nunca casariam — o resultado eram dois itens, o gasto do mês contado
+    # duas vezes e o lembrete da conta JÁ PAGA disparando no vencimento.
+    if concluido:
+        _pendente = _conta_pendente_equivalente(user["id"], dados)
+        if _pendente:
+            try:
+                db.update_item_status(_pendente["id"], "concluido")
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[boleto] falha ao dar baixa pelo comprovante",
+                    exc_info=True)
+            else:
+                return (f"Baixa dada ✅\n"
+                        f"*{_pendente['descricao']}*"
+                        f"{_fmt_dinheiro(_pendente['valor_reais'])} — "
+                        f"o comprovante confere.\n\n"
+                        f"Tirei da sua lista de pendentes.")
+
+    _rec = _conta_ja_guardada(user["id"], desc, dados["valor_reais"],
+                              dados["data_vencimento"])
+    if _rec:
+        return (f"Essa eu já tenho: *{_rec['descricao']}*"
+                f"{_fmt_dinheiro(_rec['valor_reais'])}"
+                f"{_fmt_venc(_rec['data_vencimento'])}.\n\n"
+                f"Se mudou alguma coisa, me diz o que é que eu ajusto.")
+
+    try:
+        db.add_item(
+            user_id=user["id"],
+            tipo="despesa",
+            categoria=ai_engine.classify_category(desc),
+            descricao=desc,
+            valor_reais=dados["valor_reais"],
+            data_vencimento=dados["data_vencimento"],
+            status="concluido" if concluido else "pendente")
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[boleto] falha ao gravar o item", exc_info=True)
+        # NUNCA dizer "guardei" sobre o que não foi gravado.
+        return ("Consegui ler a conta, mas falhei em guardar aqui. 😕 "
+                "Me manda de novo, por favor?")
+
+    if concluido:
+        # A data só sai como "pago em" quando veio do DOCUMENTO. Se quem
+        # disse que pagou foi a legenda, o que está no papel é o
+        # VENCIMENTO — escrever "pago em 20/08" ali seria inventar a data do
+        # pagamento a partir de outra coisa.
+        _quando = ("" if pago_pela_legenda
+                   else _fmt_venc(dados["data_vencimento"], "pago em"))
+        # ERRO VISÍVEL TEM QUE SER VISÍVEL DE VERDADE.
+        #
+        # Quando o veto barra a baixa automática (sigla no comprovante ×
+        # razão social no boleto, por exemplo), a conta continua pendente e
+        # a mensagem não dava sinal nenhum — a pessoa só descobria quando o
+        # lembrete cobrasse. A escolha registrada no DECISOES.md é ficar com
+        # o erro corrigível; então ele precisa aparecer na hora, com o
+        # comando pronto.
+        _sobrou = _pendente_de_mesmo_valor(user["id"], dados["valor_reais"])
+        _dica = ""
+        if _sobrou:
+            _dica = (f"\n\nSe esse pagamento era da *{_sobrou['descricao']}* "
+                     f"que está na sua lista, me diz "
+                     f"_\"{_sugestao_de_baixa(_sobrou['descricao'])}\"_ que "
+                     f"eu dou baixa nela.")
+        return (f"{'Marquei como paga ✅' if pago_pela_legenda else 'Comprovante registrado ✅'}\n"
+                f"*{desc}*{_fmt_dinheiro(dados['valor_reais'])}{_quando}.\n\n"
+                f"Entra no seu gasto do mês.{_dica}")
+    # A porta de correção fica ABERTA na própria mensagem: o menu 1/2 antigo
+    # perguntava "já pagou ou é pra lembrar?", e quem lê um boleto legível
+    # não precisa dessa pergunta — mas quem fotografou uma conta JÁ paga
+    # precisa de um jeito de dizer isso sem procurar comando nenhum.
+    return (f"Guardei sua conta 📄\n"
+            f"*{desc}*{_fmt_dinheiro(dados['valor_reais'])}"
+            f"{_fmt_venc(dados['data_vencimento'])}.\n\n"
+            f"Eu te aviso antes de vencer. _(Eu lembro e organizo — quem "
+            f"paga é você.)_\n"
+            f"Se essa já está paga, é só me dizer "
+            f"_\"{_sugestao_de_baixa(desc)}\"_.")
+
+
+def _fmt_dinheiro(valor) -> str:
+    """R$ 1.234,56 — com separador de milhar, como se lê em português."""
+    if not valor:
+        return ""
+    return " — R$ " + f"{valor:,.2f}".replace(",", "@").replace(
+        ".", ",").replace("@", ".")
+
+
+def _fmt_venc(data_iso, rotulo: str = "vence") -> str:
+    if not data_iso:
+        return ""
+    return f", {rotulo} {str(data_iso)[8:10]}/{str(data_iso)[5:7]}"
+
+
 def _read_image(b64: str) -> Optional[str]:
     """Extrai texto da imagem via visão (Anthropic ou OpenAI). Loga erro real."""
     import logging
@@ -2088,7 +2430,15 @@ def _read_image(b64: str) -> Optional[str]:
         "- data/prazo se houver;\n"
         "- nome do estabelecimento/empresa/remetente se houver.\n"
         "Não invente dado que não está visível. Não use listas nem rótulos "
-        "como 'Descrição:'. Responda apenas a frase.")
+        "como 'Descrição:'.\n"
+        # M2.1: a cauda estruturada existe pro Python não ter que adivinhar
+        # dentro da frase. Se o modelo ignorar, o parser varre o texto livre
+        # do mesmo jeito — a cauda é atalho, não dependência.
+        "SE (e somente se) for boleto, fatura, conta ou comprovante, "
+        "acrescente no fim uma linha começando com 'DADOS:' no formato "
+        "DADOS: valor=<0,00>; vencimento=<dd/mm/aaaa>; beneficiario=<nome>; "
+        "tipo=<boleto|comprovante>. "
+        "Nunca inclua código de barras ou linha digitável.")
     if not b64:
         log.warning("[imagem] base64 vazio — nada pra ler")
         return None
@@ -2254,7 +2604,12 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     # Decriptar o audio de alguem que ainda nao aceitou os Termos e processar
     # dado sem consentimento, mesmo que o conteudo nunca chegue ao LLM.
     media_b64 = ""
-    if kind in ("audio", "imagem_silenciosa", "imagem_com_texto"):
+    # "documento" entrou na lista no M2.1: sem baixar o arquivo não há PDF
+    # pra ler. Continua DEPOIS do aceite de LGPD, pelo mesmo motivo dos
+    # outros formatos — decriptar arquivo de quem não aceitou os termos é
+    # tratar dado sem consentimento.
+    if kind in ("audio", "imagem_silenciosa", "imagem_com_texto",
+                "documento"):
         media_b64 = wasender.baixar_midia(
             msg_id=data.get("_msg_id", "") or "",
             tipo=data.get("_media_tipo", "") or "",
@@ -2611,8 +2966,22 @@ def handle_incoming(payload: dict) -> Optional[dict]:
         ocr = _read_image(media_b64) if media_b64 else None
         if ocr is None:
             return {"number": phone, "text": textos.IMAGEM_PEDIR_CONTEXTO}
+
+        # M2.1 — o Python tenta ler a conta ANTES de perguntar qualquer
+        # coisa. Quando valor e data estão lá, o menu 1/2 vira uma pergunta
+        # que o bot já sabe responder — e a Regra de Ouro existe pra imagem
+        # AMBÍGUA, não pra boleto legível.
+        _resp_boleto = _registrar_documento_financeiro(
+            user, phone, ocr, legenda=content)
+        if _resp_boleto:
+            return {"number": phone, "text": _resp_boleto}
+
         instruction = content
-        content = ocr
+        # Mesmo quando o extrator recusa (boleto sem data legível, foto
+        # ruim), o código de pagamento não segue viagem: sem isto o OCR cru
+        # virava descrição do item e a linha digitável ficava guardada na
+        # lista da pessoa — justo o que o M2.1 existe pra não fazer.
+        content = boleto.sem_codigo_de_pagamento(ocr)
         kind = "imagem_com_texto" if instruction.strip() else "imagem_silenciosa"
         result = ai_engine.converse(
             user["id"], first_name, kind, content, instruction=instruction
@@ -2622,16 +2991,34 @@ def handle_incoming(payload: dict) -> Optional[dict]:
         return {"number": phone, "text": result["reply"]}
 
     elif kind == "documento":
-        # PDF (boleto, comprovante, contrato). Não lemos PDF direto, mas o
-        # mordomo não devolve beco sem saída: usa o nome/legenda do arquivo
-        # como pista e oferece o caminho que funciona.
+        # M2.1 — PDF de banco é TEXTO, não imagem: dá pra ler sem OCR.
+        # Quando não dá (PDF escaneado, `pypdf` fora do build, download
+        # falhou), o caminho antigo continua valendo — pedir print resolve e
+        # é melhor do que um beco sem saída.
+        _pdf_texto = None
+        if media_b64:
+            try:
+                import base64 as _b64
+                _pdf_texto = boleto.texto_de_pdf(_b64.b64decode(media_b64))
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[pdf] falha ao decodificar o arquivo", exc_info=True)
+        if _pdf_texto:
+            # `legenda=content`: PDF com legenda "já paguei" recebe o mesmo
+            # tratamento da foto. Sem isso, o mesmo texto dava resultado
+            # diferente dependendo do formato do anexo.
+            _resp_pdf = _registrar_documento_financeiro(
+                user, phone, _pdf_texto, legenda=content)
+            if _resp_pdf:
+                return {"number": phone, "text": _resp_pdf}
         pista = (content or "").strip()
         contexto = f" Vi que é *{pista}*." if pista else ""
         return {"number": phone, "text":
                 (f"Recebi seu arquivo 📄{contexto}\n\n"
-                 f"PDF eu ainda não consigo abrir, mas resolvo fácil: "
-                 f"me manda *print da tela* (foto) que eu leio valor e "
-                 f"vencimento na hora — ou me diz em uma linha, tipo "
+                 f"Não consegui ler valor e vencimento aí dentro, mas "
+                 f"resolvo fácil: me manda *print da tela* (foto) que eu "
+                 f"leio na hora — ou me diz em uma linha, tipo "
                  f"_\"luz 187 vence dia 20\"_.")}
 
     elif kind == "video":

@@ -190,10 +190,18 @@ def test_vencido_silenciado_nao_cobra(usuario):
 # --- REGRESSAO: o menu 1/2 da imagem silenciosa continua funcionando ------
 
 def test_imagem_silenciosa_ainda_abre_o_menu(usuario, monkeypatch):
+    """A Regra de Ouro vale pra imagem AMBIGUA.
+
+    MUDOU NO M2.1: quando a visao devolve valor E vencimento, o Python
+    registra direto em vez de perguntar — perguntar o que ele acabou de ler
+    e atrito sem serviço. O menu continua vivo pro caso ambiguo, que e o
+    caso pra que ele foi feito. Ver test_m21_boleto.py.
+    """
     import canal
     monkeypatch.setattr(canal, "baixar_midia", lambda **kw: "b64fake")
-    monkeypatch.setattr(wa_bot, "_read_image",
-                        lambda b64: "ENEL R$ 210,50 vencimento 20/08/2026")
+    monkeypatch.setattr(
+        wa_bot, "_read_image",
+        lambda b64: "Print de uma conversa sobre o churrasco de sabado")
     payload = {"data": {"key": {"remoteJid": f"{TELEFONE}@s.whatsapp.net",
                                 "fromMe": False, "id": "IMG1"},
                         "pushName": "Kevin",
