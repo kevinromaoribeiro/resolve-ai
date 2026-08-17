@@ -57,6 +57,12 @@ def limpo(monkeypatch):
         if isinstance(alvo, set):
             alvo.clear()
 
+    # msg_log é estado GLOBAL, então some aqui e não na fixture `usuario` —
+    # teste que não pede usuário via linha de mensagem do caso anterior e
+    # mede constância de outro teste.
+    with db.get_conn() as _c:
+        _c.execute("DELETE FROM msg_log")
+
     enviadas: list[tuple[str, str]] = []
 
     def _send_text(number, text, *a, **kw):
@@ -100,12 +106,8 @@ def usuario():
         with db.get_conn() as conn:
             conn.execute("DELETE FROM items WHERE user_id=?", (uid,))
             conn.execute("DELETE FROM dispatches WHERE user_id=?", (uid,))
-            # msg_log INTEIRO: o webhook grava com user_id NULO e telefone em
-            # formato variável, então limpar por id (ou por telefone exato)
-            # deixava a janela de 24h aberta de um teste pro outro. Estado
-            # que vaza entre casos faz o teste seguinte passar por engano —
-            # é a regra 4 do protocolo do auditor.
-            conn.execute("DELETE FROM msg_log")
+            # (msg_log é limpo na fixture `limpo`, que é autouse — ele é
+            # estado global e vaza pra teste que nem pede usuário.)
     db.update_user_fields(uid, onboarding_step=None, status="trial",
                           lgpd_aceite_em=tempo.agora().isoformat())
     return db.get_user(uid)

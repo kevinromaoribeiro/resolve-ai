@@ -65,6 +65,12 @@ Contra o v23.3 original, 60 desses testes falham — é a medida do que a fase c
 O auditor rodou 5 vezes e reprovou 3; **duas das reprovações foram em consertos da
 própria fase**, não no código original. Auditoria de conserto não é formalidade.
 
+Regra de harness que custou TRÊS rodadas no Motor 2: **teste que soma agregado
+da base inteira mede DELTA (antes × depois), nunca valor absoluto.** O banco de
+teste acumula usuários e itens de outros arquivos, então `assert gastos["Contas"]
+== 20` testa o banco inteiro, não o caso. A fixture `limpo` já resolve isso pro
+`msg_log`; pra `items` e `users` quem resolve é a forma do assert.
+
 Armadilha de teste que já custou uma rodada: `wa_bot` faz `import canal as wasender`,
 e `canal.py` amarra as funções no import (`send_text = _mod.send_text`). Patch no
 módulo `wasender` **não** chega no `wa_bot` — o alvo certo é `canal`. Teste que acha

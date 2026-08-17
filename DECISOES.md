@@ -3,6 +3,13 @@
 Uma linha por escolha relevante: o que foi decidido e por quê. Ordem cronológica.
 Se uma decisão for revertida, não apague — acrescente a reversão com a data.
 
+## Motor 2 — M2.3 (heatmap de constância)
+
+- **17/08/2026 — Dia sem uso é ZERO na série, nunca ausência.** Uma série que só traz os dias com atividade desenha dez usos esparsos como dez quadrados seguidos — o heatmap passa a mentir exatamente sobre a única coisa que ele existe pra mostrar. Por isso a série é construída a partir do calendário, não do resultado da consulta.
+- **17/08/2026 — A média é por dia ATIVO, não pela janela.** Dividir por 90 dilui e esconde quem usa muito em poucos dias, que é justamente o perfil que precisa ser distinguido de quem usa pouco todo dia.
+- **17/08/2026 — SVG inline, sem biblioteca.** Nada de CDN no painel: uma dependência externa no dash é mais um jeito de a tela quebrar quando o site de terceiro cai — e o painel é o que o Kevin abre pra saber se o resto está de pé.
+- **17/08/2026 — O que é conta saiu do handler async (`_dados_do_painel`).** Campo montado dentro da rota é campo que ninguém testa sem subir servidor; a rota agora só serializa.
+
 ## Motor 2 — M2.2 (lembretes dinâmicos)
 
 - **17/08/2026 — IPVA e licenciamento vêm de TABELA versionada no repo, não de API.** Não é preguiça: esse calendário não é um serviço, é uma tabela que cada estado publica uma vez por ano por final de placa, e não existe API oficial gratuita. Com a tabela no repo, o modo degradado é o normal — sem internet, a feature funciona igual. Atualizar uma vez por ano é o custo, e ele está documentado no topo do `calendario.py`.

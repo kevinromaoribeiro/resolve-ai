@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v23.7-m22-calendario-2026-08-17"
+BUILD = "v23.8-m23-heatmap-2026-08-17"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -3778,6 +3778,48 @@ def maybe_admin_report() -> bool:
 DASH_URL_BASE = os.environ.get("DASH_URL_BASE", "").rstrip("/")
 
 
+def _dados_do_painel() -> dict:
+    """M2.3 — os números do painel, num lugar só e testável.
+
+    A rota `/api/pulso` monta JSON dentro de um handler async, o que torna
+    cada campo dela impossível de testar sem subir servidor. O que é conta
+    fica aqui; a rota só serializa.
+    """
+    fora = [p for p in (ADMIN_PHONE, MASTER_PHONE) if p]
+    serie = db.heatmap_constancia(dias=90, excluir_telefones=fora)
+    # GASTOS AGREGADOS DA BASE, por categoria. Ficaram fora do painel na
+    # primeira versão — função escrita, testada e chamada por ninguém, ou
+    # seja, metade do escopo do M2.3 não existia pro Kevin.
+    gastos: dict = {}
+    falhou = 0
+    _usuarios = db.list_users()
+    for u in _usuarios:
+        # `try` por USUÁRIO, não em volta do laço inteiro: envolvendo tudo,
+        # uma falha no meio descartava o resto e a soma PARCIAL era
+        # desenhada com o rótulo "toda a base". O log não é o que o Kevin
+        # vê — ele vê o card.
+        try:
+            for cat, v in db.gastos_por_categoria(u["id"]).items():
+                gastos[cat] = round(gastos.get(cat, 0.0) + v, 2)
+        except Exception:
+            falhou += 1
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[painel] falha ao somar gastos do user %s", u.get("id"),
+                exc_info=True)
+    return {
+        "heatmap": serie,
+        # `serie` pronta: sem isso o painel varria a tabela DUAS vezes por
+        # request, a cada 20 segundos.
+        "constancia": db.constancia(dias=90, serie=serie),
+        "gastos": dict(sorted(gastos.items(), key=lambda kv: kv[1],
+                              reverse=True)),
+        # Soma incompleta é dita, não maquiada de total.
+        "gastos_falharam": falhou,
+        "gastos_base": len(_usuarios),
+    }
+
+
 def _linha_risco(env: dict) -> str:
     """P1-5 — a régua tem que dizer POR QUE está naquela cor.
 
@@ -4723,6 +4765,54 @@ const K=new URLSearchParams(location.search).get('k')||'';
 const $=s=>document.querySelector(s);
 const n=v=>(v==null?'—':v);
 function card(t,c){return `<div class="card"><h2>${t}</h2>${c}</div>`}
+// M2.3 — heatmap de constancia. SVG inline: sem biblioteca, sem CDN, sem
+// rede. Um quadrado por dia, semanas em coluna.
+// Responde o que numero nenhum responde: as pessoas usam com REGULARIDADE,
+// ou usaram muito num dia e sumiram?
+function heatmap(serie,c){
+ if(!serie||!serie.length||!c) return '';
+ // ESCALA POR QUANTIL, nao linear contra o maximo.
+ // Linear, um unico dia movimentado jogava TODO o resto na faixa mais
+ // fraca: o desenho virava "um quadrado aceso e 89 apagados", que e
+ // exatamente a leitura errada ("usaram muito num dia e sumiram") que este
+ // heatmap existe pra impedir. Com 11 usuarios, um dia atipico basta.
+ const ativos=serie.filter(p=>p.n>0).map(p=>p.n).sort((a,b)=>a-b);
+ const q=f=>ativos.length?ativos[Math.min(ativos.length-1,
+          Math.floor(ativos.length*f))]:1;
+ const c1=q(.25),c2=q(.5),c3=q(.75);
+ // Paleta com piso >=3:1 de contraste contra a cor de "dia sem uso" — as
+ // duas faixas de baixo eram indistinguiveis de vazio (1.26:1 e 2.09:1).
+ const CORES=['#16223a','#1f6b46','#17925c','#2ddf8e','#7df3bb'];
+ const L=9,G=2,COLS=Math.ceil(serie.length/7);
+ let r='';
+ serie.forEach((p,i)=>{
+  const col=Math.floor(i/7), lin=i%7;
+  let t=0;
+  if(p.n>0) t = p.n<=c1?1 : p.n<=c2?2 : p.n<=c3?3 : 4;
+  r+=`<rect x="${col*(L+G)}" y="${lin*(L+G)}" width="${L}" height="${L}" rx="2" fill="${CORES[t]}"><title>${p.data}: ${p.n}</title></rect>`;
+ });
+ return `<div style="margin-top:12px">
+  <svg viewBox="0 0 ${COLS*(L+G)} ${7*(L+G)}" width="100%" style="max-height:86px" role="img" aria-label="uso por dia">${r}</svg>
+  <div class="muted" style="font-size:11px;margin-top:6px">${c.dias_com_uso} de ${c.janela_dias} dias com uso · ${c.media_por_dia_ativo}/dia ativo · pico ${c.maior_dia}</div></div>`;
+}
+function gastos(g,falha,base){
+ g=g||{};
+ if(!Object.keys(g).length&&!falha) return '';
+ if(!Object.keys(g).length)
+  return `<div class="muted" style="font-size:12px">Não consegui somar os gastos de nenhuma das ${base} pessoas. Os dados estão no banco — é a soma que falhou.</div>`;
+ const tot=Object.values(g).reduce((a,b)=>a+b,0);
+ const rodape=falha?`parcial — falhei em ${falha} de ${base} pessoas`
+                   :`3 meses · toda a base (${base} pessoas)`;
+ const brl=v=>'R$ '+v.toFixed(2).replace('.',',');
+ let r='';
+ for(const [cat,v] of Object.entries(g)){
+  r+=`<div style="margin:7px 0">
+   <div style="display:flex;justify-content:space-between;font-size:12px">
+    <span>${cat}</span><span class="muted">${brl(v)}</span></div>
+   <div class="bar"><i style="width:${Math.max(2,v/tot*100)}%"></i></div></div>`;
+ }
+ return r+`<div class="muted" style="font-size:11px;margin-top:8px">total ${brl(tot)} · ${rodape}</div>`;
+}
 function kpi(l,v,u){return `<div class="kpi"><div class="l">${l}</div>
  <div class="v">${n(v)}</div>${u?`<div class="u">${u}</div>`:''}</div>`}
 async function carrega(){
@@ -4749,7 +4839,15 @@ async function carrega(){
   `<div class="st"><span class="dot ${hab}"></span>${g.veredito}</div>
    <div class="big" style="margin:10px 0 2px">${g.por_pessoa_dia}</div>
    <div class="muted" style="font-size:12px">demandas por pessoa por dia (7d) — abaixo de 1 não virou hábito</div>
-   <div class="bar"><i style="width:${Math.min(100,g.por_pessoa_dia/3*100)}%"></i></div>`);
+   <div class="bar"><i style="width:${Math.min(100,g.por_pessoa_dia/3*100)}%"></i></div>
+   ${heatmap(d.heatmap,d.constancia)}`);
+ // 2b. no que as pessoas gastam
+ // desenha tambem quando TUDO falhou: 'todo mundo falhou' e
+ // 'ninguem tem despesa' sao indistinguiveis se o card some, e a
+ // soma mais incompleta possivel era a unica que nao era dita.
+ if((d.gastos&&Object.keys(d.gastos).length)||d.gastos_falharam)
+  h+=card('Em que a base gasta',
+          gastos(d.gastos,d.gastos_falharam,d.gastos_base));
  // 3. o numero esta em risco?
  h+=card('O número está em risco?',
   `<div class="st"><span class="dot ${risco}"></span>${e.risco}</div>
@@ -4891,6 +4989,10 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
             "serie": db.serie_diaria(7),
             "envio": db.pulso_envio(),
             "engajamento": db.engajamento(excluir_telefones=[ADMIN_PHONE, MASTER_PHONE]),
+            # M2.3 — o que é conta mora em `_dados_do_painel`, testável; a
+            # rota só serializa. Campo montado dentro de handler async é
+            # campo que ninguém consegue testar sem subir servidor.
+            **_dados_do_painel(),
             "financeiro": db.financeiro(TRIAL_DAYS),
             "usuarios": db.admin_list_users(),
             "freio": {"ciclo": DISPATCH_MAX_PER_CYCLE,

@@ -1174,6 +1174,117 @@ def pulso_envio(horas: int = 24) -> dict:
     }
 
 
+def _sufixo_tel(telefone) -> str:
+    """Os 8 últimos dígitos — a única parte estável de um telefone aqui.
+
+    A Meta devolve o `wa_id` brasileiro SEM o 9º dígito (está documentado em
+    `meta_cloud.py`), e `msg_log.telefone` guarda exatamente esse `wa_id`.
+    Comparar dígito a dígito fazia a exclusão do dono não casar: ele mandava
+    40 mensagens e o heatmap contava as 40. `conversa_recente` já usa esta
+    regra — agora ela tem nome.
+    """
+    return re.sub(r"\D", "", str(telefone or ""))[-8:]
+
+
+def heatmap_constancia(dias: int = 90,
+                       excluir_telefones: Optional[list] = None) -> list[dict]:
+    """[{data, n}] por dia, SEM buraco — dia sem uso é zero.
+
+    O buraco é o defeito que importa aqui: uma série que só traz os dias com
+    atividade desenha dez usos esparsos como dez quadrados seguidos, e o
+    heatmap passa a mentir exatamente sobre a coisa que ele existe para
+    mostrar. Por isso a série é construída a partir do calendário, não do
+    resultado da consulta.
+
+    Conta só ENTRADA (o que a pessoa faz), e o dono fica de fora — mesma
+    regra do `engajamento`, pelo mesmo motivo: ele testa o dia inteiro e
+    infla a métrica na direção em que a gente quer acreditar.
+    """
+    if dias <= 0:
+        return []
+    hoje = tempo.hoje()
+    ini = hoje - timedelta(days=dias - 1)
+    # `if _sufixo_tel(t)`: sufixo VAZIO viraria coringa e derrubaria
+    # toda linha de telefone nulo. É o gêmeo exato da guarda que
+    # existe em `conhecidos`, no `engajamento` — a mesma regra tem
+    # que valer nos dois lugares.
+    fora = {_sufixo_tel(t) for t in (excluir_telefones or [])
+            if t and _sufixo_tel(t)}
+    contagem: dict = {}
+    with get_conn() as conn:
+        # FILTRO NA COLUNA CRUA, pra não matar o `idx_msglog_ts`. Função
+        # sobre a coluna (`substr(replace(ts,...))`) fazia SCAN da tabela
+        # inteira — o mesmo defeito que já está medido e comentado dentro de
+        # `dentro_da_janela`, aqui rodando 2x por request a cada 20s.
+        # `ini + " "` é superconjunto seguro nos dois formatos de ts,
+        # porque 'T' (0x54) > ' ' (0x20) — e é EXATO, não aproximado:
+        # provado por varredura (200 mil strings) que nenhuma linha passa
+        # no corte e precisaria ser barrada depois. Não há refino no
+        # Python, e o comentário que prometia um foi removido junto com o
+        # `if` morto que ele descrevia.
+        for row in conn.execute(
+                """SELECT ts, telefone FROM msg_log
+                    WHERE direcao='in' AND ts >= ?
+                      AND COALESCE(tipo,'') <> 'resgate_painel'""",
+                (ini.isoformat() + " ",)):
+            # `resgate_painel` é o DONO digitando pela pessoa no painel. Se
+            # contasse, o heatmap inflaria na direção em que a gente quer
+            # acreditar — o viés que esta função existe pra evitar.
+            if fora and _sufixo_tel(row["telefone"]) in fora:
+                continue
+            dia = str(row["ts"])[:10]
+            contagem[dia] = contagem.get(dia, 0) + 1
+    return [{"data": (ini + timedelta(days=i)).isoformat(),
+             "n": contagem.get((ini + timedelta(days=i)).isoformat(), 0)}
+            for i in range(dias)]
+
+
+def constancia(dias: int = 90,
+               excluir_telefones: Optional[list] = None,
+               serie: Optional[list] = None) -> dict:
+    """O número que o heatmap resume: em quantos DIAS houve uso.
+
+    A média é por dia ATIVO, não pela janela. Dividir por 90 dilui e esconde
+    justamente quem usa muito em poucos dias — que é o perfil que a gente
+    precisa distinguir de quem usa pouco todo dia.
+
+    `serie` pronta evita a SEGUNDA varredura: o painel pedia heatmap e
+    constância, e cada um varria a tabela inteira.
+    """
+    if serie is None:
+        serie = heatmap_constancia(dias, excluir_telefones)
+    ativos = [p for p in serie if p["n"] > 0]
+    total = sum(p["n"] for p in serie)
+    return {
+        "janela_dias": dias,
+        "dias_com_uso": len(ativos),
+        "total": total,
+        "media_por_dia_ativo": round(total / len(ativos), 2) if ativos else 0.0,
+        "maior_dia": max((p["n"] for p in serie), default=0),
+    }
+
+
+def gastos_por_categoria(user_id: int, meses: int = 3) -> dict:
+    """{categoria: total} das despesas, do maior pro menor.
+
+    Só `tipo='despesa'` com valor: lembrete com valor (uma consulta que vai
+    custar 300) não é dinheiro que saiu — contar isso como gasto faria o
+    painel mostrar despesa que nunca aconteceu.
+    """
+    corte = (tempo.hoje() - timedelta(days=31 * max(1, meses))).isoformat()
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT categoria, COALESCE(SUM(valor_reais),0) t
+                 FROM items
+                WHERE user_id=? AND tipo='despesa'
+                  AND valor_reais IS NOT NULL
+                  AND substr(data_criacao,1,10) >= ?
+                GROUP BY categoria""", (user_id, corte)).fetchall()
+    saida = {r["categoria"]: round(float(r["t"]), 2) for r in rows
+             if float(r["t"]) > 0}
+    return dict(sorted(saida.items(), key=lambda kv: kv[1], reverse=True))
+
+
 def serie_diaria(dias: int = 7) -> list[dict]:
     """Últimos N dias: usuários novos, demandas recebidas, itens e falhas.
 
@@ -1235,28 +1346,80 @@ def engajamento(excluir_telefones: Optional[list] = None) -> dict:
             for row in conn.execute("SELECT id, telefone FROM users"):
                 if re.sub(r"\D", "", row["telefone"] or "") in fora:
                     ids_fora.add(row["id"])
-        filtro = ""
-        args: list = [ini]
-        if ids_fora:
-            filtro = " AND m.user_id NOT IN (%s)" % ",".join("?" * len(ids_fora))
-            args += list(ids_fora)
-        r = conn.execute(
-            f"""SELECT COUNT(*) n, COUNT(DISTINCT m.user_id) u
-                FROM msg_log m WHERE m.direcao='in'
-                  AND substr(m.ts,1,10) >= ? AND m.user_id IS NOT NULL{filtro}
-            """, args).fetchone()
-        n, u = (int(r[0]), int(r[1])) if r else (0, 0)
-        top = conn.execute(
-            f"""SELECT u.nome, COUNT(*) c FROM msg_log m
-                JOIN users u ON u.id = m.user_id
-                WHERE m.direcao='in' AND substr(m.ts,1,10) >= ?{filtro}
-                GROUP BY m.user_id ORDER BY c DESC LIMIT 5""",
-            args).fetchall()
+        # SUFIXO -> (id, nome) da BASE. Resolver uma vez aqui é o que faz
+        # `pessoas`, `top` e `base_comparavel` saírem da MESMA população.
+        # Sem isso, `pessoas` contava qualquer número que mandou "oi" e o
+        # painel voltava a se contradizer — "3 de 1 pessoa(s) mandaram
+        # algo" —, que é o defeito que `_linha_engajamento` existe pra
+        # matar, agora com o sinal invertido.
+        conhecidos = {}
+        for row in conn.execute("SELECT id, nome, telefone FROM users"):
+            if row["id"] in ids_fora:
+                continue
+            _suf = _sufixo_tel(row["telefone"])
+            if not _suf:
+                # usuario com telefone vazio capturava TODA linha de
+                # telefone nulo — um "Fantasma" no topo do ranking.
+                continue
+            conhecidos[_suf] = (row["id"], row["nome"] or "")
+        # POR TELEFONE, NÃO SÓ POR user_id.
+        #
+        # A cláusula `m.user_id IS NOT NULL` zerava esta métrica em
+        # PRODUÇÃO: nenhuma linha `direcao='in'` tem id, porque quem grava é
+        # o webhook (`db.log_message(None, num, "in", ...)`) — o mesmo
+        # motivo pelo qual `dentro_da_janela` e `conversa_recente` já casam
+        # por telefone. Ou seja, "0.0 demandas por pessoa/dia" e "🔴 não
+        # virou hábito" eram o que o painel dizia SEMPRE, com qualquer
+        # volume de uso. O número principal do negócio estava morto.
+        #
+        # O M2.3 tornou isso visível ao pendurar no mesmo card um heatmap
+        # que conta justamente as linhas que esta consulta ignorava.
+        _tel_fora = {_sufixo_tel(t) for t in fora}
+        linhas = conn.execute(
+            """SELECT user_id, telefone FROM msg_log
+                WHERE direcao='in' AND ts >= ?
+                  AND COALESCE(tipo,'') <> 'resgate_painel'""",
+            (ini + " ",)).fetchall()
+        quem = {}
+        desconhecidos = 0
+        for l in linhas:
+            suf = _sufixo_tel(l["telefone"])
+            if _tel_fora and suf in _tel_fora:
+                continue
+            if l["user_id"] and l["user_id"] in ids_fora:
+                continue
+            if suf in conhecidos:
+                quem[suf] = quem.get(suf, 0) + 1
+            elif l["user_id"]:
+                quem[f"id:{l['user_id']}"] = quem.get(
+                    f"id:{l['user_id']}", 0) + 1
+            else:
+                # Número que não está na base: engano, spam, alguém que
+                # nunca completou o cadastro. Vira campo PRÓPRIO, nunca
+                # somado em `pessoas` — dois enganos derrubariam a métrica
+                # pela metade com 11 usuários, e número que qualquer
+                # estranho move não serve pra decidir nada.
+                desconhecidos += 1
+        n, u = sum(quem.values()), len(quem)
+        # `top` SAI DO MESMO DICIONÁRIO. Antes ele fazia
+        # `JOIN users ON u.id = m.user_id` — e `user_id` é NULL em toda
+        # linha de entrada, que é a raiz consertada logo acima. O painel
+        # passaria a mostrar "1.5 demandas por pessoa/dia" com a tabela
+        # "quem mais usa" VAZIA, e é o dono olhando pra isso que decide se
+        # o produto pegou.
+        # `(None, "")` e nao `(None, k)`: com a chave como fallback, uma
+        # linha migrada com `user_id` e telefone divergente punha
+        # literalmente "id:4" como NOME no painel do dono — e "id:4"
+        # e truthy, entao o "sem nome" nunca disparava.
+        top = [{"nome": conhecidos.get(k, (None, ""))[1] or "sem nome",
+                "n": v}
+               for k, v in sorted(quem.items(), key=lambda kv: kv[1],
+                                  reverse=True)[:5]]
         # quanto do tráfego era do próprio dono — pro tamanho do viés ficar visível
         rt = conn.execute(
             """SELECT COUNT(*) FROM msg_log WHERE direcao='in'
-               AND substr(ts,1,10) >= ? AND user_id IS NOT NULL""",
-            (ini,)).fetchone()
+               AND ts >= ? AND COALESCE(tipo,'') <> 'resgate_painel'""",
+            (ini + " ",)).fetchone()
         total = int(rt[0]) if rt else 0
     por_dia = round(n / (u * 7), 2) if u else 0.0
     # BASE COMPARÁVEL (auditoria v23.4, P2-9): o denominador do painel era
@@ -1269,13 +1432,18 @@ def engajamento(excluir_telefones: Optional[list] = None) -> dict:
     base = max(0, int(r_tot[0] if r_tot else 0) - len(ids_fora))
     return {"despejos_7d": n, "pessoas": u, "por_pessoa_dia": por_dia,
             "base_comparavel": base,
-            "dono_excluido": bool(ids_fora),
-            "mensagens_do_dono_7d": max(0, total - n),
+            # A exclusão do dono agora é por TELEFONE (ele nem sempre tem
+            # linha em `users`). Ler a flag só de `ids_fora` fazia a copy
+            # dizer o contrário do que o código fez: as 30 mensagens dele
+            # eram descontadas e o "(sem contar você)" sumia da linha.
+            "dono_excluido": bool(ids_fora or _tel_fora),
+            "desconhecidos_7d": desconhecidos,
+            "mensagens_do_dono_7d": max(0, total - n - desconhecidos),
             "veredito": ("🟢 virou hábito" if por_dia >= 2 else
                          "🟡 no limite" if por_dia >= 1 else
                          "🔴 não virou hábito" if u else
                          "⚪ sem usuário real ainda"),
-            "top": [{"nome": t[0], "n": t[1]} for t in top]}
+            "top": top}
 
 
 PRECO_MENSAL = float(os.environ.get("PRECO_MENSAL", "19.90"))
