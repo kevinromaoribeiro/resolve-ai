@@ -201,9 +201,36 @@ def test_escalonamento_nao_usa_template():
 
 
 def test_vencimento_futuro_nao_usa_template_de_alarme():
-    """Aviso D-3 ("vence em 20/08") nao pode virar "chegou a hora"."""
-    nome, _ = templates.para_disparo({"kind": "vencimento", "item_id": 1})
-    assert nome is None
+    """Aviso antecipado ("vence em 20/08") nao pode virar "chegou a hora".
+
+    ATUALIZADO NO M2.5. Antes este teste exigia `None`, porque em M2.0 o
+    unico template disponivel era o do alarme e usa-lo aqui seria urgencia
+    falsa. O kind agora TEM template proprio — mas a invariante que importa
+    e a mesma de sempre, e continua sendo cobrada abaixo: o aviso de conta a
+    vencer diz a DATA, e nunca "chegou a hora".
+    """
+    nome, _ = templates.para_disparo(
+        {"kind": "vencimento", "item_id": 1, "quando": "20/08"})
+    assert nome != "resolveai_lembrete_hora", (
+        "o aviso antecipado voltou a usar o template de alarme")
+    corpo = templates.CATALOGO[nome].corpo.lower()
+    assert "chegou a hora" not in corpo, corpo
+    assert "vence" in corpo, ("o aviso antecipado precisa dizer QUANDO "
+                              "vence; sem isso ele e so urgencia")
+
+
+def test_sem_data_o_aviso_de_vencimento_nao_sai():
+    """FAIL-CLOSED. O corpo promete "vence em X"; sem X, o template nao
+    pode sair preenchendo com "em breve" — fora da janela de 24h essa e a
+    UNICA mensagem que a pessoa recebe, e ela chegaria oca.
+
+    Achado da auditoria M2.5 (P0-2): o `check_due_items` nao punha `quando`
+    no disparo, e 100% dos envios sairiam "vence em *em breve*". O teste
+    que existia fabricava o campo na mao — atestava o que nao verificou.
+    """
+    nome, variaveis = templates.para_disparo(
+        {"kind": "vencimento", "item_id": 1})
+    assert nome is None, f"saiu template sem data: {variaveis}"
 
 
 def test_alarme_na_hora_usa_template(usuario):
@@ -258,8 +285,17 @@ def test_instrucoes_dos_templates_existem_no_codigo():
     import re as _re
     citados = set()
     for t in templates.CATALOGO.values():
-        for m in _re.finditer(r"\*([a-zà-ú0-9 ]{2,20})\*", t.corpo.lower()):
-            citados.add(m.group(1).strip())
+        # SEM PADDING dentro dos asteriscos. `*feito*` e comando; o
+        # " vence em " de `*{{2}}* vence em *{{3}}*` e so o miolo entre dois
+        # negritos, e sinalizava comando inexistente onde nao havia nenhum.
+        # Nenhum comando de verdade tem espaco colado ao asterisco, entao o
+        # filtro nao afrouxa a checagem.
+        for m in _re.finditer(r"\*([a-zà-ú0-9][a-zà-ú0-9 ]{1,19})\*",
+                              t.corpo.lower()):
+            achado = m.group(1)
+            if achado != achado.strip():
+                continue
+            citados.add(achado)
 
     conhecidos = set(wa_bot.LISTA_COMANDOS)
     conhecidos |= {p.strip() for p in wa_bot._BAIXA_RE.pattern.split("|")

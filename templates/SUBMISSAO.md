@@ -57,7 +57,7 @@ Responda *feito* que eu dou baixa, ou *adiar 1h* se precisar de mais tempo.
 **Corpo:**
 
 ```
-{{1}}, *{{2}}* venceu {{3}} e eu não registrei a baixa.
+Oi {{1}}, *{{2}}* venceu {{3}} e eu não registrei a baixa.
 
 Responda *feito* se já resolveu, ou *adiar* que eu remarco.
 ```
@@ -83,7 +83,7 @@ Responda *feito* se já resolveu, ou *adiar* que eu remarco.
 **Corpo:**
 
 ```
-{{1}}, você tem *{{2}}* compromisso(s) guardado(s) para os próximos dias.
+Oi {{1}}, você tem *{{2}}* compromisso(s) guardado(s) para os próximos dias.
 
 O mais próximo é *{{3}}*.
 
@@ -111,7 +111,7 @@ Responda *ver tudo* para a lista completa.
 **Corpo:**
 
 ```
-{{1}}, você tem *{{2}}* item(ns) pendente(s) guardado(s) aqui.
+Oi {{1}}, você tem *{{2}}* item(ns) pendente(s) guardado(s) aqui.
 
 O mais antigo é *{{3}}*.
 
@@ -139,7 +139,7 @@ Responda *ver tudo* para revisar a lista.
 **Corpo:**
 
 ```
-{{1}}, seu período de teste termina em *{{2}}* dia(s).
+Oi {{1}}, seu período de teste termina em *{{2}}* dia(s).
 
 Seus *{{3}}* item(ns) e lembretes continuam guardados. Se precisar de qualquer coisa, é só responder aqui.
 ```
@@ -153,5 +153,64 @@ Seus *{{3}}* item(ns) e lembretes continuam guardados. Se precisar de qualquer c
 **Justificativa (cole no campo de descrição, se pedido):**
 
 > Aviso factual sobre o fim do período de teste da conta e sobre a preservação dos dados do usuário. Não contém oferta, preço nem chamada de compra.
+
+---
+
+## `resolveai_conta_a_vencer`
+
+- **Nome:** `resolveai_conta_a_vencer`
+- **Categoria:** UTILITY
+- **Idioma:** pt_BR
+
+**Corpo:**
+
+```
+Oi {{1}}, *{{2}}* vence em *{{3}}*.
+
+Responda *feito* quando resolver, ou *adiar* que eu remarco.
+```
+
+**Variáveis (exemplo para a submissão):**
+
+  - `{{1}}` -> `Kevin`
+  - `{{2}}` -> `conta de luz`
+  - `{{3}}` -> `20/08`
+
+**Justificativa (cole no campo de descrição, se pedido):**
+
+> Aviso de vencimento de um compromisso financeiro que o próprio usuário cadastrou no assistente, com a data que ele informou. Enviado uma vez por item por dia de aviso, e o usuário pode encerrar ou remarcar respondendo na mesma conversa.
+
+---
+
+## `resolveai_resumo_de_gastos`
+
+- **Nome:** `resolveai_resumo_de_gastos`
+- **Categoria:** UTILITY
+- **Idioma:** pt_BR
+
+**Corpo:**
+
+```
+Oi {{1}}, o resumo da sua semana: *{{2}}* em contas registradas.
+
+Onde mais pesou: *{{3}}*.
+{{4}}
+
+💡 {{5}}
+
+Responda *ver tudo* para a lista completa.
+```
+
+**Variáveis (exemplo para a submissão):**
+
+  - `{{1}}` -> `Kevin`
+  - `{{2}}` -> `R$ 342,90`
+  - `{{3}}` -> `Contas`
+  - `{{4}}` -> `Na semana passada foram R$ 280,00.`
+  - `{{5}}` -> `Chegou boleto? Me manda a foto que eu guardo a data.`
+
+**Justificativa (cole no campo de descrição, se pedido):**
+
+> Resumo semanal das despesas que o próprio usuário registrou no assistente, no dia da semana definido no cadastro. O conteúdo é exclusivamente o dado dele — total, categoria e comparação com a semana anterior. Não há oferta, preço de plano nem divulgação.
 
 ---

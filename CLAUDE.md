@@ -43,8 +43,14 @@ entende, guarda e avisa **antes** de vencer.
 
 - 11 usuários em trial, **0 pagantes**
 - MRR R$ 0,00 · custo ~R$ 101/mês · empata com 6 assinantes
-- Produção: `v23.4-fase1-baixa-deterministica-2026-08-16` (commit `63fb753`,
-  BUILD confirmado no `/health`: status ok · whatsapp open · llm on)
+- Produção: `v23.4-fase1-baixa-deterministica-2026-08-16` (commit `63fb753`)
+- No repo, pronto pra subir: **`v23.9-m25-ajustes-2026-08-18`** — Motor 2
+  (M2.0 templates · M2.1 boleto · M2.2 calendário · M2.3 heatmap) + M2.5
+  (tabela de SP conferida, submissão por API, resumo de gastos, relatório do
+  dono reescrito, reset de trial). **1120 testes.**
+- Depende de você: submeter os 7 templates (`python templates/submeter.py
+  --enviar`) e setar `TEMPLATES_APROVADOS`. Sem isso, proativa fora da
+  janela de 24h não sai — e isso é de propósito.
 
 ### O que a FASE 1 fechou (16/08/2026)
 

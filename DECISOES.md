@@ -53,3 +53,348 @@ Se uma decisão for revertida, não apague — acrescente a reversão com a data
 - **16/08/2026 — Os 4 caminhos de alerta do dono (`_alertar_dono`, `relatorio_matinal`, `maybe_admin_report`, `watchdog_check`) NÃO passam pela porta única.** Passar o alerta de falha por uma porta que pode recusar o envio faria o alerta sumir exatamente quando o sistema quebrou. O auditor concordou e pediu que a exceção fosse documentada com arquivo e motivo — está na seção M2.0 do `CLAUDE.md`. Custo aceito: no canal oficial, esses avisos não chegam se o Kevin não falar com o bot há 24h. Fechar isso direito pede um template UTILITY de operação para o número dele; ficou no backlog.
 - **16/08/2026 — Comando novo (`ver tudo`) vai DEPOIS dos gates de acesso, nunca em `_handle_commands`.** Eu pus no lugar errado e a auditoria pegou: usuário bloqueado pelo admin recebia a lista inteira de itens, e quem cancelou recebia a lista em vez do convite de reativação. O comentário que proíbe isso já estava no arquivo, com a data do incidente anterior.
 - **16/08/2026 — Descoberta durante o M2.0: hoje, no canal oficial, proativa para quem está fora da janela JÁ FALHA** (`meta_cloud.send_text` recebe erro 131047 da Meta). Ou seja, os templates não são otimização — são o que faz lembrete de gente inativa existir. Isso reforça a prioridade que o Kevin deu ao M2.0.
+
+---
+
+# M2.5 — os cinco ajustes antes de subir (18/08/2026)
+
+**Tabela de IPVA: apaguei o ano 2027 em vez de mantê-lo.** Ele era invenção
+minha (dias de 2026 deslocados pra fugir do fim de semana) e passava em todos
+os testes de forma que existiam. O calendário de SP não é derivável — o
+primeiro dia útil de janeiro que abre a fila é decisão da Sefaz, não regra.
+Sem edital conferido, nenhum lembrete. `ANOS_CONFERIDOS` é a trava que impede
+a próxima "ajudinha", e o dono é avisado 150 dias antes de a tabela acabar.
+
+**Licenciamento: guardo o MÊS e derivo o dia, não o contrário.** O edital dá
+mês limite. Guardar a data pronta convida a erro de transcrição — foi assim
+que a versão anterior nasceu com o final 0 repetindo a data do final 7. E o
+dia derivado é o último dia ÚTIL do mês: 31/10/2026 é sábado, o prazo legal
+não se estende por isso, e quem só for lembrado no dia 31 encontra banco
+fechado. O lembrete anda pra trás, nunca pra frente.
+
+**Os finais do licenciamento vêm pareados (1-2, 3-4, 5-6, 7-8).** O teste
+antigo exigia "dez datas distintas" e teria reprovado a tabela CERTA. Teste
+que pede simetria onde a fonte não tem simetria mede a si mesmo. Trocado por
+comparação com o edital literal.
+
+**Antecedência de veículo é D-30/D-7/D-1, e o gatilho é a CATEGORIA.**
+Farejar a palavra "licenciamento" na descrição seria a mesma regra por
+palavra-chave que custou quatro rodadas de auditoria no M2.1. `Veículo` é
+campo estrutural, com lista fechada. E fica restrito de propósito: se os 30
+dias vazarem pro resto, o bot vira o que avisa da conta de luz um mês antes.
+
+**A janela de consulta virou função, não constante.** `DUE_WINDOW_DAYS` é o
+filtro de SQL e `DUE_ALERT_DAYS` é o filtro em Python; mudar um sem o outro
+desliga o aviso em silêncio. Aconteceu comigo nesta mudança — o `wa_bot`
+sobrescreve a janela para 1 no import, e o D-30 não disparava com o código
+todo certo. Agora `definir_politica_de_aviso()` recalcula os dois juntos, e
+um teste checa a invariante DEPOIS de importar produção.
+
+**Prazo vencido é dito com todas as letras.** Em agosto o IPVA de janeiro já
+foi e o licenciamento dos finais 1 e 2 também: no meio do ano esse é o caso
+COMUM. O erro de produto aqui não seria criar o lembrete errado — seria o
+silêncio, com a pessoa saindo da conversa achando que está coberta. A
+resposta enumera o que venceu e diz explicitamente o que acontece com o ano
+seguinte.
+
+**Parcelamento do IPVA: menciono, não agendo.** 12/04/2026 é domingo, ou
+seja, "a parcela cai no mesmo dia todo mês" não sobrevive ao calendário real.
+
+**Submissão de template por API, seca por padrão.** O passo que fala com a
+Meta é o que você digita. "Já existe" é o resultado NORMAL da segunda
+execução e não pode derrubar o lote — senão você corrige um template
+reprovado e os outros seis nunca sobem. Credencial faltando diz o nome exato
+da variável: quem roda isso está no terminal do EasyPanel.
+
+**Dois templates novos, e o mais importante é o `conta_a_vencer`.** O aviso
+de vencimento é o disparo mais comum do produto e era o único sem template —
+o M2.0 tinha tirado ele do mapa porque o único template disponível diria
+"Chegou a hora", urgência falsa sem data. A decisão estava certa; a
+consequência (quem passa 24h calado não recebe aviso de conta) não. Agora o
+kind tem template próprio, que diz a data.
+
+**`KINDS_PROATIVOS` + `KINDS_SEM_TEMPLATE`:** para "esqueci de mapear" e
+"decidi não mapear" pararem de ter a mesma aparência. Um teste varre o
+código-fonte e cobra a volta, senão a lista envelhece em silêncio — que é o
+defeito que ela existe pra evitar.
+
+**Resumo de gastos conta o que foi REGISTRADO, não o que foi pago.** Medir
+pela baixa dependeria de a pessoa responder "paguei", e quem não responde é
+exatamente quem o resumo deveria alcançar: chegaria vazio pra quase toda a
+base. A mensagem diz "registradas" com essas palavras — não afirma que o
+dinheiro saiu, e por isso não herda a ambiguidade do `month_spend`.
+
+**Quem não tem dado não recebe o resumo, e o convite varia.** Resumo vazio é
+o jeito mais rápido de ensinar alguém a ignorar o bot — e depois disso os
+lembretes também passam batido, que é o produto inteiro. O rodízio de
+convites é determinístico (semana + id), então não repete na semana seguinte
+e não precisa guardar estado. Nenhum convite promete pagar nada: o guardrail
+de produto vale na copy também.
+
+**Relatório do dono: de descritivo para acionável.** A versão anterior estava
+correta e era pouco útil — empilhava saúde técnica, métrica de negócio e
+dinheiro na mesma altura visual, e mostrava sempre o valor de hoje sem
+comparação. Agora: seção *FAZER HOJE* no topo, no máximo 3 itens, cada um com
+o verbo do que fazer, e **só aparece quando existe algo** (seção que aparece
+todo dia vira cabeçalho, e cabeçalho a gente pula). Depois um número só —
+hábito — sempre com a tendência contra a semana anterior. O resto comprime em
+três linhas, porque detalhe é papel do dash.
+
+**Cada métrica do relatório é lida em `try` próprio.** Ele é o único lugar
+onde o dono descobre que algo quebrou; uma consulta ruim não pode apagar o
+relatório inteiro justamente no dia em que a falha aconteceu.
+
+**Reset de trial escreve em `trial_base`, nunca em `data_criacao`.**
+`data_criacao` alimenta "novos por dia" e a idade da base — mexer nela faria
+os 11 usuários parecerem ter entrado hoje. Um lugar só decide o relógio do
+trial (`_base_do_trial`), senão o trial guiado e o fim de trial passam a
+contar dias diferentes pra mesma pessoa.
+
+**O reset não toca em item, não ressuscita quem cancelou e não repete a régua
+do trial.** Comando que varre a base inteira de uma vez é o pior lugar
+possível pra "aproveitar e limpar" qualquer coisa (regra 10). Voltar o
+relógio sem preservar `trial_nudges_sent` faria 11 pessoas receberem de novo
+a mensagem de boas-vindas — o oposto de "testem as melhorias". Idempotente
+por dia: rodar de novo porque a primeira "pareceu não funcionar" não vira 28
+dias.
+
+**O comando é frase exata, não prefixo.** `startswith("resetar")`
+transformaria "me lembra de resetar o trial amanhã" numa escrita sobre a base
+inteira — o mesmo modo de falha do menu 1/2 que custou a FASE 1.
+
+**`admin_acoes`:** rastro de quem mexeu por fora do fluxo normal. Sem ele,
+"o trial de todo mundo voltou" não tem resposta pra "quem fez, quando, e em
+quantos".
+
+**Três vazamentos de estado entre testes, achados aqui e fechados na
+conftest:** `dispatches` (o dedup do relatório do dono usa `user_id=0` e
+escapava da limpeza — o primeiro teste passava e todos os seguintes recebiam
+string vazia), `trial_base` e `data_criacao` (um teste que envelhecia o
+usuário pra simular fim de trial deixava o motor proativo mudo em arquivos
+que não falam de trial nenhum). O padrão é o mesmo de sempre: teste que mede
+o banco acumulado em vez do próprio caso.
+
+## M2.5 — a rodada de auditoria (REPROVADO na primeira, 18/08/2026)
+
+Duas das cinco features não funcionavam em produção, com 1064 testes verdes, e
+as duas vieram do **conserto recém-escrito** — o padrão que o CLAUDE.md já
+registrava, confirmado pela 24ª rodada.
+
+**P0-1 — o resumo de gastos nunca era enviado.** `gastos_dispatches` foi
+criado no scheduler, entrou no `total`, ganhou template e ganhou teste, e
+nunca saía: a lista de chaves do `dispatch_proactive` era escrita à mão e
+ninguém acrescentou a nova. Sem erro, sem log, suíte verde. O conserto não é
+"acrescentar a chave" — é **derivar as chaves da resposta do motor**, porque
+a lista à mão transformava cada checagem nova numa chance de repetir isso. O
+teste que existia só afirmava `"gastos_dispatches" in out`; o novo vai do
+motor até o `falar`, e há um segundo que injeta uma chave inventada e exige
+que ela chegue ao envio.
+
+**P0-2 — o aviso de vencimento saía "vence em *em breve*".** O template lia
+`d["quando"]`, e o `check_due_items` nunca punha esse campo. 100% dos casos,
+e é a única mensagem que chega em quem passou 24h sem falar com o bot. O
+teste que existia **fabricava** `"quando"` num dict que a produção nunca
+produz — atestava o que não verificou. Agora o campo é preenchido na origem
+e o template é **fail-closed**: sem data, não sai. Texto que promete data e
+entrega "em breve" é o mesmo defeito de data errada, com outro nome.
+
+**P1-3 — o reset rebaixava assinante e desbloqueava banido.** A guarda só
+recusava `cancelado`. `set_status` aceita quatro estados; o único que faz
+sentido resetar é `trial`. Hoje há 0 pagantes — é o primeiro que paga a
+conta.
+
+**P1-4 — cinco dos sete corpos começavam em `{{1}}`.** O repo declarava a
+regra num comentário e aplicava só a metade "termina". E o
+`resolveai_resumo_de_gastos` tinha `{{4}}\n\n{{5}}` — parâmetros adjacentes,
+outra reprovação certa. O "💡" entre os dois não é enfeite. Nenhum estava
+submetido, então corrigir custou zero; se estivessem, custaria uma rodada de
+espera por causa de um "Oi".
+
+**P1-5 — a ação que vale dinheiro era a primeira cortada.** As ações saíam na
+ordem em que eu escrevi os `if`, e com teto de 3 itens "decidem em até 3 dias"
+caía fora sempre que houvesse três problemas técnicos — a única linha do
+relatório em que um dia de atraso custa um assinante. Agora cada ação tem
+PESO, e o corte diz quantas ficaram de fora. E o aviso do calendário passou a
+cobrar **só às segundas**: diário, ele faria a seção *FAZER HOJE* aparecer
+todos os dias de agosto a dezembro, virando o cabeçalho que a própria seção
+promete não ser. Depois que a tabela estoura, aí sim é todo dia — é falha em
+curso, não aviso preventivo.
+
+**P1-6 — a resposta da placa calava sobre 2027 justamente para quem recebia
+lembrete.** A frase só existia no ramo "não criei nada". Quem recebe o item
+terminava lendo "eu te aviso com antecedência" e supunha estar coberto —
+inclusive o final 0, cujo licenciamento cai em 31/12 e cujo IPVA vem 23 dias
+depois. Era o mesmo "pular calado pra 2027" proibido pelo dono, no ramo que
+ninguém tinha testado.
+
+**Achado meu, lendo as dez respostas depois do conserto:** a nota do
+parcelamento tinha ficado colada na linha do LICENCIAMENTO, descrevendo a
+coisa errada — "pague em 5x" embaixo do licenciamento é informação falsa
+sobre dinheiro. Ela agora gruda no IPVA, e quando o IPVA já venceu ela vira
+"no ano que vem dá pra...".
+
+**Mutação depois dos consertos: 18 de 18 mortos.** Os que sobreviveram na
+auditoria (`engajamento` sem limite superior de janela, porta larga no reset,
+licenciamento sem o "mês inteiro", tendência sempre "igual", teto de ações,
+relatório com a base fora do ar) ganharam teste cada um.
+
+## M2.5 — rodada 2 da auditoria (REPROVADO de novo, 18/08/2026)
+
+Nenhum dos oito consertos da rodada 1 estava errado. **A reprovação foi pelo
+que eles encostaram** — três P1, e o primeiro é o mais caro do projeto.
+
+**O reset de trial DESLIGAVA a extensão de 7 dias, em silêncio.** O M2.5 criou
+`trial_base` e `_base_do_trial`, que lê `trial_base` primeiro. O
+`admin_extend_trial` continuou escrevendo em `data_criacao`. Depois de um
+reset, `trial_base` existe → a extensão vira no-op. Três estragos numa
+tacada: a frase se contradiz na mesma linha ("liberei +7 dias — agora são
+14"), a pessoa perde 7 dias, e o `log_dispatch("extensao-trial")` é queimado
+sem a ação ter acontecido — e a extensão é **uma por usuário**, então some
+pra sempre. É exatamente o padrão que o CLAUDE.md registra como o defeito
+mais caro daqui ("quem marca dedup é quem envia"), do lado errado. E atingia
+os 11 usuários que o reset existe pra atender.
+
+Conserto: **um relógio só.** Todo mundo que mexe no prazo do trial escreve em
+`trial_base` — `admin_extend_trial` e `set_created_days_ago` inclusive. Esse
+último é utilitário de teste, e virava no-op depois de um reset: qualquer
+teste futuro que simulasse fim de trial mediria nada e passaria. Teste cego é
+pior que teste ausente.
+
+**"Quando sair, eu crio o lembrete sozinho" era mentira.** O final da placa
+não era guardado em lugar nenhum — vivia numa variável local e morria no
+`return`. Não existe job que releia a tabela. Quando 2027 entrasse, nada
+aconteceria, e a pessoa não teria como saber. E o conserto do P1-6 tinha
+acabado de espalhar essa frase para as outras 8 respostas.
+
+Conserto em duas pontas: o final passou a ser **guardado** (`users.placa_final`
+— o "Anotei o final N" virou verdade), e a copy passou a dizer **"me manda a
+placa de novo que eu crio na hora"**. Promessa que o código não cumpre é pior
+que promessa nenhuma: ela faz a pessoa parar de procurar a informação em
+outro lugar.
+
+**O conserto do P0-1 ligou dois digests semanais na mesma manhã.** Enquanto o
+resumo de gastos não era enviado, ninguém via; assim que passou a sair, a
+pessoa recebia duas proativas em segundos, com conteúdo sobreposto — o
+`dia_resumo` default é segunda e o gastos estava fixo na segunda. Num número
+com duas restrições da Meta no histórico, isso é comprar a terceira.
+
+Conserto: o dia do resumo de gastos é **derivado** (`dia_de_gastos`) e nunca
+coincide com o `dia_resumo` da pessoa — quem tem o resumo na segunda recebe os
+gastos na terça. A escolha é por `dia_resumo` e **não** por "já disparou
+hoje", porque o dedup só é marcado no ENVIO: no momento do check o resumo do
+dia ainda não saiu, e depender disso seria corrida entre dois checks.
+
+**Dois `else` mudos que eram o P0-1 esperando outro tipo de dado:** valor
+`*_dispatches` que não fosse `list` sumia sem log (com o log dizendo "0 pra
+enviar"), e template mapeado sem ramo de montagem devolvia `(None, [])` calado
+— fora da janela, nunca sairia, sem sinal. Os dois viraram `log.error`.
+
+**A composição das ações estava fora do `_seguro`**, enquanto a docstring
+prometia o contrário: um nome só com espaço estourava `IndexError`, o
+relatório das 8h não saía, o `log_dispatch` não gravava, e o cron repetia a
+falha a cada ciclo das 8h às 12h — todo dia.
+
+**"+N no dash" apontava pra um lugar que não tem o item** (o aviso de
+calendário não existe no dash). Virou "+N não mostrada(s)".
+
+**A `NOTA_IPVA` estava inalcançável e duplicada:** a constante só rodava de 01
+a 23 de janeiro, e o texto que de fato saía era uma cópia à mão que perdia o
+"de fevereiro a maio". Duas versões da mesma informação sobre dinheiro, e a
+canônica era a que não rodava. Agora são duas constantes no `calendario.py`,
+usadas nos três ramos — inclusive no dos finais 1 e 2, que perderam tudo
+neste ano e eram os únicos sem a informação útil pro ano que vem.
+
+**A ressalva sobre 2027 passou a vir DEPOIS da promessa.** No conserto da
+rodada 1 ela ficava no meio, e a última linha voltava a ser "eu te aviso com
+antecedência", sem qualificação.
+
+**`DUE_ALERT_DAYS={1}` virou o default do `scheduler`** em vez de override do
+`wa_bot`: o `app.py` importa `scheduler` sem importar `wa_bot`, então o painel
+simulava D-3/D-1/D-0 enquanto a produção mandava D-1.
+
+**A tendência não inventa mais crescimento**: comparar contra uma semana sem
+base dava "▲ 2.00 vs. semana passada", que lê como progresso e é só o primeiro
+dado existindo. E `total_anterior` passou a usar o mesmo filtro do lado atual
+— sem isso a comparação tinha viés embutido, sempre na mesma direção.
+
+**Vazamento de estado nº 4, causado por um teste meu:** um caso trocava o
+`dia_resumo` pra provar a regra e não restaurava, e todos os seguintes
+mediam o dia errado — com sintoma de "o motor proativo não dispara", que
+parece defeito de produção. A `conftest` agora restaura `dia_resumo`,
+`placa_final`, `trial_base` e `data_criacao`.
+
+## M2.5 — rodada 3 da auditoria (REPROVADO, 2 P1 de uma linha)
+
+Escopo pequeno pela primeira vez, e os dois achados são o conserto da rodada
+2 encostando em código antigo.
+
+**O painel mentia sobre o trial.** `admin_list_users` era o único `SELECT` de
+usuário escrito à mão no projeto — todo o resto usa `SELECT *`. Por isso foi o
+único que não viu a coluna `trial_base` nascer: o painel contava pelo
+`data_criacao` enquanto o bot contava pelo relógio novo. O dono clicava em
+"+7 dias", o número não mexia, ele clicava de novo — e **cada clique dava +7
+de verdade**, invisível. Virou `SELECT u.*`: coluna nova não pode depender de
+alguém lembrar de vir aqui.
+
+**A extensão ainda queimava a chance única sem executar.** Eu tinha escrito na
+docstring do `admin_extend_trial` que esse padrão estava consertado, e deixei
+o único chamador de usuário sem o `if`. Falha o UPDATE → a pessoa lê "liberei
++7 dias" (o `faltam` relê o usuário não alterado) → `dispatched_ever` a
+bloqueia para sempre, porque a extensão é uma por usuário.
+
+**Seção de ação quebrada some inteira.** O `_seguro` devolvia `[]`, e ausência
+de seção lê como "não tem nada a fazer" — que é o estado default. Silêncio que
+imita normalidade é o pior no-op. Agora a seção aparece dizendo que o cálculo
+falhou.
+
+**Quatro testes meus eram cegos** — passavam com o conserto e sem ele:
+
+- o do cooldown ia de terça pra quarta, e `dia_de_gastos` nunca devolve quarta
+  (só segunda ou terça): a lista vinha vazia por outro motivo;
+- o mesmo teste, refeito, ainda sobrevivia a `COOLDOWN=1`, porque os dois
+  envios tinham a mesma hora e 24h pra trás ainda alcançavam o primeiro. O
+  cron roda a cada 5–15 min: basta o primeiro sair 8h30 e o segundo 9h;
+- o ramo "não tenho o calendário desse ano" não tinha teste nenhum — e a
+  partir de 01/01/2027 ele é a **única** resposta que o bot dá pra placa;
+- a ordem da ressalva de 2027 (o P2-7 era exatamente a ordem) só era checada
+  por presença.
+
+Lição que fica: **teste que verifica presença não verifica posição, e teste de
+cooldown que usa a mesma hora nos dois pontos não verifica duração.**
+
+## M2.5 — rodada 4: APROVADO, com uma condição nomeada (18/08/2026)
+
+Nenhum P0/P1 no código de produção. O auditor nomeou uma condição e apontou
+quatro P2 — fechei os cinco.
+
+**A condição: um teste meu era placebo.** `test_em_2027_a_unica_resposta_da_
+placa_nao_promete_nada` proibia o literal `"sozinho"`. Qualquer redação nova
+("pode deixar comigo", "eu te aviso quando chegar a hora") passava, e o teste
+contava como cobertura que não existia — no ramo que, a partir de 01/01/2027,
+vira a **única** resposta que o bot dá pra placa.
+
+Proibir a lista de palavras também não serve: _"me manda a placa que **eu
+crio** os lembretes"_ é legítimo — a promessa está condicionada à pessoa agir.
+O que separa uma da outra é a **posição**: toda promessa tem que vir DEPOIS do
+pedido. Promessa antes do pedido é promessa que o bot faz sozinho, e essa ele
+não cumpre. Virou invariante de posição, não lista de palavras.
+
+**Vazamento que o meu próprio conserto causou.** O `SELECT u.*` do P1-1
+consertou o painel e passou a linha INTEIRA de `users` para o `/api/pulso` —
+`idade`, `profissao`, `carro_modelo`, `pet_info`, `placa_final`,
+`lgpd_aceite_em` — da base toda, num endpoint cuja chave viaja em query
+string. Não sai do perímetro do token, mas o estrago de uma URL vazada saltou
+de "nome e telefone" para dossiê.
+
+Conserto com os dois lados no lugar certo: **o SQL continua trazendo tudo**
+(coluna nova não pode depender de alguém lembrar de ir no SELECT) e **a saída
+entrega só o que o painel usa**. Whitelist na serialização, não na consulta.
+
+**`admin_extend_trial` desbloqueava quem foi bloqueado** — `status='trial'`
+incondicional. É a mesma porta que o `resetar_trial` fechou nesta fase, e esta
+função tinha ficado aberta. O botão "+dias" do painel devolvia acesso.
+
+**`_base_do_trial` engolia `ValueError` sem log:** data ilegível virava trial
+que nunca expira, em silêncio, sem uma linha no servidor. A direção do
+fallback (não cortar acesso por campo torto) agora tem teste, e não só um
+comentário dizendo que era de propósito.

@@ -78,19 +78,32 @@ print("\n" + "=" * 52)
 print(msg)
 print("=" * 52 + "\n")
 
+# ATUALIZADO NO M2.5, quando o relatório foi redesenhado.
+#
+# O que mudou: saúde técnica, risco e "quem decide em 3 dias" deixaram de ter
+# linha fixa e passaram a aparecer SÓ quando exigem ação, na seção do topo —
+# a diferença entre um relatório que descreve e um que aponta. Então o que se
+# checa aqui agora é o que sempre sai (hábito, movimento, base, dinheiro,
+# link) mais a existência da seção de ação, que o cenário deste script
+# dispara por ter falha de envio ontem.
 print("2. Tem tudo que importa")
 for rotulo, trecho in [
-    ("estado da conexão", "WhatsApp:"),
-    ("risco do número", "Número:"),
+    ("seção de ação", "FAZER HOJE"),
     ("falhas de ontem", "falha(s) de envio"),
-    ("demandas por pessoa/dia", "demandas por pessoa/dia"),
+    ("hábito por pessoa/dia", "msg por pessoa/dia"),
+    # O texto muda quando NAO ha semana anterior pra comparar (M2.5): o
+    # relatorio diz "(primeira semana com base pra comparar)" em vez de
+    # inventar um "▲ 2.00 vs. semana passada" que le como crescimento e e
+    # so o primeiro dado existindo. Os dois sao tendencia; o que nao pode e
+    # sumir o eixo temporal.
+    ("tendência da semana", ("semana passada", "primeira semana")),
     ("movimento de ontem", "Ontem:"),
     ("base", "Base:"),
-    ("quem decide em 3d", "Decidem em até 3 dias"),
-    ("bruto e líquido", "Líquido"),
+    ("líquido", "Líquido"),
     ("link do dash", "/dash?k="),
 ]:
-    check(f"tem {rotulo}", trecho in msg, msg[:60])
+    _opcoes = trecho if isinstance(trecho, tuple) else (trecho,)
+    check(f"tem {rotulo}", any(o in msg for o in _opcoes), msg[:60])
 
 check("tem veredito de engajamento",
       any(v in msg for v in ("virou hábito", "no limite",

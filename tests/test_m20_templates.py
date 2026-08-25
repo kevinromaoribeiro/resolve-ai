@@ -32,10 +32,11 @@ def test_catalogo_tem_os_cinco():
     assert esperados <= set(templates.CATALOGO)
 
 
-@pytest.mark.parametrize("nome", [
-    "resolveai_lembrete_hora", "resolveai_item_vencido",
-    "resolveai_resumo_do_dia", "resolveai_reengajamento_pendentes",
-    "resolveai_fim_de_trial_aviso"])
+# LISTA DERIVADA, NAO ESCRITA A MAO. Esta parametrizacao era a lista fixa
+# dos cinco primeiros, e os dois templates do M2.5 escaparam da checagem de
+# UTILITY, idioma, nome, limite de 1024 e justificativa — a guarda envelheceu
+# calada, que e o mesmo defeito que ela existe pra pegar (auditoria M2.5).
+@pytest.mark.parametrize("nome", sorted(templates.CATALOGO))
 def test_template_e_utility_valido(nome):
     t = templates.CATALOGO[nome]
     assert t.categoria == "UTILITY", f"{nome} nao e utility"

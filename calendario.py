@@ -17,10 +17,14 @@ licenciamento funcionam igual; feriado nacional é calculável (fixos + os
 móveis, que derivam da Páscoa), então a API é atalho, nunca dependência.
 
 COMO ATUALIZAR (uma vez por ano, quando o estado publica):
-  1. acrescente o ano em `IPVA` e `LICENCIAMENTO` abaixo
-  2. rode `pytest tests/test_m22_calendario.py`
-  3. sem o ano na tabela o bot NÃO cria lembrete nenhum — ele não chuta a
-     data do ano anterior, porque o calendário muda todo ano.
+  1. pegue o edital na Sefaz-SP e CONFIRA com os olhos
+  2. acrescente o ano em `IPVA` (dias) e `LICENCIAMENTO_MES` (meses)
+  3. acrescente o ano em `ANOS_CONFERIDOS` — sem isso o teste reprova, e é
+     essa trava que impede alguém de "deduzir" o calendário do ano seguinte
+  4. rode `pytest tests/test_m22_calendario.py tests/test_m25_calendario_oficial.py`
+  5. sem o ano na tabela o bot NÃO cria lembrete nenhum — ele não chuta a
+     data do ano anterior, porque o calendário muda todo ano. O dono é
+     avisado com 150 dias de antecedência (`tabela_expirando`).
 """
 from __future__ import annotations
 
@@ -44,40 +48,126 @@ log = logging.getLogger("resolveai")
 # placa no Brasil, e a primeira versão desta tabela o enfiava no meio: no
 # IPVA ele caía entre o 7 e o 8, e no licenciamento ele REPETIA a data do
 # final 7 — ou seja, todo dono de placa final 0 recebia o lembrete com dois
-# meses de erro. Duas checagens em teste travam isso agora: dez datas
-# distintas por tipo/ano, e o final 0 tem que ser a maior data do conjunto.
+# meses de erro. O que trava isso agora e a tabela ser a FONTE transcrita
+# (dia do IPVA, mes do licenciamento) e o teste comparar com o edital literal.
+# SÓ ENTRA ANO QUE UM HUMANO CONFERIU CONTRA O EDITAL.
+#
+# A primeira versão desta tabela trazia um 2027 inteiro que eu produzi
+# deslocando os dias de 2026 pra fugir do fim de semana. Ele passava em TODOS
+# os testes que existiam — dez datas distintas, nenhuma em sábado, final 0 por
+# último — porque teste de forma não enxerga data errada. Seriam 365 dias de
+# lembrete no dia errado, sem log, sem exceção, sem nada quebrando.
+#
+# O calendário de SP não é derivável: os dias saem em dias ÚTEIS consecutivos
+# de janeiro, mas qual é o primeiro deles é decisão da Sefaz, não regra. Então
+# ano sem edital publicado = ano fora da tabela = nenhum lembrete. É pior pro
+# usuário e é o único jeito honesto.
+ANOS_CONFERIDOS = {2026}
+
 IPVA = {
+    # Conferido pelo dono contra a Sefaz-SP em 17/08/2026.
+    # Cota única / 1ª parcela, automóveis.
     ("SP", 2026): {1: "2026-01-12", 2: "2026-01-13", 3: "2026-01-14",
                    4: "2026-01-15", 5: "2026-01-16", 6: "2026-01-19",
                    7: "2026-01-20", 8: "2026-01-21", 9: "2026-01-22",
                    0: "2026-01-23"},
-    ("SP", 2027): {1: "2027-01-12", 2: "2027-01-13", 3: "2027-01-14",
-                   4: "2027-01-15", 5: "2027-01-18", 6: "2027-01-19",
-                   7: "2027-01-20", 8: "2027-01-21", 9: "2027-01-22",
-                   0: "2027-01-25"},
 }
 
-LICENCIAMENTO = {
-    ("SP", 2026): {1: "2026-04-30", 2: "2026-05-29", 3: "2026-06-30",
-                   4: "2026-07-31", 5: "2026-08-31", 6: "2026-09-30",
-                   7: "2026-10-30", 8: "2026-11-30", 9: "2026-12-22",
-                   0: "2026-12-30"},
-    ("SP", 2027): {1: "2027-04-30", 2: "2027-05-31", 3: "2027-06-30",
-                   4: "2027-07-30", 5: "2027-08-31", 6: "2027-09-30",
-                   7: "2027-10-29", 8: "2027-11-30", 9: "2027-12-22",
-                   0: "2027-12-30"},
+# O IPVA de SP também pode ser pago em 5x (parcelas 2 a 5 em fev/mar/abr/mai)
+# ou em cota única com desconto. O bot MENCIONA, e não agenda: 12/04/2026 é
+# domingo, ou seja, "a parcela cai no mesmo dia todo mês" é regra de boca que
+# o calendário real não cumpre. Mencionar é serviço; agendar cinco datas
+# chutadas é o oposto do que este módulo existe pra fazer.
+NOTA_IPVA = ("_Dá pra pagar em cota única com desconto ou parcelar em até 5x "
+             "— as outras parcelas caem de fevereiro a maio._")
+
+# A MESMA INFORMAÇÃO, pra quem já perdeu o deste ano. Ela mora aqui e não
+# solta no `wa_bot` porque a primeira versão tinha DUAS cópias do texto: a
+# constante (que só era alcançável de 01 a 23 de janeiro, ou seja, quase
+# nunca) e uma cópia à mão que perdia o "de fevereiro a maio". Duas versões
+# da mesma informação sobre dinheiro, e a canônica era a que não rodava.
+NOTA_IPVA_ANO_QUE_VEM = ("_No ano que vem dá pra pagar em cota única com "
+                         "desconto ou parcelar em até 5x, de fevereiro a "
+                         "maio._")
+
+# LICENCIAMENTO — o edital dá MÊS LIMITE, não dia marcado.
+#
+# Guardar o mês e derivar o dia é o que mantém a tabela igual à fonte. Guardar
+# a data já pronta convida a errar na transcrição, e foi exatamente assim que
+# a versão anterior nasceu com o final 0 repetindo a data do final 7.
+#
+# Os finais vêm PAREADOS de propósito (1-2, 3-4, 5-6, 7-8): é assim no edital.
+# Um teste anterior exigia "dez datas distintas" e teria reprovado a tabela
+# certa — teste que pede simetria onde a fonte não tem.
+LICENCIAMENTO_MES = {
+    # Conferido pelo dono em 17/08/2026 — carros, motos, ônibus e reboques.
+    ("SP", 2026): {1: 7, 2: 7, 3: 8, 4: 8, 5: 9, 6: 9,
+                   7: 10, 8: 10, 9: 11, 0: 12},
 }
 
-ANOS_COBERTOS = sorted({ano for _, ano in IPVA})
-UFS_COBERTAS = sorted({uf for uf, _ in IPVA})
+
+def _ultimo_dia_util(ano: int, mes: int) -> date:
+    """O último dia do mês em que dá pra RESOLVER.
+
+    O prazo não se estende porque caiu no fim de semana — 31/10/2026 é sábado
+    e continua sendo o limite legal. Quem só for lembrado no dia 31 encontra
+    o banco fechado e perde o prazo. Então o lembrete anda pra trás, nunca
+    pra frente.
+    """
+    d = date(ano + (mes == 12), (mes % 12) + 1, 1) - timedelta(days=1)
+    while d.weekday() >= 5 or d.isoformat() in feriados(ano):
+        d -= timedelta(days=1)
+    return d
 
 
-def vencimentos(uf: str, final_placa, ano: int) -> list:
-    """[{tipo, data, rotulo}] para este final de placa neste ano.
+def _licenciamento_derivado() -> dict:
+    return {chave: {final: _ultimo_dia_util(chave[1], mes).isoformat()
+                    for final, mes in tabela.items()}
+            for chave, tabela in LICENCIAMENTO_MES.items()}
+
+
+ANOS_COBERTOS = sorted({ano for _, ano in IPVA}
+                       | {ano for _, ano in LICENCIAMENTO_MES})
+UFS_COBERTAS = sorted({uf for uf, _ in IPVA}
+                      | {uf for uf, _ in LICENCIAMENTO_MES})
+
+# Aviso ao DONO quando a manutenção anual está chegando. Manutenção que
+# depende de alguém lembrar em dezembro é manutenção que não acontece — e
+# esta falha é silenciosa: o bot simplesmente para de criar lembrete de carro,
+# sem erro nenhum em lugar nenhum.
+AVISAR_TABELA_A_VENCER_DIAS = 150
+
+
+def tabela_expirando(hoje: Optional[date] = None) -> Optional[str]:
+    """Recado pro dono quando o último ano coberto está acabando, ou None."""
+    if not ANOS_COBERTOS:
+        return "o calendário de IPVA/licenciamento está VAZIO"
+    hoje = hoje or date.today()
+    ultimo = max(ANOS_COBERTOS)
+    if hoje.year > ultimo:
+        return (f"o calendário de IPVA/licenciamento parou em {ultimo} — "
+                f"nenhum lembrete de carro está sendo criado")
+    faltam = (date(ultimo, 12, 31) - hoje).days
+    if faltam > AVISAR_TABELA_A_VENCER_DIAS:
+        return None
+    return (f"o calendário de IPVA/licenciamento vai até {ultimo} "
+            f"(faltam {faltam} dias) — pegar o edital de {ultimo + 1} "
+            f"na Sefaz")
+
+
+def vencimentos(uf: str, final_placa, ano: int,
+                hoje: Optional[date] = None) -> list:
+    """[{tipo, data, rotulo, prazo, passado}] para este final neste ano.
 
     Lista VAZIA quando não se sabe — UF fora da tabela, ano não publicado,
     final inválido. Vazio é resposta legítima: melhor não criar lembrete do
     que criar no dia errado.
+
+    `passado` só é calculado quando `hoje` é informado, e existe porque o
+    prazo VENCIDO é o caso mais comum no meio do ano: em agosto, o IPVA de
+    janeiro já foi e o licenciamento dos finais 1 e 2 também. Quem chama
+    precisa distinguir "não tenho essa data" de "essa data já passou" — as
+    duas geram zero lembretes e exigem respostas completamente diferentes.
     """
     try:
         final = int(final_placa)
@@ -95,8 +185,15 @@ def vencimentos(uf: str, final_placa, ano: int) -> list:
         if not data:
             log.info("[calendario] sem tabela de %s para %s/%s", tipo, uf, ano)
             continue
-        saida.append({"tipo": tipo, "data": data,
-                      "rotulo": f"{rotulo} (final {final})"})
+        item = {"tipo": tipo, "data": data,
+                "rotulo": f"{rotulo} (final {final})",
+                "passado": bool(hoje and data < hoje.isoformat())}
+        if tipo == "licenciamento":
+            # O prazo do licenciamento é o MÊS. `data` é só o último dia em
+            # que dá pra pagar — quem recebe precisa dos dois pra escrever
+            # "você tem julho inteiro" em vez de "vence dia 31".
+            item["prazo_mes"] = LICENCIAMENTO_MES[(uf, ano)][final]
+        saida.append(item)
     return saida
 
 
@@ -229,3 +326,9 @@ def feriados(ano: int) -> dict:
     com o mesmo cuidado de não ficar no caminho de resposta.
     """
     return _feriados_calculados(ano)
+
+
+# Derivado AQUI NO FIM de propósito: `_ultimo_dia_util` consulta `feriados`,
+# que só existe depois. Módulo-nível, não por chamada — a tabela é imutável e
+# recalcular a Páscoa a cada consulta seria trabalho por nada.
+LICENCIAMENTO = _licenciamento_derivado()

@@ -31,7 +31,7 @@ import base64
 import os
 import re
 import unicodedata
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import tempo
 from typing import Any, Optional
 
@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v23.8-m23-heatmap-2026-08-17"
+BUILD = "v23.9-m25-ajustes-2026-08-18"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -163,8 +163,16 @@ PASSADO_AVISADO: dict = {}
 # usuário silencia o bot. Fica só o D-1.
 # (O alarme de hora marcada continua: aquilo o usuário pediu explicitamente,
 # não é aviso automático de vencimento.)
-scheduler.DUE_ALERT_DAYS = {1}
-scheduler.DUE_WINDOW_DAYS = 1
+#
+# A EXCEÇÃO É OBRIGAÇÃO ANUAL DE VEÍCULO (M2.5): licenciamento e IPVA têm
+# prazo de mês, valor alto e nenhuma segunda chance. Avisar isso em D-1 é
+# avisar tarde. Lá a régua é D-30/D-7/D-1, que a `DUE_ALERT_DAYS_POR_CATEGORIA`
+# do scheduler define.
+#
+# Passa pela função, e não por atribuição direta, porque a JANELA de consulta
+# (`DUE_WINDOW_DAYS`) tem que ser recalculada junto: com a janela em 1, o item
+# de D-30 nem é lido do banco e o aviso some sem erro nenhum.
+scheduler.definir_politica_de_aviso(padrao={1})
 
 EVOLUTION_URL = os.environ.get("EVOLUTION_URL", "http://localhost:8080").rstrip("/")
 EVOLUTION_APIKEY = os.environ.get("EVOLUTION_APIKEY", "")
@@ -436,6 +444,12 @@ def _maybe_master_reset(phone: str, text: str) -> Optional[str]:
             "novo agora — pode testar o fluxo desde o início. Manda um *oi*.")
 
 
+# M2.5 — a frase exata, e nada perto dela. Ver o comentario no handler.
+_RESET_TRIAL_RE = re.compile(
+    r"^\s*resetar\s+(?:o\s+)?trial\s+(?:de\s+)?todos\s*[.!]?\s*$",
+    re.IGNORECASE)
+
+
 def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     """Comandos globais (LGPD, assinatura, admin). Retorna resposta ou None."""
     low = text.strip().lower()
@@ -564,7 +578,17 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
             return (f"Já te dei uma extensão, {user['nome'].split()[0]} — "
                     f"restam *{faltam} dia(s)*. Se precisar de mais, me fala "
                     f"que eu aviso o Kevin. 🙂")
-        db.admin_extend_trial(user["id"], TRIAL_EXTENSAO_DIAS)
+        # QUEM MARCA O DEDUP E QUEM EXECUTOU. O retorno era ignorado e o
+        # `log_dispatch` gravava do mesmo jeito: com o UPDATE falhando, a
+        # pessoa lia "liberei +7 dias" (o `faltam` relia o usuario nao
+        # alterado) e o `dispatched_ever` a bloqueava PARA SEMPRE — a
+        # extensao e uma por usuario. E a regra que o CLAUDE.md registra
+        # como o defeito mais caro daqui, no ultimo caminho onde ela ainda
+        # estava aberta (auditoria M2.5, rodada 3).
+        if not db.admin_extend_trial(user["id"], TRIAL_EXTENSAO_DIAS):
+            return ("Não consegui liberar os dias agora — o erro está no "
+                    "log e *nada foi gasto*. Me chama daqui a pouco que eu "
+                    "tento de novo.")
         db.log_dispatch(user["id"], "extensao-trial")
         faltam = db.trial_days_left(db.get_user(user["id"]), TRIAL_DAYS)
         return (f"Feito. ✅ Liberei *+{TRIAL_EXTENSAO_DIAS} dias* pra você — "
@@ -596,6 +620,32 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         return (f"Pronto, agora é *{novo.split()[0]}*. "
                 f"{'Eu vinha te chamando de ' + anterior.split()[0] + ' — foi mal. ' if anterior and anterior.split()[0].lower() != novo.split()[0].lower() else ''}"
                 f"Anotado pra sempre. ✅")
+
+    # --- admin: reset de trial da base inteira (M2.5) -----------------------
+    #
+    # PORTA ESTREITA, e nao por preciosismo: este comando escreve em TODA a
+    # base de uma vez. "me lembra de resetar o trial amanha" e um LEMBRETE,
+    # e um `startswith("resetar")` transformaria essa frase numa acao de
+    # banco — o mesmo modo de falha do menu 1/2 que custou a FASE 1 inteira.
+    # Por isso: frase exata, e so do numero do dono.
+    if ADMIN_PHONE and phone == ADMIN_PHONE and _RESET_TRIAL_RE.match(text):
+        alvos = [u["id"] for u in db.list_users()
+                 if re.sub(r"\D", "", u.get("telefone") or "") != ADMIN_PHONE]
+        try:
+            tocados = db.resetar_trial(alvos, por=phone)
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[admin] reset de trial falhou", exc_info=True)
+            return ("Não consegui resetar agora — o erro está no log. "
+                    "*Nenhum trial foi alterado.*")
+        if not tocados:
+            return ("Nenhum trial pra resetar: todo mundo já foi resetado "
+                    "hoje (ou cancelou). Nada foi alterado.")
+        return (f"♻️ *{len(tocados)} pessoa(s)* voltaram a ter *14 dias* de "
+                f"teste, contados de hoje.\n\n"
+                f"Item, lembrete e histórico: nada foi tocado. Quem cancelou "
+                f"não voltou. Rodar de novo hoje não muda mais nada.")
 
     # --- admin: "ativar 5511999990000" -------------------------------------
     if ADMIN_PHONE and phone == ADMIN_PHONE and low.startswith("ativar"):
@@ -2276,6 +2326,11 @@ def _sugestao_de_baixa(descricao: str) -> str:
 _PLACA_PEDIDO_RE = re.compile(
     r"\b(placa|ipva|licenciamento|emplacamento)\b", re.I)
 
+_MESES_POR_EXTENSO = {1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril",
+                      5: "maio", 6: "junho", 7: "julho", 8: "agosto",
+                      9: "setembro", 10: "outubro", 11: "novembro",
+                      12: "dezembro"}
+
 
 def _lembretes_do_calendario(user: dict, texto: str) -> Optional[str]:
     """Placa -> IPVA e licenciamento, com data de tabela.
@@ -2291,10 +2346,22 @@ def _lembretes_do_calendario(user: dict, texto: str) -> Optional[str]:
     final = calendario.final_da_placa(texto)
     if final is None:
         return None
+    # GUARDA O FINAL. "Anotei o final *N* da sua placa" aparecia em quatro
+    # respostas diferentes e nao anotava nada em lugar nenhum — o valor vivia
+    # numa variavel local e morria no return. Agora e verdade, e no dia em
+    # que a tabela do ano seguinte entrar da pra criar o lembrete sem pedir a
+    # placa de novo. Achado na rodada 2 da auditoria M2.5.
+    try:
+        db.update_user_fields(user["id"], placa_final=final)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[calendario] nao consegui guardar o final da placa do user %s",
+            user.get("id"), exc_info=True)
     hoje = tempo.hoje()
     try:
-        venc = (calendario.vencimentos("SP", final, hoje.year)
-                + calendario.vencimentos("SP", final, hoje.year + 1))
+        venc = (calendario.vencimentos("SP", final, hoje.year, hoje=hoje)
+                + calendario.vencimentos("SP", final, hoje.year + 1, hoje=hoje))
     except Exception:
         import logging
         logging.getLogger("resolveai").warning(
@@ -2302,9 +2369,10 @@ def _lembretes_do_calendario(user: dict, texto: str) -> Optional[str]:
         venc = []
     if not venc:
         return ("Anotei o final *" + str(final) + "* da sua placa. 🚗\n\n"
-                "Ainda não tenho o calendário oficial desse ano aqui — "
-                "quando sair, eu te aviso. Se você já sabe a data, me manda "
-                "que eu guardo (_\"IPVA vence 20/03\"_).")
+                "Ainda não tenho o calendário oficial desse ano aqui. Quando "
+                "sair, *me manda a placa de novo* que eu crio os lembretes. "
+                "Se você já sabe a data, me manda que eu guardo "
+                "(_\"IPVA vence 20/03\"_).")
 
     # SÓ A PRÓXIMA OCORRÊNCIA DE CADA TIPO.
     #
@@ -2323,6 +2391,21 @@ def _lembretes_do_calendario(user: dict, texto: str) -> Optional[str]:
     proximos = {}
     for v in sorted(futuros, key=lambda x: x["data"]):
         proximos.setdefault(v["tipo"], v)
+
+    # O PRAZO QUE JÁ PASSOU (M2.5). No meio do ano isso é o caso COMUM, não a
+    # exceção: em agosto, o IPVA de janeiro já foi, e o licenciamento dos
+    # finais 1 e 2 também. O erro de produto aqui não é criar o lembrete
+    # errado — é o SILÊNCIO. A pessoa manda a placa, o bot responde alguma
+    # coisa simpática, e ela sai achando que está coberta pelo resto do ano.
+    # Por isso o que passou é dito com todas as letras, mesmo custando uma
+    # mensagem mais longa e menos agradável.
+    passados = {}
+    for v in sorted([x for x in venc if x.get("passado")],
+                    key=lambda x: x["data"], reverse=True):
+        passados.setdefault(v["tipo"], v)
+    for tipo in proximos:
+        passados.pop(tipo, None)    # com a próxima data em mãos, o que passou
+        # já não é notícia: o lembrete cobre a pessoa.
     venc = list(proximos.values())
 
     criados = []
@@ -2371,33 +2454,116 @@ def _lembretes_do_calendario(user: dict, texto: str) -> Optional[str]:
             logging.getLogger("resolveai").warning(
                 "[calendario] falha ao gravar %s", v["tipo"], exc_info=True)
 
+    def _br(iso):
+        return f"{iso[8:10]}/{iso[5:7]}/{iso[:4]}"
+
+    def _linha_passada(v):
+        if v["tipo"] == "licenciamento":
+            return (f"• *{v['rotulo']}* — o prazo de {v['data'][:4]} ia até "
+                    f"{_br(v['data'])} e já passou. Se ainda não licenciou, "
+                    f"resolva assim que der: circular sem licenciamento é "
+                    f"infração gravíssima, com multa e apreensão.")
+        return (f"• *{v['rotulo']}* — venceu em {_br(v['data'])}. Se ficou "
+                f"pra trás, tem multa e juros correndo.")
+
+    def _sobre_o_ano_que_vem():
+        # O SILÊNCIO SOBRE O ANO SEGUINTE É O DEFEITO. Sem esta frase, quem
+        # perdeu o prazo deste ano supõe que pelo menos o do ano que vem está
+        # agendado — e não está, porque o edital ainda não saiu.
+        prox = hoje.year + 1
+        if calendario.vencimentos("SP", final, prox):
+            return ""
+        # NÃO PROMETE O QUE NÃO CUMPRE. A frase anterior dizia "quando sair,
+        # eu crio o lembrete sozinho" — e não existe job que releia a tabela
+        # e crie nada. Quando 2027 entrasse, quem leu isso simplesmente não
+        # seria avisado, sem jeito de descobrir. Promessa que o código não
+        # cumpre é pior que promessa nenhuma: ela faz a pessoa parar de
+        # procurar a informação em outro lugar.
+        return (f"\n\nO calendário de {prox} ainda não foi publicado — e eu "
+                f"não vou chutar data só pra parecer que está agendado. "
+                f"Quando sair, *me manda a placa de novo* que eu crio na "
+                f"hora. Se você já souber a data, me diz que eu guardo.")
+
     if not criados:
-        # Distinguir "já está na lista" de "o calendário acabou". Sem isso,
-        # de julho a dezembro do último ano da tabela o bot afirmava ter
-        # itens que não tinha — justamente quando a manutenção anual está
-        # atrasada e o aviso mais importa.
+        # Distinguir "já está na lista" de "o prazo passou" de "o calendário
+        # acabou". Sem isso, de julho a dezembro do último ano da tabela o bot
+        # afirmava ter itens que não tinha — justamente quando a manutenção
+        # anual está atrasada e o aviso mais importa.
         if ja_tinha:
             return ("Esses eu já tenho na sua lista. 👍 Se quiser conferir, "
                     "manda *ver tudo*.")
+        if passados:
+            corpo = "\n".join(_linha_passada(v) for v in passados.values())
+            # A NOTA DO IPVA VALE AQUI TAMBÉM. Era só o ramo de sucesso que
+            # contava do desconto e do parcelamento — ou seja, os finais 1 e
+            # 2, que perderam TUDO deste ano, eram justamente os únicos sem
+            # a informação útil pro ano que vem.
+            nota = ("\n" + calendario.NOTA_IPVA_ANO_QUE_VEM
+                    if any(v["tipo"] == "ipva" for v in passados.values())
+                    else "")
+            return (f"Anotei o final *{final}* da sua placa. 🚗\n\n"
+                    f"Não criei lembrete nenhum, e é de propósito — o que eu "
+                    f"tenho pra esse final já venceu:\n\n{corpo}{nota}"
+                    f"{_sobre_o_ano_que_vem()}")
         return ("Anotei o final *" + str(final) + "* da sua placa. 🚗\n\n"
                 "As datas que eu tinha pra esse final já passaram, e o "
-                "calendário do ano que vem ainda não saiu. Quando sair, eu "
-                "te aviso — ou me manda a data que você souber.")
+                "calendário do ano que vem ainda não saiu. Quando sair, *me "
+                "manda a placa de novo* — ou me diz a data que você souber.")
+
     def _linha(v):
         # COM O ANO: uma mensagem só lista datas de anos diferentes (o
         # licenciamento deste ano e o IPVA do que vem). Sem o ano, "19/01"
         # lida em agosto parece data que já passou.
-        base = (f"• *{v['rotulo']}* — {v['data'][8:10]}/{v['data'][5:7]}/"
-                f"{v['data'][:4]}")
+        if v["tipo"] == "licenciamento":
+            # PRAZO DE MÊS, não data marcada. Escrever só "vence 31/08" faz a
+            # pessoa deixar pro dia 31 — que é justamente o dia em que ela
+            # pode não conseguir resolver.
+            mes = _MESES_POR_EXTENSO[v.get("prazo_mes") or int(v["data"][5:7])]
+            base = (f"• *{v['rotulo']}* — dá pra pagar durante {mes} inteiro; "
+                    f"o último dia é {_br(v['data'])}")
+        else:
+            base = f"• *{v['rotulo']}* — {_br(v['data'])}"
         fer = calendario.aviso_de_feriado(v["data"])
         if not fer:
             return base
         artigo = "no" if fer in ("sábado", "domingo") else "em"
         return f"{base} _(cai {artigo} {fer} — banco fechado)_"
+
     linhas = "\n".join(_linha(v) for v in criados)
-    return (f"Pronto 🚗 Guardei pelo final da sua placa:\n\n{linhas}\n\n"
-            f"Eu te aviso antes de cada uma. _(Calendário de SP; se o seu "
-            f"carro é de outro estado, me diz a data certa que eu ajusto.)_")
+    extra = ""
+    # A NOTA DO PARCELAMENTO GRUDA NO IPVA, e não na mensagem.
+    #
+    # Ela vale só pro IPVA: licenciamento não tem cota única nem 5x. Solta
+    # logo depois do bloco de itens criados, ela ficava colada na linha do
+    # LICENCIAMENTO e passava a descrever a coisa errada — e "pague em 5x"
+    # embaixo do licenciamento é informação falsa sobre dinheiro.
+    if any(v["tipo"] == "ipva" for v in criados):
+        extra += "\n\n" + calendario.NOTA_IPVA
+    if passados:
+        extra += ("\n\n⚠️ *O que já passou:*\n"
+                  + "\n".join(_linha_passada(v) for v in passados.values()))
+        # Presa ao item CRIADO, a nota aparecia só em janeiro — e quem manda
+        # a placa em agosto é justamente quem ainda dá tempo de se planejar
+        # pro IPVA do ano que vem.
+        if any(v["tipo"] == "ipva" for v in passados.values()):
+            extra += "\n" + calendario.NOTA_IPVA_ANO_QUE_VEM
+    # O ANO SEGUINTE TAMBÉM PRECISA SER DITO AQUI, E POR ÚLTIMO.
+    #
+    # Esta frase só existia no ramo "não criei nada", e o buraco era o pior
+    # possível: quem RECEBE um lembrete termina lendo "eu te aviso com
+    # antecedência" e supõe que está coberto — inclusive o final 0, cujo
+    # licenciamento cai em 31/12 e cujo IPVA vem 23 dias depois, sem
+    # lembrete nenhum. É o mesmo "pular calado pra 2027" que esta fase
+    # existe pra impedir, no ramo que ninguém tinha testado.
+    #
+    # A RESSALVA VEM DEPOIS DA PROMESSA. Na primeira versão do conserto ela
+    # ficava no meio, e a última linha da mensagem voltava a ser "eu te aviso
+    # com antecedência", sem qualificação — que é a frase que faz a pessoa
+    # parar de procurar a informação em outro lugar.
+    return (f"Pronto 🚗 Guardei pelo final da sua placa:\n\n{linhas}{extra}\n\n"
+            f"Eu te aviso com antecedência. _(Calendário de SP; se o seu "
+            f"carro é de outro estado, me diz a data certa que eu ajusto.)_"
+            f"{_sobre_o_ano_que_vem()}")
 
 
 def _registrar_documento_financeiro(user: dict, phone: str, texto_lido: str,
@@ -3853,16 +4019,139 @@ def _linha_engajamento(eng: dict, total_users: int = 0) -> str:
             f"{sem_dono})_")
 
 
+# O título da seção de ação mora numa constante porque o teste precisa
+# afirmar a AUSÊNCIA dela quando está tudo bem — e comparar contra string
+# solta no teste é como a copy e a checagem divergem sem ninguém ver.
+TITULO_ACAO = "⚠️ *FAZER HOJE*"
+
+# Teto de linhas de ação. Lista longa não é lista de ação: é relatório com
+# outro nome, e volta a ser rolada sem ler.
+MAX_ACOES = 3
+
+
+def _acoes_do_dia(wa: str, env: dict, eng: dict, fin: dict,
+                  ontem: dict) -> list:
+    """O que exige decisão HOJE, **em ordem de custo se ignorado**.
+
+    Só entra aqui o que tem AÇÃO. "Engajamento 0,8" não entra; "4 pessoas
+    não mandam nada há 7 dias, fale com a Ana" entra. Foi essa a diferença
+    que o Kevin pediu: relatório que descreve obriga a decidir todo dia do
+    zero; relatório que aponta já chega decidido.
+
+    A ORDEM É A PARTE QUE ERRA CALADA. A primeira versão listava na ordem em
+    que eu escrevi os `if`, e com o teto de 3 itens isso jogava "decidem em
+    até 3 dias" — a única linha em que um dia de atraso custa um assinante —
+    para fora do relatório sempre que houvesse três problemas técnicos. O
+    corte também era invisível. Agora cada ação carrega um PESO, e o corte
+    diz quantas ficaram de fora.
+    """
+    # (peso, texto). Menor = mais caro se ignorado.
+    #   0 — o canal caiu: sem ele, nenhum outro número aqui significa nada
+    #   1 — dinheiro com prazo: só isso custa assinante hoje
+    #   2 — risco de bloqueio: custa o número inteiro, mas não hoje
+    #   3 — falha de envio: já aconteceu, dá pra investigar depois
+    #   4 — gente calada: importante, sem prazo
+    #   5 — manutenção anual do calendário
+    itens = []
+    if wa != "open":
+        itens.append((0, f"🔴 WhatsApp *{wa.upper()}* — reescaneie o QR agora"))
+
+    decidem = (fin.get("decidem_ate_3_dias") or [])[:3]
+    if decidem:
+        # `(nome or "").split() or [""]` é o mesmo idioma do
+        # `_handle_commands`: nome só com espaço estourava IndexError aqui.
+        quem = ", ".join(
+            f"{((x.get('nome') or '').split() or ['alguém'])[0]}"
+            f" ({'hoje' if x.get('dias') == 0 else str(x.get('dias')) + 'd'})"
+            for x in decidem)
+        itens.append((1, f"⏳ Decidem em até 3 dias: {quem} — fale com eles"))
+
+    if str(env.get("risco", "")).startswith("🔴"):
+        itens.append((2, f"🔴 Risco de bloqueio: "
+                         f"{env.get('motivo') or 'ritmo alto'} — segure "
+                         f"disparo hoje"))
+    if ontem.get("falhas"):
+        itens.append((3, f"⚠️ *{ontem['falhas']}* falha(s) de envio ontem — "
+                         f"confira o log antes de mandar mais"))
+
+    # QUEM SUMIU. `pessoas` e `base_comparavel` saem da mesma população
+    # (auditoria M2.3), então esta subtração é honesta.
+    calados = max(0, (eng.get("base_comparavel") or 0)
+                  - (eng.get("pessoas") or 0))
+    if calados and (eng.get("por_pessoa_dia") or 0) < 1:
+        itens.append((4, f"🔇 *{calados}* pessoa(s) sem mandar nada em 7 "
+                         f"dias — puxe conversa com uma hoje"))
+
+    aviso = calendario.tabela_expirando(tempo.hoje())
+    if aviso and _cobrar_calendario_hoje():
+        itens.append((5, f"🗓️ {aviso}"))
+
+    itens.sort(key=lambda x: x[0])
+    return [texto for _, texto in itens]
+
+
+def _cobrar_calendario_hoje(hoje=None) -> bool:
+    """A manutenção do calendário só cobra às segundas — a não ser que ela
+    já tenha estourado.
+
+    O aviso começa 150 dias antes de a tabela acabar, ou seja, de agosto a
+    dezembro. Diário, ele faria a seção *FAZER HOJE* aparecer todos os dias
+    por cinco meses — exatamente o que a docstring do relatório proíbe, e o
+    jeito de transformar a seção em cabeçalho que se pula.
+
+    Depois que a tabela ESTOUROU é outra história: aí o bot parou de criar
+    lembrete de carro, e isso é falha em curso. Cobra todo dia.
+    """
+    hoje = hoje or tempo.hoje()
+    if hoje.year > max(calendario.ANOS_COBERTOS or [hoje.year]):
+        return True
+    return hoje.weekday() == 0
+
+
+def _tendencia(agora_v: float, antes_v: float, sufixo: str = "") -> str:
+    """"1.8 ▲ +0.4 vs. semana passada" — nunca o número sozinho.
+
+    O relatório mostrava só o valor de hoje. Valor sozinho não responde a
+    única pergunta que o dono faz ao abrir: melhorou ou piorou? Sem isso ele
+    guardava o número de ontem de cabeça, o que ninguém faz por muito tempo.
+    """
+    # SEM BASE, NAO HA TENDENCIA. Comparar contra uma semana em que nao
+    # havia ninguem produz "▲ 2.00 vs. semana passada" — que le como
+    # crescimento e e so o primeiro dado existindo. Numero que sugere
+    # progresso onde nao houve e pior que numero nenhum.
+    if antes_v <= 0 and agora_v > 0:
+        return f"_(primeira semana com base pra comparar){sufixo}_"
+    delta = round(agora_v - antes_v, 2)
+    if abs(delta) < 0.05:
+        return f"→ igual à semana passada{sufixo}"
+    seta = "▲" if delta > 0 else "▼"
+    return f"{seta} {abs(delta):.2f} vs. semana passada{sufixo}"
+
+
 def relatorio_matinal() -> bool:
     """O dash resumido no WhatsApp, todo dia às 8h. 1x por dia.
 
-    Painel que depende de você lembrar de abrir é painel que você não olha.
-    Aqui vem o essencial já mastigado, na mesma tela onde você já está — e o
-    link do dash completo pra quando algum número chamar atenção.
+    A PERGUNTA QUE ELE RESPONDE: *preciso agir hoje, e no quê?*
 
-    Ordem proposital: primeiro o que pode estar QUEBRADO (conexão, risco do
-    número), depois o que decide o negócio (engajamento), e só então o
-    movimento do dia. Número bonito não pode enterrar problema.
+    Reescrito no M2.5. A versão anterior estava correta e era pouco útil:
+    empilhava saúde técnica, métrica de negócio e dinheiro na mesma altura
+    visual, e mostrava sempre o valor de hoje sem comparação. Quem lê isso
+    todo dia acaba rolando até o fim sem decidir nada — e o relatório existe
+    justamente pra evitar abrir o painel.
+
+    O desenho novo tem três camadas, nesta ordem:
+
+      1. *FAZER HOJE* — só aparece quando existe algo a fazer, no máximo 3
+         itens, cada um com o verbo do que fazer. Seção que aparece todo dia
+         vira cabeçalho, e cabeçalho a gente pula.
+      2. *O número* — hábito (demandas por pessoa/dia), sempre com a
+         tendência contra a semana anterior.
+      3. *Contexto* — movimento de ontem, base e dinheiro, comprimidos em
+         três linhas. É o que fica no dash pra quem quiser detalhe.
+
+    Cada métrica é lida em `try` próprio: uma consulta quebrada não pode
+    apagar o relatório inteiro, porque ele é o único lugar onde o dono
+    descobre que algo quebrou.
     """
     if not ADMIN_PHONE:
         return False
@@ -3874,52 +4163,80 @@ def relatorio_matinal() -> bool:
     admin_id = admin["id"] if admin else 0
     if db.dispatched_today("dash-manha", admin_id):
         return False
-    try:
-        m = db.painel_metricas()
-        serie = db.serie_diaria(2)
-        eng = db.engajamento(excluir_telefones=[ADMIN_PHONE, MASTER_PHONE])
-        env = db.pulso_envio()
-        fin = db.financeiro(TRIAL_DAYS)
-    except Exception:
-        import logging
-        logging.getLogger("resolveai").warning("[dash-manha] falhou",
-                                               exc_info=True)
-        return False
+
+    def _seguro(fn, padrao):
+        try:
+            return fn()
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[dash-manha] métrica falhou", exc_info=True)
+            return padrao
+
+    fora = [ADMIN_PHONE, MASTER_PHONE]
+    hoje = tempo.hoje()
+    m = _seguro(db.painel_metricas, {})
+    serie = _seguro(lambda: db.serie_diaria(2), [])
+    eng = _seguro(lambda: db.engajamento(excluir_telefones=fora), {})
+    eng_antes = _seguro(
+        lambda: db.engajamento(excluir_telefones=fora,
+                               ref=hoje - timedelta(days=7)), {})
+    env = _seguro(db.pulso_envio, {})
+    fin = _seguro(lambda: db.financeiro(TRIAL_DAYS), {})
+    if not eng and not m and not fin:
+        return False          # base inteira fora do ar: não invento relatório
     ontem = serie[0] if len(serie) > 1 else {}
     wa = _instance_state()
 
-    linhas = [f"☀️ *Resolve AI* — {now.strftime('%d/%m')}", ""]
-    # 1. o que pode estar quebrado
-    linhas.append(f"{'🟢' if wa == 'open' else '🔴'} WhatsApp: "
-                  f"{'conectado' if wa == 'open' else wa.upper() + ' — REESCANEIE O QR'}")
-    linhas.append(_linha_risco(env))
-    if ontem.get("falhas"):
-        linhas.append(f"⚠️ *{ontem['falhas']} falha(s) de envio* ontem")
-    linhas.append("")
-    # 2. o que decide o negócio
-    linhas.append(f"{eng['veredito']}")
-    linhas.append(_linha_engajamento(eng, m.get("total_users", 0)))
-    linhas.append("")
-    # 3. movimento
-    linhas.append(f"*Ontem:* {ontem.get('novos', 0)} novo(s) · "
-                  f"{ontem.get('recebidas', 0)} mensagem(ns) · "
-                  f"{ontem.get('itens', 0)} item(ns) guardado(s)")
-    linhas.append(f"*Base:* {m['total_users']} pessoa(s) · "
-                  f"{fin['em_teste']} em teste · {fin['assinantes']} pagando")
-    if fin["decidem_ate_3_dias"]:
-        quem = ", ".join(
-            f"{x['nome'].split()[0]} ({'hoje' if x['dias'] == 0 else str(x['dias']) + 'd'})"
-            for x in fin["decidem_ate_3_dias"][:4])
-        linhas.append(f"⏳ *Decidem em até 3 dias:* {quem}")
-    if fin["assinantes"] or fin["custo_total"]:
-        linhas.append(f"💰 Bruto R$ {fin['bruto']:.2f} · "
-                      f"*Líquido R$ {fin['liquido']:.2f}*".replace(".", ","))
+    linhas = [f"☀️ *Resolve AI* — {now.strftime('%d/%m')}"]
+
+    # DENTRO do `_seguro` igual às métricas. A docstring promete que uma
+    # consulta quebrada não apaga o relatório inteiro, e a COMPOSIÇÃO estava
+    # de fora: um nome só com espaço estourava `IndexError` e o relatório das
+    # 8h não saía — e como o `log_dispatch` só grava depois do envio, o cron
+    # repetia a falha a cada ciclo, das 8h às 12h, todo dia.
+    # SENTINELA, e nao lista vazia. Se a composicao estourar, ausencia de
+    # secao le como "nao tem nada a fazer" — que e o estado DEFAULT e o mais
+    # perigoso de simular: cai junto a linha "Decidem em ate 3 dias", a unica
+    # que custa assinante hoje. Melhor o dono ver que o calculo quebrou.
+    acoes = _seguro(lambda: _acoes_do_dia(wa, env, eng, fin, ontem), None)
+    if acoes is None:
+        acoes = ["⚠️ não consegui montar esta seção — confira o log e o dash"]
+    if acoes:
+        linhas += ["", TITULO_ACAO] + [f"• {a}" for a in acoes[:MAX_ACOES]]
+        # CORTE VISÍVEL. Sumir com o quarto item em silêncio é pior que
+        # mostrar quatro: o dono não tem como saber que existe mais.
+        if len(acoes) > MAX_ACOES:
+            # NÃO diz "no dash": o aviso de calendário, que é o mais
+            # provável de ser cortado, não existe no dash. Mandar o dono
+            # procurar onde não tem é pior que só contar.
+            linhas.append(f"_+{len(acoes) - MAX_ACOES} não mostrada(s)_")
+
+    # O NÚMERO. Um só, com tendência e com o que fazer embutido no veredito.
+    if eng:
+        linhas += ["", f"*Hábito:* {eng.get('por_pessoa_dia', 0)} msg por "
+                       f"pessoa/dia  "
+                       f"{_tendencia(eng.get('por_pessoa_dia') or 0, eng_antes.get('por_pessoa_dia') or 0)}",
+                   f"{eng.get('veredito', '')} · "
+                   f"{eng.get('pessoas', 0)} de "
+                   f"{eng.get('base_comparavel', 0)} pessoa(s) usaram"]
+
+    # CONTEXTO, comprimido. Detalhe é papel do dash.
+    linhas += ["", f"*Ontem:* {ontem.get('novos', 0)} novo(s) · "
+                   f"{ontem.get('recebidas', 0)} msg · "
+                   f"{ontem.get('itens', 0)} item(ns)"]
+    if fin:
+        linhas.append(f"*Base:* {m.get('total_users', 0)} · "
+                      f"{fin.get('em_teste', 0)} em teste · "
+                      f"{fin.get('assinantes', 0)} pagando")
+        linha_dinheiro = (f"💰 Líquido R$ {fin.get('liquido', 0):.2f}"
+                          .replace(".", ","))
         if fin.get("breakeven_assinantes"):
-            linhas.append(f"_empata com {fin['breakeven_assinantes']} "
-                          f"assinante(s)_")
+            linha_dinheiro += (f" · empata com "
+                               f"{fin['breakeven_assinantes']}")
+        linhas.append(linha_dinheiro)
     if DASH_URL_BASE and PAINEL_TOKEN:
-        linhas.append("")
-        linhas.append(f"📊 Dash completo: {DASH_URL_BASE}/dash?k={PAINEL_TOKEN}")
+        linhas.append(f"📊 {DASH_URL_BASE}/dash?k={PAINEL_TOKEN}")
 
     if _enviar_com_botao(re.sub(r"\D", "", ADMIN_PHONE), "\n".join(linhas)):
         db.log_dispatch(admin_id, "dash-manha")
@@ -3967,13 +4284,36 @@ def dispatch_proactive() -> int:
 
     result = scheduler.run_proactive_engine()
     sent = 0
-    all_dispatches = (result.get("alarm_dispatches", [])
-                      + result.get("resumo_dispatches", [])
-                      + result.get("overdue_dispatches", [])
-                      + result["due_dispatches"]
-                      + result["churn_dispatches"]
-                      + result.get("trial_dispatches", [])
-                      + result.get("guided_dispatches", []))
+    # TUDO QUE O MOTOR PRODUZIU, derivado da RESPOSTA — nunca de uma lista
+    # de chaves escrita a mao.
+    #
+    # A lista a mao existiu ate o M2.5 e falhou exatamente como se esperava:
+    # o `gastos_dispatches` foi criado no scheduler, entrou no `total`,
+    # ganhou template, ganhou teste... e nunca foi enviado, porque ninguem
+    # acrescentou a chave aqui. Sem erro, sem log, com a suite verde. Cada
+    # checagem nova do motor era uma chance de repetir isso.
+    #
+    # A ORDEM importa e por isso e explicita: alarme de hora primeiro (a
+    # pessoa marcou aquela hora), depois o resto. Chave nova que ninguem
+    # ordenou entra no fim, mas ENTRA.
+    _ordem = ("alarm_dispatches", "resumo_dispatches", "overdue_dispatches",
+              "due_dispatches", "churn_dispatches", "trial_dispatches",
+              "guided_dispatches", "gastos_dispatches")
+    _chaves = list(_ordem) + sorted(
+        k for k in result
+        if k.endswith("_dispatches") and k not in _ordem)
+    all_dispatches = []
+    for _k in _chaves:
+        _v = result.get(_k) or []
+        if isinstance(_v, (list, tuple)):
+            all_dispatches += list(_v)
+        else:
+            # É o P0-1 esperando outro tipo de dado. Descartar em silêncio
+            # aqui repetiria exatamente o defeito que a derivação consertou:
+            # a lista de disparos some e o log diz "0 pra enviar".
+            log.error("[cron] %s nao e lista (%s) — %d disparo(s) "
+                      "DESCARTADO(S)", _k, type(_v).__name__,
+                      len(_v) if hasattr(_v, "__len__") else 0)
     n_alarm = len(result.get("alarm_dispatches", []))
     n_resumo = len(result.get("resumo_dispatches", []))
     log.info("[cron] motor rodou: %d alarme(s) de hora, %d resumo(s), "

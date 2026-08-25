@@ -1,29 +1,75 @@
 # DECISÕES PENDENTES — só o Kevin resolve
 
-## M2.2 — a tabela do IPVA precisa de manutenção anual (e de conferência sua)
+Coisas que travam em credencial, chave de API ou decisão de produto com dinheiro.
+Nada aqui bloqueou a entrega: cada item diz o que foi entregue no lugar.
 
-- **O que preciso de você, uma vez por ano:** conferir o calendário de IPVA
-  e licenciamento publicado pela Sefaz/Detran e atualizar `calendario.py`.
-  Os anos cobertos hoje são **2026 e 2027**, e só para **SP**.
-- **Por que não peguei de API:** não existe API oficial gratuita desse
-  calendário — é tabela publicada em edital. Preferi tabela versionada a
-  raspagem de site, que quebra sem avisar e no silêncio vira data errada.
-- **Enquanto não atualizar:** sem a tabela do ano, o bot **não cria lembrete
-  nenhum** e avisa a pessoa que ainda não tem o calendário. Nada de chutar a
-  data do ano anterior.
-- **Onde a rede faria diferença de verdade (decisão sua):** o M2.2 acabou sem
-  API externa nenhuma — feriado é calculado e IPVA é tabela. O risco de dado
-  velho não está no feriado, está **nesta tabela**. Se você quiser dinamismo
-  de verdade, o alvo é raspar o edital da Sefaz com validação automática
-  contra as invariantes que os testes já checam (10 datas distintas por
-  tipo/ano, final 0 por último, nenhuma em feriado ou fim de semana) — e
-  fora do caminho síncrono de resposta. Enquanto isso não existir, quem
-  segura a promessa é este arquivo e a sua conferência anual.
+---
+
+## M2.5 — o calendário de 2027 não existe, e não vou inventar
+
+**Status:** aberto. É o único item deste arquivo que causa perda de função
+por si só.
+
+- **O que preciso de você, uma vez por ano:** o edital da Sefaz-SP com o
+  calendário de IPVA e de licenciamento do ano seguinte. Ele sai no fim do
+  ano anterior.
+- **Onde entra:** `calendario.py` — `IPVA` (dias), `LICENCIAMENTO_MES`
+  (meses) e `ANOS_CONFERIDOS` (a trava). O teste reprova ano que não passou
+  pela sua conferência, de propósito.
+- **Por que 2027 sumiu do repo:** ele existia e era **invenção minha**. Eu
+  tinha produzido os dez dias de 2027 deslocando os de 2026 pra fugir do fim
+  de semana, e aquilo passava em todos os testes que existiam — dez datas
+  distintas, nenhuma em sábado, final 0 por último — porque teste de forma
+  não enxerga data errada. Seriam doze meses de lembrete no dia errado, sem
+  log, sem exceção, sem nada quebrando. Data errada é pior que lembrete
+  ausente, e a sua conferência da tabela de 2026 é o que provou isso.
+- **Enquanto não atualizar:** o bot não cria lembrete de carro para 2027 e
+  **diz isso na resposta** ("o calendário de 2027 ainda não foi publicado…
+  não vou chutar data"). O relatório das 8h passa a te cobrar em **agosto**
+  (150 dias antes de a tabela acabar).
 - **Decisão sua:** vale cobrir outros estados? Hoje quem é de fora de SP
   recebe as datas de SP com o aviso _"se o seu carro é de outro estado, me
   diz a data certa"_. Cobrir mais estados é copiar tabela — o custo é
   conferir cada uma, e conferir errado é pior que não ter.
 
+## M2.5 — as parcelas 2 a 5 do IPVA não viram lembrete
+
+- **O que o bot faz hoje:** cria o lembrete da **cota única / 1ª parcela** e
+  **menciona** que dá pra pagar em 5x ou em cota única com desconto.
+- **Por que não agendei as outras quatro:** "a parcela cai no mesmo dia todo
+  mês" é regra de boca que o calendário real não cumpre — 12/04/2026 é
+  domingo. Eu criaria quatro datas chutadas por pessoa, e o produto inteiro
+  se apoia em a data estar certa.
+- **Decisão sua:** se o edital trouxer as datas das parcelas 2 a 5 por final
+  de placa, elas entram na tabela e viram lembrete no mesmo dia.
+
+## M2.5 — submeter os templates (agora são 7, e dá pra fazer por API)
+
+- **Como disparar:** `python templates/submeter.py` mostra o payload sem
+  mandar nada; `--enviar` cria de verdade. Ele usa `META_WABA_ID` e
+  `META_TOKEN`, que já existem no ambiente do bot, e rodar duas vezes é
+  seguro (template repetido é reportado, não derruba o lote).
+- **Depois da aprovação:** setar no EasyPanel e dar redeploy —
+
+  ```
+  TEMPLATES_APROVADOS=resolveai_lembrete_hora,resolveai_item_vencido,resolveai_resumo_do_dia,resolveai_reengajamento_pendentes,resolveai_fim_de_trial_aviso,resolveai_conta_a_vencer,resolveai_resumo_de_gastos
+  ```
+
+- **Os dois novos:** `resolveai_conta_a_vencer` (o aviso mais comum do
+  produto, que até agora não tinha template nenhum e sumia fora da janela) e
+  `resolveai_resumo_de_gastos` (o resumo de segunda).
+- **Enquanto isso:** o código está *fail-closed*. Fora da janela de 24h, sem
+  template aprovado, a mensagem **não é enviada** — fica registrada com o
+  motivo, e o item volta no próximo ciclo. Nada é marcado como avisado sem
+  ter saído. Vale pro dedup por item, pros itens irmãos de um grupo de
+  vencidos e pros nudges do trial.
+- **Impacto real de não submeter:** quem responde ao bot continua recebendo
+  tudo (janela aberta = texto livre). Quem some por mais de 24h para de
+  receber proativa. Hoje essas mensagens também não chegam — a Meta recusa
+  com 131047 —, a diferença é que agora isso aparece no log.
+- **Se a Meta rejeitar algum:** não vou reescrever com linguagem promocional
+  pra tentar passar (sua instrução). Resubmetemos como MARKETING, e aí a
+  decisão de custo/opt-out é sua.
 
 ## M2.1 — custo declarado: `month_spend` ignora o status
 
@@ -31,40 +77,14 @@
 sempre que uma conta pendente e o comprovante dela existem como itens
 separados, o mesmo pagamento entra duas vezes no gasto do mês.
 
-- **Por que isso não foi consertado aqui:** mudar `month_spend` altera o
-  número que o painel e o resumo mostram, e não é escopo do M2.1. O M2.1 só
-  reduziu a frequência (o comprovante que casa valor + vencimento do título
-  dá baixa no pendente em vez de criar irmão).
-- **Quando ainda acontece:** comprovante sem vencimento do título, ou de
-  credor diferente do que está na lista.
+- **Por que continua aberto:** mudar `month_spend` altera o número que o
+  painel e o resumo mostram há meses, e trocar isso sem você decidir é mudar
+  a leitura de "quanto gastei" pelas suas costas.
+- **O resumo de gastos do M2.5 não herdou o problema:** ele conta o que foi
+  **registrado** na semana e diz isso com essas palavras — não afirma que o
+  dinheiro saiu, então não depende de status nenhum.
+- **Quando o erro ainda acontece:** comprovante sem vencimento do título, ou
+  de credor diferente do que está na lista.
 - **Decisão sua:** `month_spend` deve contar só `concluido`, ou contar tudo?
-  Isso muda a leitura do "quanto gastei este mês" — é decisão de produto, não
-  de código.
-
-
-Coisas que travam em credencial, chave de API ou decisão de produto com dinheiro.
-Nada aqui bloqueou a entrega: cada item diz o que foi entregue no lugar.
-
-## M2.0 — Templates
-
-### 1. Submeter os 5 templates no Business Manager
-- **O que preciso de você:** colar o catálogo de `templates/SUBMISSAO.md` no
-  Business Manager e submeter. Só você tem acesso à conta.
-- **Depois da aprovação:** setar no EasyPanel
-  `TEMPLATES_APROVADOS=resolveai_lembrete_hora,resolveai_item_vencido,resolveai_resumo_do_dia,resolveai_reengajamento_pendentes,resolveai_fim_de_trial_aviso`
-  (ou só os que passarem) e redeploy.
-- **Enquanto isso:** o código está pronto e *fail-closed*. Fora da janela de
-  24h, sem template aprovado, a mensagem não é enviada — fica registrada como
-  `out_falhou` com o motivo (uma vez por dia por item+motivo, não a cada
-  ciclo de 5 min — e o sinal reaparece todo dia enquanto durar) e o
-  item **volta no próximo ciclo**: nada é marcado como avisado sem ter saído.
-  Vale pro dedup por item, pros itens irmãos de um grupo de vencidos e pros
-  nudges do trial.
-- **Impacto real de não submeter:** quem responde ao bot continua recebendo
-  tudo normalmente (janela aberta = texto livre). Quem some por mais de 24h
-  para de receber proativa até os templates entrarem no ar. Hoje essas
-  mensagens também não chegam — a Meta recusa com 131047 —, a diferença é
-  que agora isso aparece no log em vez de falhar calado.
-- **Se a Meta rejeitar algum:** não vou reescrever com linguagem promocional
-  pra tentar passar (sua instrução). Resubmetemos como MARKETING, e aí a
-  decisão de custo/opt-out é sua.
+  Isso muda a leitura do "quanto gastei este mês" — é decisão de produto,
+  não de código.

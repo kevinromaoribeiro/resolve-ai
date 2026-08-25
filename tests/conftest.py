@@ -60,8 +60,22 @@ def limpo(monkeypatch):
     # msg_log é estado GLOBAL, então some aqui e não na fixture `usuario` —
     # teste que não pede usuário via linha de mensagem do caso anterior e
     # mede constância de outro teste.
+    #
+    # `admin_acoes` (M2.5) entrou pelo mesmo motivo: e tabela que so cresce,
+    # e um teste que conta "quantos resets aconteceram" mediria os resets
+    # dos arquivos anteriores. A regra do CLAUDE.md manda medir DELTA; aqui
+    # dá pra fazer melhor e zerar, porque nenhum teste legitimo herda isso.
+    #
+    # `dispatches` entrou pelo mesmo raciocinio (M2.5). O dedup do relatorio
+    # do dono e gravado com `user_id=0` — o dono nem sempre tem linha em
+    # `users` —, entao ele NAO era limpo pela fixture `usuario`, que so apaga
+    # os disparos do usuario dela. Efeito: o primeiro teste que rodava o
+    # relatorio passava e todos os seguintes recebiam string vazia, como se
+    # a funcao estivesse quebrada.
     with db.get_conn() as _c:
         _c.execute("DELETE FROM msg_log")
+        _c.execute("DELETE FROM admin_acoes")
+        _c.execute("DELETE FROM dispatches")
 
     enviadas: list[tuple[str, str]] = []
 
@@ -108,8 +122,28 @@ def usuario():
             conn.execute("DELETE FROM dispatches WHERE user_id=?", (uid,))
             # (msg_log é limpo na fixture `limpo`, que é autouse — ele é
             # estado global e vaza pra teste que nem pede usuário.)
+    # `trial_base=None` (M2.5): o relogio do trial e alterado pelo reset
+    # administrativo, e a linha de `users` sobrevive entre os testes. Sem
+    # zerar aqui, um teste que reseta o trial deixa o proximo comecando com
+    # 14 dias de credito — e o proximo mede o reset do anterior.
+    # `dia_resumo` DE VOLTA AO DEFAULT (M2.5, rodada 2): ele decide em que
+    # dia da semana saem os DOIS resumos, e a linha de `users` sobrevive
+    # entre os arquivos. Um teste que troca o dia pra provar a regra deixava
+    # todos os seguintes medindo o dia errado — e o sintoma era o motor
+    # proativo "nao disparar", que parece defeito de producao.
     db.update_user_fields(uid, onboarding_step=None, status="trial",
+                          trial_base=None, placa_final=None,
+                          dia_resumo="Segunda-feira",
                           lgpd_aceite_em=tempo.agora().isoformat())
+    # `data_criacao` DE VOLTA PRA AGORA. A linha de `users` sobrevive entre
+    # os arquivos, e um teste que envelhece o usuario pra simular fim de
+    # trial deixava todos os seguintes com `user_can_receive` False — o
+    # motor proativo inteiro parava de disparar, em testes que nao falam de
+    # trial nenhum. A fixture promete "usuario dentro do produto"; usuario
+    # com trial vencido nao e isso.
+    with db.get_conn() as conn:
+        conn.execute("UPDATE users SET data_criacao=? WHERE id=?",
+                     (tempo.agora().strftime("%Y-%m-%d %H:%M:%S"), uid))
     return db.get_user(uid)
 
 

@@ -22,11 +22,73 @@ from typing import Optional
 
 import db
 
-DUE_WINDOW_DAYS = 3
 CHURN_THRESHOLD_DAYS = 10
 CHURN_COOLDOWN_DAYS = 7          # anti-churn no máx. 1x por semana
-DUE_ALERT_DAYS = {3, 1, 0}       # vencimento avisa em D-3, D-1 e no dia
+# SÓ D-1. Avisar em D-3, D-1 e no dia é três mensagens pelo mesmo boleto —
+# não é ajudar, é encher o saco, e é assim que o usuário silencia o bot.
+#
+# ESTE É O DEFAULT DO MÓDULO, e não um override do `wa_bot`, desde a rodada 2
+# da auditoria M2.5: o `app.py` importa `scheduler` SEM importar `wa_bot`,
+# então o painel simulava D-3/D-1/D-0 enquanto a produção mandava só D-1.
+# Painel divergindo do WhatsApp é como o dono para de confiar no painel.
+DUE_ALERT_DAYS = {1}
+
+# ANTECEDÊNCIA MAIOR PARA OBRIGAÇÃO ANUAL DE VEÍCULO (M2.5).
+#
+# D-3 é a antecedência certa pra conta de luz e errada pra licenciamento: o
+# prazo é um MÊS inteiro, o valor é alto, e se os três dias caírem numa emenda
+# de feriado a pessoa simplesmente não resolve. Avisar em D-30 é o que
+# transforma "você perdeu" em "dá tempo".
+#
+# O gatilho é a CATEGORIA, não a descrição. Categoria é campo estrutural, com
+# lista fechada em db.VALID_CATEGORIES; farejar a palavra "licenciamento" no
+# texto seria a mesma regra-por-palavra-chave que já custou quatro rodadas de
+# auditoria no M2.1. E fica restrito: se a antecedência de 30 dias vazar pro
+# resto, o bot vira o que avisa da conta de luz um mês antes — e aí a pessoa
+# silencia o bot inteiro.
+DUE_ALERT_DAYS_POR_CATEGORIA = {"Veículo": {30, 7, 1}}
+
+# A JANELA E OS DIAS DE AVISO SÃO UM SÓ AJUSTE, e por isso mudam juntos.
+#
+# `DUE_WINDOW_DAYS` é o filtro de SQL: item mais distante que isso nem chega a
+# ser lido. Quem muda o conjunto de dias e esquece a janela DESLIGA o aviso em
+# silêncio — nenhum erro, nenhum log, a lista só vem vazia. Aconteceu comigo
+# nesta própria mudança: o D-30 estava certo no filtro e não disparava, porque
+# o `wa_bot` sobrescreve a janela para 1 no import e eu não tinha visto.
+DUE_WINDOW_DAYS = 3
+
+
+def definir_politica_de_aviso(padrao=None, por_categoria=None) -> None:
+    """Troca a política de aviso de vencimento sem deixar a janela pra trás."""
+    global DUE_ALERT_DAYS, DUE_ALERT_DAYS_POR_CATEGORIA, DUE_WINDOW_DAYS
+    if padrao is not None:
+        DUE_ALERT_DAYS = set(padrao)
+    if por_categoria is not None:
+        DUE_ALERT_DAYS_POR_CATEGORIA = {k: set(v)
+                                        for k, v in por_categoria.items()}
+    dias = set(DUE_ALERT_DAYS)
+    for v in DUE_ALERT_DAYS_POR_CATEGORIA.values():
+        dias |= set(v)
+    DUE_WINDOW_DAYS = max(dias or {0})
+
+
+definir_politica_de_aviso()
 QUIET_START, QUIET_END = 21, 8   # silêncio 21h–8h (exceto alarme com hora)
+
+# TODO KIND QUE O MOTOR PODE EMITIR, declarado num lugar só.
+#
+# Serve pra uma pergunta que antes não tinha resposta: existe momento proativo
+# que, FORA da janela de 24h, some sem template? Kind novo entra aqui e o
+# teste exige que ele tenha template em `templates.KIND_TEMPLATE` ou esteja em
+# `templates.KINDS_SEM_TEMPLATE` — decidido, não esquecido.
+#
+# `test_o_inventario_de_kinds_esta_completo` varre o código-fonte e cobra a
+# volta: kind emitido e não declarado aqui reprova. Sem isso, esta lista
+# envelheceria em silêncio, que é o defeito que ela existe pra evitar.
+KINDS_PROATIVOS = {
+    "vencimento", "1-click-buy", "anti-churn", "trial-ending", "arquivado",
+    "vencido", "hora", "resumo", "winback", "gastos",
+} | {f"trial_d{n}" for n in range(1, 13)}
 
 
 def _in_quiet_hours(now: Optional[datetime] = None) -> bool:
@@ -59,7 +121,9 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
             if item.get("data_vencimento"):
                 y, m, d = map(int, item["data_vencimento"].split("-"))
                 days_left = (date(y, m, d) - ref).days
-                if days_left not in DUE_ALERT_DAYS:
+                alerta = DUE_ALERT_DAYS_POR_CATEGORIA.get(
+                    item.get("categoria") or "", DUE_ALERT_DAYS)
+                if days_left not in alerta:
                     continue
                 if days_left == 0 and item.get("hora_alvo"):
                     continue  # D-0 com hora marcada: o alarme ⏰ é o aviso
@@ -102,6 +166,14 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
                 "item_id": item["id"],
                 "kind": kind,
                 "message": msg,
+                # `quando` E O QUE O TEMPLATE MOSTRA fora da janela de 24h.
+                # Sem ele o corpo saia "vence em *em breve*" em 100% dos
+                # casos — e essa e a UNICA mensagem que chega em quem passou
+                # 24h sem falar com o bot. Texto que promete data e entrega
+                # "em breve" e o mesmo defeito de data errada, com outro
+                # nome. Nao tem default esperto aqui de proposito: quem
+                # produz o disparo e quem sabe a data.
+                "quando": venc,
             })
     return dispatches
 
@@ -630,6 +702,157 @@ def check_weekly_summary(ref: Optional[datetime] = None) -> list[dict]:
     return dispatches
 
 
+# ---------------------------------------------------------------------------
+# RESUMO DE GASTOS — segunda de manhã (M2.5)
+# ---------------------------------------------------------------------------
+# O resumo semanal que já existia lista COMPROMISSO. Este lista DINHEIRO, que
+# é a pergunta que a pessoa não consegue responder sozinha: "pra onde foi?".
+#
+# Duas regras de produto moram aqui:
+#
+# 1. QUEM NÃO TEM DADO NÃO RECEBE. Resumo vazio ("você registrou R$ 0,00 em
+#    nada") é o jeito mais rápido de ensinar alguém a ignorar o bot — e depois
+#    disso os LEMBRETES também passam batido, que é o produto inteiro.
+# 2. O CONVITE VARIA. A mesma frase toda segunda vira ruído em três semanas.
+#    O rodízio é determinístico (número da semana + id), então não repete na
+#    semana seguinte e não depende de guardar estado.
+
+# NUNCA NO MESMO DIA DO OUTRO RESUMO — este e o P1-C da rodada 2.
+#
+# Os dois sao digests semanais de manha, e o `dia_resumo` default e segunda.
+# Ligados no mesmo dia, a pessoa recebia duas proativas em segundos, com
+# conteudo sobreposto ("voce tem 3 compromissos, o mais proximo e a internet"
+# seguido de "voce registrou R$ 526,90, onde mais pesou: Contas"). Num numero
+# que ja levou DUAS restricoes da Meta, empilhar digest e comprar a terceira
+# — e e o mesmo motivo pelo qual o aviso de vencimento foi cortado pra D-1.
+#
+# A escolha e por `dia_resumo`, e nao por "ja disparou hoje": o dedup so e
+# marcado no ENVIO, entao no momento em que este check roda o resumo do dia
+# ainda nao saiu. Regra estrutural, nao corrida entre dois checks.
+GASTOS_DIAS = (0, 1, 2)          # segunda, terca ou quarta de manha
+GASTOS_HORA_INICIO = 8
+GASTOS_HORA_LIMITE = 12
+GASTOS_COOLDOWN_DIAS = 6         # um por semana, no maximo
+GASTOS_JANELA_DIAS = 7
+# Um lançamento não é resumo, é eco: a pessoa acabou de mandar aquilo.
+GASTOS_MIN_LANCAMENTOS = 2
+
+# CONVITE = pedido de USO, nunca de dinheiro. O guardrail de produto vale
+# aqui igual: o bot lembra, organiza e registra; nunca paga nem compra. Um
+# convite do tipo "me manda que eu pago" seria promessa que o produto não
+# cumpre — e a que mais gera pedido de reembolso.
+CONVITES_DE_USO = (
+    "Chegou boleto essa semana? Me manda a foto que eu guardo a data.",
+    "Tem algo que você não pode esquecer? Me diz _\"me lembra de X\"_ que "
+    "eu cuido.",
+    "Se tiver conta com vencimento essa semana, me manda que eu te aviso "
+    "antes.",
+    "Consulta, exame, prazo de escola: me manda que eu guardo com a data.",
+    "Tem PDF de conta no e-mail? Me encaminha aqui que eu leio e guardo.",
+    "Se você tem carro, me diz a placa que eu te aviso do IPVA e do licenciamento.",
+)
+
+
+def convite_de_uso(user_id: int, semana: int) -> str:
+    """Rodízio determinístico: não repete na semana seguinte, sem guardar
+    estado. Somar o `user_id` evita que a base inteira receba a mesma frase
+    na mesma segunda — o que reduz a chance de virar print de grupo."""
+    return CONVITES_DE_USO[(int(semana) + int(user_id)) % len(CONVITES_DE_USO)]
+
+
+def montar_resumo_de_gastos(user: dict,
+                            ref: Optional[date] = None) -> Optional[str]:
+    """A mensagem, ou None quando não há o que resumir."""
+    ref = ref or tempo.hoje()
+    try:
+        g = db.gastos_da_semana(user["id"], ref=ref, dias=GASTOS_JANELA_DIAS)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[gastos] falha ao somar a semana do user %s", user.get("id"),
+            exc_info=True)
+        return None
+    if g["n"] < GASTOS_MIN_LANCAMENTOS or g["total"] <= 0:
+        return None
+
+    primeiro = (user.get("nome") or "").split()
+    primeiro = primeiro[0] if primeiro else "Oi"
+    linhas = [f"📊 {primeiro}, o resumo da sua semana: "
+              f"*{_brl(g['total'])}* em contas registradas.", ""]
+    for categoria, valor in list(g["por_categoria"].items())[:4]:
+        linhas.append(f"• {categoria} — {_brl(valor)}")
+
+    # COMPARAÇÃO, não número solto. Foi exatamente o defeito do painel do
+    # dono: "R$ 340" não diz se melhorou ou piorou, e sem isso a pessoa não
+    # tem o que fazer com o número.
+    anterior = g["total_anterior"]
+    if anterior > 0:
+        delta = g["total"] - anterior
+        if abs(delta) < 0.01:
+            comp = f"Igualzinho à semana passada ({_brl(anterior)})."
+        elif delta > 0:
+            comp = (f"Na semana passada foram {_brl(anterior)} — "
+                    f"{_brl(abs(delta))} a mais agora.")
+        else:
+            comp = (f"Na semana passada foram {_brl(anterior)} — "
+                    f"{_brl(abs(delta))} a menos agora.")
+    else:
+        comp = "É a primeira semana que eu tenho pra comparar."
+    linhas += ["", comp, "",
+               convite_de_uso(user["id"], ref.isocalendar()[1])]
+    return "\n".join(linhas)
+
+
+def dia_de_gastos(user: dict) -> int:
+    """Em que dia da semana ESTA pessoa recebe o resumo de gastos.
+
+    Segunda de manhã por padrão, como o dono pediu — mas nunca no mesmo dia
+    do resumo de compromissos dela. Quem tem o resumo na segunda (o default)
+    recebe os gastos na terça.
+    """
+    do_resumo = dia_resumo_weekday(user.get("dia_resumo"))
+    for d in GASTOS_DIAS:
+        if d != do_resumo:
+            return d
+    return GASTOS_DIAS[0]
+
+
+def check_gastos_semanais(ref: Optional[datetime] = None) -> list[dict]:
+    """Checagem 5: resumo de gastos no início da semana, 1x por semana."""
+    now = ref or tempo.agora()
+    if now.weekday() not in GASTOS_DIAS:
+        return []
+    if not (GASTOS_HORA_INICIO <= now.hour < GASTOS_HORA_LIMITE):
+        return []
+    hoje = now.date()
+    dispatches: list[dict] = []
+    for user in db.list_users():
+        if (user.get("onboarding_step") or "done") != "done":
+            continue
+        if not db.user_can_receive(user):
+            continue
+        if now.weekday() != dia_de_gastos(user):
+            continue
+        # Uma por semana. `dispatched_today` sozinho deixava passar dois
+        # envios em dias diferentes se o dia calculado mudasse no meio da
+        # semana (a pessoa troca o `dia_resumo` e ganha um resumo extra).
+        if db.dispatched_within("gastos", user["id"], GASTOS_COOLDOWN_DIAS):
+            continue
+        msg = montar_resumo_de_gastos(user, ref=hoje)
+        if not msg:
+            continue
+        dispatches.append({
+            "user_id": user["id"],
+            "user_nome": user["nome"],
+            "telefone": user["telefone"],
+            "item_id": None,
+            "kind": "gastos",
+            "message": msg,
+            "semana": hoje.isocalendar()[1],
+        })
+    return dispatches
+
+
 def check_winback() -> list[dict]:
     """1 única mensagem 3 dias após o trial expirar sem conversão."""
     dispatches: list[dict] = []
@@ -694,12 +917,14 @@ def run_proactive_engine(
     rodar_purga_se_for_o_dia(now)         # M1.6 (seco por padrao)
     alarms = check_time_alarms(ref=now)
     if _in_quiet_hours(now):
-        due, churn, trial, guided, overdue, resumo = [], [], [], [], [], []
+        due, churn, trial, guided, overdue, resumo, gastos = (
+            [], [], [], [], [], [], [])
     else:
         overdue = check_overdue(ref=ref_date) + check_winback()
         due = check_due_items(ref=ref_date)
         churn = check_churn(ref=ref_datetime)
         resumo = check_weekly_summary(ref=now)
+        gastos = check_gastos_semanais(ref=now)
         try:
             import trial_guiado
             guided = trial_guiado.run_trial_nudges()
@@ -710,13 +935,14 @@ def run_proactive_engine(
         "executed_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "alarm_dispatches": alarms,
         "resumo_dispatches": resumo,
+        "gastos_dispatches": gastos,
         "overdue_dispatches": overdue,
         "due_dispatches": due,
         "churn_dispatches": churn,
         "trial_dispatches": trial,
         "guided_dispatches": guided,
         "total": (len(alarms) + len(resumo) + len(overdue) + len(due)
-                  + len(churn) + len(trial) + len(guided)),
+                  + len(churn) + len(trial) + len(guided) + len(gastos)),
     }
 
 

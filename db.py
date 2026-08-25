@@ -135,7 +135,22 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
             CREATE INDEX IF NOT EXISTS idx_items_venc   ON items(data_vencimento);
 
-            """ + _MSGLOG_DDL
+            """ + _MSGLOG_DDL + """
+
+            -- M2.5: acao administrativa (reset de trial, hoje) deixa
+            -- rastro. Sem isso, "o trial de todo mundo voltou" nao tem
+            -- resposta pra "quem fez, quando, e em quantos".
+            CREATE TABLE IF NOT EXISTS admin_acoes (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                quando  TEXT NOT NULL,
+                acao    TEXT NOT NULL,
+                alvo    TEXT,
+                por     TEXT,
+                detalhe TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_admin_acoes_acao
+                ON admin_acoes(acao, quando);
+            """
         )
         # Migração leve: adiciona colunas novas em bancos criados antes delas
         existing = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
@@ -150,7 +165,13 @@ def init_db() -> None:
                          ("dia_resumo", "TEXT DEFAULT 'Segunda-feira'"),
                          # M1.2: carimbo do aceite explícito da LGPD — prova
                          # de consentimento (não só a UI ter mostrado botão).
-                         ("lgpd_aceite_em", "TEXT")]:
+                         ("lgpd_aceite_em", "TEXT"),
+                         # M2.5: relogio do trial, separado da data de
+                         # cadastro. Ver `_base_do_trial`.
+                         ("trial_base", "TEXT"),
+                         # M2.5 rodada 2: o final da placa. Sem ele, o
+                         # "Anotei o final N da sua placa" era so texto.
+                         ("placa_final", "INTEGER")]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
         # items: coluna de horário-alvo (v6.1)
@@ -253,10 +274,39 @@ def create_user(
         return int(cur.lastrowid)
 
 
+def _base_do_trial(user: dict) -> datetime:
+    """De quando o relogio do trial conta.
+
+    `data_criacao` e a data de CADASTRO e nao pode ser mexida: ela alimenta
+    "novos por dia" no painel e a idade da base. Entao o reset administrativo
+    (M2.5) escreve em `trial_base`, e quem quiser saber quanto falta de teste
+    passa por aqui. Um so lugar decide isso — o dia em que `trial_days_left`
+    e `trial_day_number` discordarem da base, o trial guiado e o fim de trial
+    passam a contar dias diferentes pra mesma pessoa.
+    """
+    bruto = (user.get("trial_base") or user.get("data_criacao") or "")
+    for formato in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(bruto[:19], formato)
+        except ValueError:
+            continue
+    # Sem data legivel, o seguro e tratar como cadastro de AGORA: melhor um
+    # trial a mais do que cortar o acesso de alguem por causa de um campo
+    # torto (regra 10). A direcao do fallback e a decisao, e por isso ela
+    # tem teste — nao so este comentario.
+    #
+    # E ELE GRITA. Sem log, uma data ilegivel vira trial que nunca expira,
+    # em silencio, sem uma linha no servidor (regra 5).
+    import logging
+    logging.getLogger("resolveai").warning(
+        "[trial] data ilegivel no user %s (%r) — contando o trial a partir "
+        "de agora", user.get("id"), bruto[:19])
+    return tempo.agora()
+
+
 def trial_days_left_raw(user: dict, trial_days: int = 14) -> int:
     """Dias restantes do trial SEM clamp (negativo = expirado há N dias)."""
-    created = datetime.strptime(user["data_criacao"], "%Y-%m-%d %H:%M:%S")
-    elapsed = (tempo.agora() - created).days
+    elapsed = (tempo.agora() - _base_do_trial(user)).days
     return trial_days - elapsed
 
 
@@ -269,7 +319,8 @@ def update_user_fields(user_id: int, **fields) -> None:
     """Atualiza campos arbitrários do usuário (whitelist de colunas)."""
     allowed = {"nome", "idade", "profissao", "interesses", "carro_modelo",
                "carro_km", "pet_info", "dia_resumo", "status",
-               "onboarding_step", "trial_nudges_sent", "lgpd_aceite_em"}
+               "onboarding_step", "trial_nudges_sent", "lgpd_aceite_em",
+               "trial_base", "placa_final"}
     cols = {k: v for k, v in fields.items() if k in allowed}
     if not cols:
         return
@@ -281,8 +332,7 @@ def update_user_fields(user_id: int, **fields) -> None:
 
 def trial_day_number(user: dict) -> int:
     """Em que dia do trial o usuário está (0 = dia da entrada, 1 = dia seguinte...)."""
-    created = datetime.strptime(user["data_criacao"], "%Y-%m-%d %H:%M:%S")
-    return (tempo.agora() - created).days
+    return (tempo.agora() - _base_do_trial(user)).days
 
 
 def nudge_already_sent(user: dict, nudge_id: str) -> bool:
@@ -370,11 +420,96 @@ def delete_user(user_id: int) -> None:
 
 
 def set_created_days_ago(user_id: int, days: int) -> None:
-    """Utilitário de teste: retrocede data_criacao (simula fim de trial)."""
+    """Utilitário de teste: retrocede o relógio (simula fim de trial).
+
+    Mexe nos DOIS campos. Só em `data_criacao`, ele virava no-op em qualquer
+    usuário que já tivesse passado por um reset — e teste que simula fim de
+    trial e não simula nada é teste cego, que é pior que teste ausente.
+    """
     when = (tempo.agora() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     with get_conn() as conn:
-        conn.execute("UPDATE users SET data_criacao=? WHERE id=?",
-                     (when, user_id))
+        conn.execute(
+            "UPDATE users SET data_criacao=?, trial_base=? WHERE id=?",
+            (when, when, user_id))
+
+
+# ---------------------------------------------------------------------------
+# ACAO ADMINISTRATIVA (M2.5)
+# ---------------------------------------------------------------------------
+def registrar_acao_admin(acao: str, alvo=None, por: str = "",
+                         detalhe: str = "") -> None:
+    """Rastro de quem mexeu na base por fora do fluxo normal."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO admin_acoes (quando, acao, alvo, por, detalhe)
+               VALUES (?,?,?,?,?)""",
+            (tempo.agora().isoformat(timespec="seconds"), acao,
+             None if alvo is None else str(alvo), por or "", detalhe or ""))
+
+
+def acoes_administrativas(acao: Optional[str] = None,
+                          limite: int = 200) -> list[dict]:
+    with get_conn() as conn:
+        if acao:
+            rows = conn.execute(
+                """SELECT * FROM admin_acoes WHERE acao=?
+                   ORDER BY id DESC LIMIT ?""", (acao, limite)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM admin_acoes ORDER BY id DESC LIMIT ?",
+                (limite,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def resetar_trial(user_ids=None, por: str = "", trial_days: int = 14) -> list:
+    """Devolve o trial inteiro para os usuarios pedidos. So a DATA.
+
+    Devolve a lista de ids efetivamente resetados — vazia quando nao havia
+    o que fazer, que e o resultado normal da segunda execucao no mesmo dia.
+
+    TRES RECUSAS, todas deliberadas:
+
+    1. NAO TOCA EM ITEM. A unica escrita e `users.trial_base`. Um comando
+       que varre a base inteira de uma vez e o pior lugar possivel pra
+       "aproveitar e limpar" qualquer coisa (regra 10 do projeto).
+    2. NAO RESSUSCITA QUEM CANCELOU. Quem pediu pra sair nao volta pro
+       trial por causa de manutencao — isso e voltar a mandar mensagem pra
+       quem pediu silencio, e no WhatsApp isso vira denuncia.
+    3. NAO MEXE EM QUEM NAO ESTA EM TRIAL. Assinante nao vira trial, e
+       quem foi bloqueado nao volta a receber.
+    4. NAO REPETE A REGUA DO TRIAL. `trial_nudges_sent` fica intacto de
+       proposito: voltar o relogio faria o trial guiado remandar o d1 pra
+       quem ja passou por ele — 11 pessoas recebendo de novo a mensagem de
+       boas-vindas e o oposto de "testem as melhorias".
+
+    Idempotente POR DIA: quem ja tem `trial_base` de hoje e pulado. Rodar de
+    novo porque a primeira "pareceu nao funcionar" nao pode virar 28 dias.
+    """
+    agora = tempo.agora()
+    hoje = agora.date().isoformat()
+    alvos = list(user_ids) if user_ids is not None else [
+        u["id"] for u in list_users()]
+    tocados = []
+    for uid in alvos:
+        u = get_user(uid)
+        if not u:
+            continue
+        # SO QUEM ESTA EM TRIAL. A guarda era `!= "cancelado"`, e isso
+        # deixava o comando rebaixar ASSINANTE a trial de 14 dias (que
+        # depois expira e corta quem paga) e devolver acesso a quem foi
+        # BLOQUEADO. Lista fechada em `set_status`: trial | ativo |
+        # cancelado | bloqueado — a unica que faz sentido resetar e a
+        # primeira. Hoje ha 0 pagantes; e o primeiro que paga a conta.
+        if (u.get("status") or "trial") != "trial":
+            continue
+        if (u.get("trial_base") or "")[:10] == hoje:
+            continue                      # ja resetado hoje
+        update_user_fields(uid, trial_base=agora.strftime("%Y-%m-%d %H:%M:%S"),
+                           status="trial")
+        registrar_acao_admin("reset_trial", alvo=uid, por=por,
+                             detalhe=f"+{trial_days}d")
+        tocados.append(uid)
+    return tocados
 
 
 def trial_ending_users(days_left: int = 1, trial_days: int = 14) -> list[dict]:
@@ -1285,6 +1420,54 @@ def gastos_por_categoria(user_id: int, meses: int = 3) -> dict:
     return dict(sorted(saida.items(), key=lambda kv: kv[1], reverse=True))
 
 
+def gastos_da_semana(user_id: int, ref: Optional[date] = None,
+                     dias: int = 7) -> dict:
+    """{total, por_categoria, n, total_anterior} da semana desta pessoa.
+
+    POR `data_criacao`, e não por vencimento ou baixa. A pergunta que o
+    resumo responde é "o que você registrou nesta semana" — e essa é a única
+    versão que existe pra todo mundo. Medir pela BAIXA dependeria de a pessoa
+    responder "paguei", e quem não responde é justamente quem o resumo
+    deveria alcançar: o relatório chegaria vazio pra quase toda a base.
+    A mensagem diz "registradas" por isso — não afirma que o dinheiro saiu.
+
+    Só `tipo='despesa'` com valor, a mesma regra do `gastos_por_categoria`.
+    Se as duas divergirem, o painel do dono e o WhatsApp do usuário passam a
+    contar histórias diferentes sobre o mesmo dado.
+    """
+    ref = ref or tempo.hoje()
+    inicio = (ref - timedelta(days=dias)).isoformat()
+    inicio_anterior = (ref - timedelta(days=2 * dias)).isoformat()
+
+    def _linhas(de, ate):
+        with get_conn() as conn:
+            return conn.execute(
+                """SELECT categoria, COALESCE(SUM(valor_reais),0) t,
+                          COUNT(*) n
+                     FROM items
+                    WHERE user_id=? AND tipo='despesa'
+                      AND valor_reais IS NOT NULL
+                      AND substr(data_criacao,1,10) > ?
+                      AND substr(data_criacao,1,10) <= ?
+                    GROUP BY categoria""", (user_id, de, ate)).fetchall()
+
+    atual = _linhas(inicio, ref.isoformat())
+    por_categoria = {r["categoria"]: round(float(r["t"]), 2) for r in atual
+                     if float(r["t"]) > 0}
+    # MESMO FILTRO DOS DOIS LADOS. Sem o `> 0` aqui, a semana anterior
+    # somava categorias que o lado atual descarta — e a comparacao passava a
+    # ter um vies embutido, sempre na mesma direcao.
+    anterior = [r for r in _linhas(inicio_anterior, inicio)
+                if float(r["t"]) > 0]
+    return {
+        "total": round(sum(por_categoria.values()), 2),
+        "por_categoria": dict(sorted(por_categoria.items(),
+                                     key=lambda kv: kv[1], reverse=True)),
+        "n": sum(int(r["n"]) for r in atual),
+        "total_anterior": round(sum(float(r["t"]) for r in anterior), 2),
+    }
+
+
 def serie_diaria(dias: int = 7) -> list[dict]:
     """Últimos N dias: usuários novos, demandas recebidas, itens e falhas.
 
@@ -1322,7 +1505,8 @@ def serie_diaria(dias: int = 7) -> list[dict]:
     return saida
 
 
-def engajamento(excluir_telefones: Optional[list] = None) -> dict:
+def engajamento(excluir_telefones: Optional[list] = None,
+                ref: Optional[date] = None) -> dict:
     """A métrica que decide se isto é um negócio: DESPEJOS POR PESSOA POR DIA.
 
     Não é quantos lembretes o bot disparou — é quantas vezes a pessoa
@@ -1337,8 +1521,17 @@ def engajamento(excluir_telefones: Optional[list] = None) -> dict:
     (Para RISCO DE BLOQUEIO é o contrário: lá as mensagens do dono contam,
     porque a Meta não sabe quem é o dono. Ver `pulso_envio`.)
     """
-    hoje = tempo.hoje()
-    ini = (hoje - timedelta(days=6)).isoformat()
+    # `ref` = ultimo dia da janela. Existe pro relatorio do dono comparar a
+    # semana atual com a anterior (M2.5): numero solto nao diz se melhorou, e
+    # era exatamente esse o defeito do relatorio das 8h.
+    fim = ref or tempo.hoje()
+    ini = (fim - timedelta(days=6)).isoformat()
+    # Limite SUPERIOR: sem ele, `ref` no passado somaria tudo o que veio
+    # depois e as duas janelas dariam quase o mesmo numero — a tendencia
+    # apareceria como "estavel" sempre, que e pior que nao ter tendencia.
+    # O ' ' no fim do corte e proposital: `log_message` grava com 'T', e
+    # 'T' > ' ', entao `< "AAAA-MM-DD "` exclui o dia inteiro.
+    lim = (fim + timedelta(days=1)).isoformat() + " "
     fora = {re.sub(r"\D", "", t) for t in (excluir_telefones or []) if t}
     with get_conn() as conn:
         ids_fora = set()
@@ -1377,9 +1570,9 @@ def engajamento(excluir_telefones: Optional[list] = None) -> dict:
         _tel_fora = {_sufixo_tel(t) for t in fora}
         linhas = conn.execute(
             """SELECT user_id, telefone FROM msg_log
-                WHERE direcao='in' AND ts >= ?
+                WHERE direcao='in' AND ts >= ? AND ts < ?
                   AND COALESCE(tipo,'') <> 'resgate_painel'""",
-            (ini + " ",)).fetchall()
+            (ini + " ", lim)).fetchall()
         quem = {}
         desconhecidos = 0
         for l in linhas:
@@ -1418,8 +1611,9 @@ def engajamento(excluir_telefones: Optional[list] = None) -> dict:
         # quanto do tráfego era do próprio dono — pro tamanho do viés ficar visível
         rt = conn.execute(
             """SELECT COUNT(*) FROM msg_log WHERE direcao='in'
-               AND ts >= ? AND COALESCE(tipo,'') <> 'resgate_painel'""",
-            (ini + " ",)).fetchone()
+               AND ts >= ? AND ts < ?
+               AND COALESCE(tipo,'') <> 'resgate_painel'""",
+            (ini + " ", lim)).fetchone()
         total = int(rt[0]) if rt else 0
     por_dia = round(n / (u * 7), 2) if u else 0.0
     # BASE COMPARÁVEL (auditoria v23.4, P2-9): o denominador do painel era
@@ -1658,34 +1852,85 @@ def admin_list_users() -> list[dict]:
     """Lista todos os usuários com dados úteis pro painel de admin."""
     with get_conn() as conn:
         rows = conn.execute(
-            """SELECT u.id, u.nome, u.telefone, u.status, u.data_criacao,
-                      u.ultima_interacao, u.interesses,
+            # `u.*` E NAO UMA LISTA DE COLUNAS. Esta era a unica
+            # consulta de usuario escrita a mao no projeto, e por isso a
+            # unica que nao viu o `trial_base` nascer (M2.5): o painel
+            # passou a mostrar os dias do `data_criacao` enquanto o bot
+            # contava pelo relogio novo. O dono clicava em "+7 dias", o
+            # numero nao mexia, ele clicava de novo — e cada clique dava +7
+            # de verdade. Coluna nova nao pode depender de alguem lembrar
+            # de vir aqui.
+            """SELECT u.*,
                       (SELECT COUNT(*) FROM items i WHERE i.user_id=u.id) AS n_itens,
                       (SELECT COUNT(*) FROM items i WHERE i.user_id=u.id
                        AND i.status='pendente') AS n_pendentes
                FROM users u ORDER BY u.data_criacao DESC""").fetchall()
+    # WHITELIST NA SAIDA, e nao no SELECT.
+    #
+    # O `SELECT u.*` conserta o painel (ele precisa do `trial_base` pra nao
+    # mentir sobre o trial), mas passar a linha inteira adiante levou junto
+    # `idade`, `profissao`, `carro_modelo`, `pet_info`, `placa_final`... da
+    # base toda, para um endpoint cuja chave viaja em query string. Nao sai
+    # do perimetro do token, mas o estrago de uma URL vazada saltou de
+    # "nome e telefone" para dossie. Os dois lados no lugar certo: o SQL
+    # traz tudo (coluna nova nao depende de memoria), a saida entrega o que
+    # o painel usa.
+    campos = ("id", "nome", "telefone", "status", "data_criacao",
+              "ultima_interacao", "interesses", "n_itens", "n_pendentes")
     out = []
     for r in rows:
-        d = dict(r)
-        d["dias_trial_restantes"] = trial_days_left(d)
+        bruto = dict(r)
+        d = {k: bruto.get(k) for k in campos}
+        d["dias_trial_restantes"] = trial_days_left(bruto)
         out.append(d)
     return out
 
 
 def admin_extend_trial(user_id: int, dias_extra: int) -> bool:
-    """Estende o trial adiantando a data_criacao (dá mais dias grátis)."""
+    """Estende o trial empurrando o RELÓGIO DO TRIAL (dá mais dias grátis).
+
+    ESCREVE EM `trial_base`, e não em `data_criacao`. Os dois campos existem
+    e são coisas diferentes: `data_criacao` é a data de CADASTRO (alimenta
+    "novos por dia" e a idade da base) e `trial_base` é de quando o teste
+    conta. Quem decide isso é `_base_do_trial`, e ele lê `trial_base`
+    primeiro.
+
+    Enquanto esta função escrevia em `data_criacao`, bastava um reset
+    administrativo (M2.5) pra ela virar NO-OP: `trial_base` passava a
+    existir, o relógio ignorava `data_criacao`, e a pessoa lia "liberei +7
+    dias — agora são 14" na mesma frase, com 14 sendo o número de antes.
+    Pior: o `log_dispatch("extensao-trial")` era queimado sem a extensão ter
+    acontecido, e ela é UMA por usuário. Achado na rodada 2 da auditoria
+    M2.5, e é o padrão que o CLAUDE.md registra como o mais caro do projeto
+    — dedup marcado por quem não executou.
+    """
     try:
+        u = get_user(user_id)
+        if not u:
+            return False
+        nova = _base_do_trial(u) + timedelta(days=dias_extra)
+        # NAO DESBLOQUEIA NINGUEM. O `status='trial'` era incondicional, e
+        # o botao "+dias" do painel devolvia acesso a quem foi BLOQUEADO —
+        # a mesma porta que o `resetar_trial` fechou nesta fase e esta
+        # funcao tinha deixado aberta.
+        if (u.get("status") or "trial") == "bloqueado":
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[trial] recusei estender o trial do user %s: status "
+                "bloqueado", user_id)
+            return False
         with get_conn() as conn:
-            row = conn.execute("SELECT data_criacao FROM users WHERE id=?",
-                               (user_id,)).fetchone()
-            if not row:
-                return False
-            base = datetime.strptime(row["data_criacao"], "%Y-%m-%d %H:%M:%S")
-            nova = base + timedelta(days=dias_extra)
-            conn.execute("UPDATE users SET data_criacao=?, status='trial' WHERE id=?",
-                         (nova.strftime("%Y-%m-%d %H:%M:%S"), user_id))
+            conn.execute(
+                "UPDATE users SET trial_base=?, status='trial' WHERE id=?",
+                (nova.strftime("%Y-%m-%d %H:%M:%S"), user_id))
         return True
     except Exception:
+        # Sem log, esta falha some — e quem chama devolve "não consegui" sem
+        # nada no servidor pra dizer por quê (regra 5).
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[trial] falha ao estender o trial do user %s", user_id,
+            exc_info=True)
         return False
 
 

@@ -20,6 +20,52 @@ import wa_bot
 from conftest import TELEFONE, responder
 
 
+# --- o ano seguinte, INVENTADO de proposito ------------------------------
+
+@pytest.fixture(autouse=True)
+def tabela_ficticia_do_ano_seguinte(monkeypatch):
+    """DADO FALSO, e por isso ele mora aqui dentro e nao em producao.
+
+    A tabela de producao tem UM ano — 2026 — porque so esse foi conferido
+    contra o edital da Sefaz (ver test_m25_calendario_oficial.py). Mas
+    metade do que ESTE arquivo testa e a logica de VIRADA DE ANO do wa_bot:
+    item do ano passado nao bloqueia o do ano novo, "a proxima ocorrencia"
+    e nao "a ultima", `>=` no dia exato do vencimento. Sem um segundo ano
+    na tabela, todos esses testes passam com os dois lados vazios — e teste
+    que passa vazio e pior que teste ausente, porque parece cobertura.
+
+    As datas abaixo NAO sao o calendario de 2027. Se alguem copiar isso pra
+    `calendario.py`, o `test_so_existe_ano_que_o_dono_conferiu` reprova.
+    """
+    ano = tempo.hoje().year + 1
+    # dez dias uteis seguidos a partir da segunda segunda-feira de janeiro:
+    # e a FORMA do calendario de SP, o suficiente pra exercitar a logica.
+    d = _dt.date(ano, 1, 1)
+    while d.weekday() != 0:
+        d += _dt.timedelta(days=1)
+    d += _dt.timedelta(days=7)
+    dias = []
+    while len(dias) < 10:
+        if d.weekday() < 5 and d.isoformat() not in calendario.feriados(ano):
+            dias.append(d.isoformat())
+        d += _dt.timedelta(days=1)
+    ordem = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]
+
+    ipva = dict(calendario.IPVA)
+    ipva[("SP", ano)] = dict(zip(ordem, dias))
+    monkeypatch.setattr(calendario, "IPVA", ipva)
+
+    meses = dict(calendario.LICENCIAMENTO_MES)
+    meses[("SP", ano)] = dict(calendario.LICENCIAMENTO_MES[("SP", 2026)])
+    monkeypatch.setattr(calendario, "LICENCIAMENTO_MES", meses)
+    lic = dict(calendario.LICENCIAMENTO)
+    lic[("SP", ano)] = {f: calendario._ultimo_dia_util(ano, m).isoformat()
+                        for f, m in meses[("SP", ano)].items()}
+    monkeypatch.setattr(calendario, "LICENCIAMENTO", lic)
+    monkeypatch.setattr(calendario, "ANOS_COBERTOS", [2026, ano])
+    return ano
+
+
 # --- a tabela ------------------------------------------------------------
 
 def test_tabela_tem_o_ano_corrente():
@@ -42,24 +88,40 @@ def test_datas_sao_iso_e_do_ano_pedido(final):
 
 
 @pytest.mark.parametrize("ano", [2026, 2027])
-@pytest.mark.parametrize("tipo", ["ipva", "licenciamento"])
-def test_dez_finais_dez_datas(tipo, ano):
-    """DEZ datas distintas por tipo e por ano.
+def test_dez_finais_dez_datas_no_ipva(ano):
+    """DEZ datas distintas no IPVA — uma por final, e por ano.
 
     A versao anterior deste teste lia `vencimentos(...)[0]`, que e SEMPRE o
     IPVA (a funcao itera IPVA primeiro), com limiar `>= 5` sobre 10 finais.
     Era cego pro licenciamento — e o licenciamento tinha o final 0 repetindo
-    a data do final 7 nos dois anos. Todo dono de placa final 0 recebia o
-    lembrete com dois meses de erro, e o teste passava.
+    a data do final 7 nos dois anos.
+
+    O LICENCIAMENTO SAIU DAQUI, e nao por conveniencia: o edital de SP
+    pareia os finais (1-2, 3-4, 5-6, 7-8), entao exigir dez datas distintas
+    la reprovaria a tabela CERTA. O que protege o licenciamento agora e a
+    comparacao com o mes do edital, no test_m25_calendario_oficial.py —
+    teste de conteudo no lugar de teste de simetria.
     """
     datas = {}
     for f in range(10):
         for v in calendario.vencimentos("SP", f, ano):
-            if v["tipo"] == tipo:
+            if v["tipo"] == "ipva":
                 datas.setdefault(v["data"], []).append(f)
     repetidas = {d: fs for d, fs in datas.items() if len(fs) > 1}
-    assert not repetidas, f"{tipo}/{ano}: datas repetidas {repetidas}"
-    assert len(datas) == 10, f"{tipo}/{ano}: {len(datas)} datas pra 10 finais"
+    assert not repetidas, f"ipva/{ano}: datas repetidas {repetidas}"
+    assert len(datas) == 10, f"ipva/{ano}: {len(datas)} datas pra 10 finais"
+
+
+@pytest.mark.parametrize("ano", [2026, 2027])
+def test_licenciamento_pareia_os_finais_como_o_edital(ano):
+    """1-2, 3-4, 5-6, 7-8 dividem o mesmo prazo; 9 e 0 tem o seu."""
+    datas = {f: v["data"] for f in range(10)
+             for v in calendario.vencimentos("SP", f, ano)
+             if v["tipo"] == "licenciamento"}
+    for a, b in ((1, 2), (3, 4), (5, 6), (7, 8)):
+        assert datas[a] == datas[b], f"{ano}: finais {a} e {b} divergiram"
+    assert datas[9] != datas[0]
+    assert len(set(datas.values())) == 6, datas
 
 
 @pytest.mark.parametrize("ano", [2026, 2027])
@@ -417,11 +479,17 @@ FINAIS_COM_DATA = {3: "ABC1D23", 9: "ABC1D29", 0: "ABC1D20", 5: "ABC1D25",
     # o esperado com o mesmo algoritmo da produção — isso mata mutação de UM
     # lado (provado), mas um erro de conceito mudado nos dois lados passaria.
     # Estas datas são as que doem se mudarem, escritas à mão.
-    ("ABC1D25", {"licenciamento": "2026-08-31", "ipva": "2027-01-18"}),
-    ("ABC1D29", {"licenciamento": "2026-12-22", "ipva": "2027-01-22"}),
-    ("ABC1D20", {"licenciamento": "2026-12-30", "ipva": "2027-01-25"}),
+    #
+    # Tudo de 2026, que é o único ano CONFERIDO contra o edital, e com a data
+    # de hoje travada em janeiro — é o único mês em que o IPVA e o
+    # licenciamento do mesmo ano estão os dois no futuro. Em agosto este
+    # teste mediria só metade e não diria isso em lugar nenhum.
+    ("ABC1D25", {"ipva": "2026-01-16", "licenciamento": "2026-09-30"}),
+    ("ABC1D29", {"ipva": "2026-01-22", "licenciamento": "2026-11-30"}),
+    ("ABC1D20", {"ipva": "2026-01-23", "licenciamento": "2026-12-31"}),
 ])
-def test_datas_literais_do_calendario(usuario, placa, esperado):
+def test_datas_literais_do_calendario(usuario, monkeypatch, placa, esperado):
+    monkeypatch.setattr(tempo, "hoje", lambda: _dt.date(2026, 1, 5))
     responder(f"minha placa é {placa}")
     criado = {}
     for i in db.list_items(usuario["id"]):
