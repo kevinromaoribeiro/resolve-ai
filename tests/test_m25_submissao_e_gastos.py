@@ -371,30 +371,43 @@ def test_o_motor_proativo_inclui_o_resumo_de_gastos(usuario,
             if d["user_id"] == usuario["id"]]
 
 
-def test_fora_da_janela_o_resumo_de_gastos_usa_template(usuario,
-                                                        segunda_de_manha):
-    """Sem template, o resumo de segunda so chega em quem falou com o bot nas
-    ultimas 24h — ou seja, justamente em quem menos precisa de lembrete."""
+def test_fora_da_janela_o_resumo_de_gastos_nao_sai(usuario,
+                                                   segunda_de_manha):
+    """DECISAO INVERTIDA EM 26/08/2026, e de proposito.
+
+    Este teste exigia que o resumo tivesse template. A Meta recusou: resumo
+    semanal e AGREGADO, e agregado e mensagem sobre o produto, nao sobre um
+    compromisso da pessoa — entao ela classifica como marketing. Nao da pra
+    "consertar o texto" de um resumo sem ele deixar de ser resumo.
+
+    Escolha registrada: ele vive dentro da janela de 24h. O custo e pequeno
+    porque so e montado pra quem registrou 2+ despesas na semana, e quem
+    esta usando o bot quase sempre falou com ele nas ultimas 24h.
+    """
     _despesa(usuario["id"], 10.0, "Contas", 2)
     _despesa(usuario["id"], 20.0, "Casa", 3)
     d = [x for x in scheduler.check_gastos_semanais()
          if x["user_id"] == usuario["id"]][0]
     nome, variaveis = templates.para_disparo(d)
-    assert nome == "resolveai_resumo_de_gastos"
-    assert len(variaveis) == len(templates.CATALOGO[nome].variaveis)
+    assert nome is None, f"voltou a existir template de gastos: {nome}"
+    assert variaveis == []
 
 
-def test_o_resumo_de_gastos_nao_sai_sem_template_aprovado(usuario,
-                                                          monkeypatch):
-    """Trava de canal: fora da janela e sem aprovacao, nao sai — e diz por
-    que. Nada de texto livre escapando pela porta nova."""
-    monkeypatch.setattr(canal, "_aprovados", lambda: set())
+def test_o_resumo_de_gastos_fora_da_janela_e_recusado_com_motivo(usuario):
+    """Trava de canal: fora da janela e sem template, nao sai — e diz por
+    que. Nada de texto livre escapando pela porta nova.
+
+    O motivo mudou de `template_nao_aprovado` pra `fora_da_janela_sem_
+    template` quando o resumo saiu do catalogo (26/08/2026). O que importa
+    e o mesmo: recusa explicita e registrada, nunca envio silencioso.
+    """
+    d = {"kind": "gastos", "user_id": usuario["id"], "user_nome": "Kevin"}
+    nome, variaveis = templates.para_disparo(d)
     res = canal.falar("5511999998888", "resumo qualquer",
-                      user_id=usuario["id"],
-                      template="resolveai_resumo_de_gastos",
-                      variaveis=["Kevin", "R$ 200,00", "Contas", "mais"])
+                      user_id=usuario["id"], template=nome,
+                      variaveis=variaveis)
     assert res["enviado"] is False
-    assert res["motivo"] == "template_nao_aprovado"
+    assert res["motivo"] == "fora_da_janela_sem_template", res
 
 
 # ---------------------------------------------------------------------------

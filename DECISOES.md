@@ -398,3 +398,118 @@ função tinha ficado aberta. O botão "+dias" do painel devolvia acesso.
 que nunca expira, em silêncio, sem uma linha no servidor. A direção do
 fallback (não cortar acesso por campo torto) agora tem teste, e não só um
 comentário dizendo que era de propósito.
+
+---
+
+# M2.6 — o que a Meta chama de utilidade (26/08/2026)
+
+Submetendo os sete templates na mão, o Business Manager recusou dois **antes
+mesmo da submissão**, com o aviso *"A categoria não corresponde — este modelo
+será rejeitado"* e recomendando MARKETING: o `reengajamento_pendentes` e o
+`resumo_de_gastos`.
+
+**A régua dela não é o tom do texto, é o MOTIVO da mensagem.** Falar de UM
+item que a pessoa cadastrou, com data, é utilidade. Falar de VOLTAR a usar é
+marketing. Os quatro que passaram (`lembrete_hora`, `item_vencido`,
+`resumo_do_dia`, `conta_a_vencer`) têm em comum estarem presos a um
+compromisso com data; os dois recusados, não.
+
+**E ela classificou certo.** "Você tem 2 itens pendentes" é uma mensagem sobre
+o PRODUTO. "Sua conta de luz está parada desde 12/08" é uma mensagem sobre a
+vida da pessoa — e é a segunda que faz alguém pagar R$ 19,90. O texto fraco
+era nosso, não o critério dela.
+
+**Reengajamento: reescrito, e virou utilidade de verdade.** Saiu a contagem,
+entrou o item mais antigo com a data em que ele foi criado. O `min()` por
+`data_criacao` não é detalhe: o mais antigo é o que a pessoa mais deixou
+parado, e portanto o que mais justifica interromper alguém que sumiu.
+
+**Fail-closed na data**, igual ao `conta_a_vencer`: o corpo promete "desde
+{{3}}", e sem data legível o template não sai. Template que promete data e
+entrega vazio é o mesmo defeito de data errada com outro nome — e `_dia_e_mes`
+devolve string vazia em vez de inventar "hoje", porque inventar dado sobre a
+vida da pessoa pra não deixar a mensagem morrer é exatamente o que este
+produto não pode fazer.
+
+**Resumo de gastos: saiu do catálogo.** Um resumo semanal é um AGREGADO, e não
+existe versão dele que fale de um item só sem deixar de ser um resumo. Não dá
+pra consertar o texto; dá pra escolher onde ele vive. Escolha: **dentro da
+janela de 24h, como texto livre**, e `"gastos"` entrou em `KINDS_SEM_TEMPLATE`
+como exceção declarada.
+
+O custo é pequeno, e o motivo importa: o resumo só é montado pra quem
+registrou 2+ despesas na semana, ou seja, pra quem está usando o bot — e quem
+usa quase sempre falou com ele nas últimas 24h. Quem sumiu há dias não tem
+gasto registrado e não receberia o resumo de jeito nenhum.
+
+A alternativa era submeter como MARKETING: mais caro por mensagem, opt-out
+obrigatório, e contando na cota de marketing de um número que já levou duas
+restrições da Meta. Não compensa por um digest.
+
+**Regra nova do repo, virada em teste:** `test_todo_template_cita_item_ou_
+hora_marcada` exige que todo corpo do catálogo cite o item ou a data. Template
+novo que só conte quantidade reprova aqui, e não numa rodada de submissão com
+dias de espera.
+
+**Estado na Meta:** 4 em análise (`lembrete_hora`, `item_vencido`,
+`resumo_do_dia`, `conta_a_vencer`). Faltam submeter o `reengajamento_pendentes`
+reescrito e o `fim_de_trial_aviso`, que ainda não foi testado contra a régua.
+
+## M2.6 — as duas rodadas de auditoria
+
+**Rodada 1: REPROVADO, e o P0 foi meu.** Ao reescrever o corpo do
+reengajamento eu troquei "Responda *ver tudo*" por "Responda *feito*" — e o
+disparo de reengajamento tem `item_id: None` **por construção** (anti-churn e
+winback). Quem resolve `feito` sozinho é o `_alvo_da_baixa`, que só enxerga
+disparos COM item_id. Então o item citado no template é inalcançável, e o
+`feito` fecha **o item do último alarme**.
+
+O modo de falha completo, reproduzido pelo auditor: a pessoa some por 10 dias,
+tem uma conta de luz vencendo e uma lâmpada parada há 40 dias. No mesmo ciclo
+recebe o aviso da luz e depois o reengajamento citando a lâmpada. Responde
+`feito`. O bot dá baixa **na conta de luz**. Perda de dado, regra 10 — e é o
+mesmo P1-7 do M2.0 que o comentário três linhas acima do corpo jura estar
+honrando: *prometer no corpo só o que o Python garante.*
+
+Voltou pra "ver tudo", e a regra virou teste geral em vez de caso:
+`test_so_promete_feito_quem_manda_item_id` varre o `KIND_TEMPLATE` inteiro.
+
+**A data podia aparecer no futuro.** `_dia_e_mes` devolvia só `dd/mm`, e o
+`min()` do reengajamento escolhe justamente o item mais antigo — ou seja,
+maximiza a chance de o carimbo ser de outro ano. Item parado desde 03/09/2025
+aparecia como *"desde 03/09"*, uma data que ainda não aconteceu. Agora inclui
+o ano quando não é o ano corrente.
+
+**`fromisoformat` com fatiamento.** A leitura passou a ser
+`date.fromisoformat(texto[:10])`. O `[:10]` é load-bearing e o auditor
+confirmou por quê: `fromisoformat("2026-08-12 09:31:00")` levanta `ValueError`
+no 3.12 — sem o corte, a função recusaria **100% dos carimbos reais**. E de
+quebra matou o `IndexError` que uma string de 5 caracteres provocava, exceção
+que subia por `para_disparo` e matava o ciclo inteiro do `dispatch_proactive`.
+
+**Descrição só com espaço.** `or "seu item"` pega `None` e `""`, não pega
+`"   "` — e o collapse de espaço em branco transformava isso num parâmetro
+VAZIO, que a Cloud API recusa. A única mensagem que aquela pessoa receberia
+morreria na borda. Virou `.strip() or "seu item"`.
+
+**O teste-régua que eu escrevi aprovava o que a Meta recusou.** Ele tentava
+DEDUZIR o critério ("cita item ou cita data") e aceitava
+`["primeiro_nome","quantidade","mais_antigo"]` — exatamente o conjunto
+reprovado — pelo ramo do "mais_antigo". Teste que dá falsa segurança sobre um
+critério externo é pior que teste nenhum: faz a gente parar de perguntar.
+
+Substituído por `VEREDITO_DA_META`: um **registro** do que ela de fato
+respondeu, template por template, sem dedução nenhuma. O auditor foi honesto
+ao dizer que isso não é uma guarda — a trava real é a allowlist
+`TEMPLATES_APROVADOS` no `canal.falar`. É documentação executável, e o teste
+só cobra que template novo tenha veredito anotado, porque descobrir a régua da
+Meta custa uma rodada de submissão com dias de espera.
+
+**Rodada 2: APROVADO**, com dois P2 que ele mandou fechar antes do commit e
+ambos fechados: testes que virariam vermelhos sozinhos em 01/01/2027 (usavam
+"hoje menos 13 dias" e 2026 escrito à mão como ano corrente) e o
+`DECISOES_PENDENTES.md` ainda mandando configurar um template que não existe
+mais.
+
+Mutação: 6 de 7 mortos. O sobrevivente troca o texto da mensagem de log
+mantendo o log — equivalente, e o auditor concordou.

@@ -111,22 +111,20 @@ Responda *ver tudo* para a lista completa.
 **Corpo:**
 
 ```
-Oi {{1}}, você tem *{{2}}* item(ns) pendente(s) guardado(s) aqui.
+Oi {{1}}, *{{2}}* continua na sua lista desde {{3}} e eu não registrei a baixa.
 
-O mais antigo é *{{3}}*.
-
-Responda *ver tudo* para revisar a lista.
+Responda *ver tudo* para revisar seus itens.
 ```
 
 **Variáveis (exemplo para a submissão):**
 
   - `{{1}}` -> `Kevin`
-  - `{{2}}` -> `2`
-  - `{{3}}` -> `trocar o óleo do carro`
+  - `{{2}}` -> `trocar o óleo do carro`
+  - `{{3}}` -> `12/08`
 
 **Justificativa (cole no campo de descrição, se pedido):**
 
-> Aviso de que existem compromissos pendentes cadastrados pelo próprio usuário e ainda não resolvidos. O conteúdo é o dado dele — quantidade e nome do item mais antigo — e a ação oferecida é revisar ou encerrar esses itens.
+> Aviso sobre um compromisso específico que o próprio usuário cadastrou no assistente e que segue em aberto, com a data em que ele foi criado. O conteúdo é o dado dele, e a ação oferecida é encerrar ou remarcar esse item na mesma conversa.
 
 ---
 
@@ -179,38 +177,5 @@ Responda *feito* quando resolver, ou *adiar* que eu remarco.
 **Justificativa (cole no campo de descrição, se pedido):**
 
 > Aviso de vencimento de um compromisso financeiro que o próprio usuário cadastrou no assistente, com a data que ele informou. Enviado uma vez por item por dia de aviso, e o usuário pode encerrar ou remarcar respondendo na mesma conversa.
-
----
-
-## `resolveai_resumo_de_gastos`
-
-- **Nome:** `resolveai_resumo_de_gastos`
-- **Categoria:** UTILITY
-- **Idioma:** pt_BR
-
-**Corpo:**
-
-```
-Oi {{1}}, o resumo da sua semana: *{{2}}* em contas registradas.
-
-Onde mais pesou: *{{3}}*.
-{{4}}
-
-💡 {{5}}
-
-Responda *ver tudo* para a lista completa.
-```
-
-**Variáveis (exemplo para a submissão):**
-
-  - `{{1}}` -> `Kevin`
-  - `{{2}}` -> `R$ 342,90`
-  - `{{3}}` -> `Contas`
-  - `{{4}}` -> `Na semana passada foram R$ 280,00.`
-  - `{{5}}` -> `Chegou boleto? Me manda a foto que eu guardo a data.`
-
-**Justificativa (cole no campo de descrição, se pedido):**
-
-> Resumo semanal das despesas que o próprio usuário registrou no assistente, no dia da semana definido no cadastro. O conteúdo é exclusivamente o dado dele — total, categoria e comparação com a semana anterior. Não há oferta, preço de plano nem divulgação.
 
 ---

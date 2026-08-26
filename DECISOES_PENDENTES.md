@@ -43,7 +43,7 @@ por si só.
 - **Decisão sua:** se o edital trouxer as datas das parcelas 2 a 5 por final
   de placa, elas entram na tabela e viram lembrete no mesmo dia.
 
-## M2.5 — submeter os templates (agora são 7, e dá pra fazer por API)
+## M2.6 — submeter os templates (são 6, e 4 já estão em análise)
 
 - **Como disparar:** `python templates/submeter.py` mostra o payload sem
   mandar nada; `--enviar` cria de verdade. Ele usa `META_WABA_ID` e
@@ -52,12 +52,19 @@ por si só.
 - **Depois da aprovação:** setar no EasyPanel e dar redeploy —
 
   ```
-  TEMPLATES_APROVADOS=resolveai_lembrete_hora,resolveai_item_vencido,resolveai_resumo_do_dia,resolveai_reengajamento_pendentes,resolveai_fim_de_trial_aviso,resolveai_conta_a_vencer,resolveai_resumo_de_gastos
+  TEMPLATES_APROVADOS=resolveai_lembrete_hora,resolveai_item_vencido,resolveai_resumo_do_dia,resolveai_conta_a_vencer,resolveai_reengajamento_pendentes,resolveai_fim_de_trial_aviso
   ```
 
-- **Os dois novos:** `resolveai_conta_a_vencer` (o aviso mais comum do
-  produto, que até agora não tinha template nenhum e sumia fora da janela) e
-  `resolveai_resumo_de_gastos` (o resumo de segunda).
+  (Só os que a Meta **aprovar**. Em 25/08 quatro foram submetidos e estão em
+  análise: `lembrete_hora`, `item_vencido`, `resumo_do_dia`, `conta_a_vencer`.)
+
+- **O resumo de gastos NÃO tem template**, e isso é decisão registrada: um
+  resumo semanal é agregado, a Meta classifica agregado como marketing, e não
+  existe versão dele que fale de um item só sem deixar de ser um resumo. Ele
+  sai apenas dentro da janela de 24h, como texto livre. Ver `DECISOES.md`, M2.6.
+- **Falta submeter dois:** o `reengajamento_pendentes` reescrito (a versão que
+  contava pendências foi recusada em 25/08; a nova cita o item parado e a data)
+  e o `fim_de_trial_aviso`, que ainda não passou pela régua da Meta.
 - **Enquanto isso:** o código está *fail-closed*. Fora da janela de 24h, sem
   template aprovado, a mensagem **não é enviada** — fica registrada com o
   motivo, e o item volta no próximo ciclo. Nada é marcado como avisado sem

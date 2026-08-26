@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v23.9-m25-ajustes-2026-08-18"
+BUILD = "v24.0-m26-utilidade-de-verdade-2026-08-26"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO

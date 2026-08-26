@@ -103,22 +103,38 @@ _reg(Template(
     nome="resolveai_reengajamento_pendentes",
     categoria="UTILITY",
     idioma="pt_BR",
-    # AUDITORIA M2.0 (P1-7): o corpo mandava responder "*feito* + o nome", e
-    # o nome que ele mostra e a descricao do item — que falha quando tem mais
-    # de 4 palavras ("feito trocar o oleo do carro" nao dava baixa e ainda
-    # criava item duplicado). O corpo do template e contrato com a Meta:
-    # prometer nele so o que o Python garante.
-    corpo=("Oi {{1}}, você tem *{{2}}* item(ns) pendente(s) guardado(s) "
-           "aqui.\n\n"
-           "O mais antigo é *{{3}}*.\n\n"
-           "Responda *ver tudo* para revisar a lista."),
-    variaveis=["primeiro_nome", "quantidade", "mais_antigo"],
-    exemplo=["Kevin", "2", "trocar o óleo do carro"],
+    # REESCRITO EM 26/08/2026, depois de a Meta recusar a versão anterior.
+    #
+    # O corpo dizia "você tem *2* item(ns) pendente(s)" e o Business Manager
+    # respondeu, antes mesmo da submissão: *"A categoria não corresponde —
+    # este modelo será rejeitado"*, recomendando MARKETING.
+    #
+    # E ela classificou certo. A régua da Meta não é o tom do texto, é o
+    # MOTIVO da mensagem: falar de UM item que a pessoa cadastrou é
+    # utilidade; falar de VOLTAR a usar é marketing. Contagem de pendências
+    # é uma mensagem sobre o produto — "sua conta de luz está parada desde
+    # 12/08" é uma mensagem sobre a vida dela. A segunda é a que faz alguém
+    # pagar R$ 19,90, então o texto fraco era nosso, não o critério dela.
+    #
+    # A AÇÃO É "VER TUDO", E NÃO "FEITO". Escrevi "responda *feito*" na
+    # primeira versão deste conserto e a auditoria pegou: o disparo de
+    # reengajamento tem `item_id: None` POR CONSTRUÇÃO (anti-churn e
+    # winback, no scheduler). Quem resolve `feito` sozinho é o
+    # `_alvo_da_baixa`, que só enxerga disparos COM item_id — então o item
+    # citado aqui é inalcançável e o `feito` fecha o item do último alarme.
+    # A pessoa lê "trocar a lâmpada" e o bot responde "dei baixa em conta de
+    # luz". Perda de dado, regra 10, e o mesmo P1-7 que o comentário acima
+    # jura estar honrando: prometer no corpo só o que o Python garante.
+    corpo=("Oi {{1}}, *{{2}}* continua na sua lista desde {{3}} e eu não "
+           "registrei a baixa.\n\n"
+           "Responda *ver tudo* para revisar seus itens."),
+    variaveis=["primeiro_nome", "descricao", "desde"],
+    exemplo=["Kevin", "trocar o óleo do carro", "12/08"],
     justificativa=(
-        "Aviso de que existem compromissos pendentes cadastrados pelo "
-        "próprio usuário e ainda não resolvidos. O conteúdo é o dado dele — "
-        "quantidade e nome do item mais antigo — e a ação oferecida é "
-        "revisar ou encerrar esses itens."),
+        "Aviso sobre um compromisso específico que o próprio usuário "
+        "cadastrou no assistente e que segue em aberto, com a data em que "
+        "ele foi criado. O conteúdo é o dado dele, e a ação oferecida é "
+        "encerrar ou remarcar esse item na mesma conversa."),
 ))
 
 _reg(Template(
@@ -162,32 +178,24 @@ _reg(Template(
         "encerrar ou remarcar respondendo na mesma conversa."),
 ))
 
-_reg(Template(
-    nome="resolveai_resumo_de_gastos",
-    categoria="UTILITY",
-    idioma="pt_BR",
-    # O CORPO NAO TERMINA EM VARIAVEL de proposito: a Meta reprova template
-    # que comeca ou termina com parametro. O convite ({{5}}) fica no meio,
-    # com a instrucao fixa fechando a mensagem.
-    corpo=("Oi {{1}}, o resumo da sua semana: *{{2}}* em contas registradas.\n\n"
-           "Onde mais pesou: *{{3}}*.\n"
-           "{{4}}\n\n"
-           # O "💡" entre {{4}} e {{5}} NÃO é enfeite: sem nenhum caractere
-           # entre eles, a Meta lê como parâmetros adjacentes e reprova a
-           # submissão inteira. Achado pelo teste que a auditoria M2.5 pediu.
-           "💡 {{5}}\n\n"
-           "Responda *ver tudo* para a lista completa."),
-    variaveis=["primeiro_nome", "total", "categoria_top", "comparacao",
-               "convite"],
-    exemplo=["Kevin", "R$ 342,90", "Contas", "Na semana passada foram "
-             "R$ 280,00.", "Chegou boleto? Me manda a foto que eu guardo a "
-             "data."],
-    justificativa=(
-        "Resumo semanal das despesas que o próprio usuário registrou no "
-        "assistente, no dia da semana definido no cadastro. O conteúdo é "
-        "exclusivamente o dado dele — total, categoria e comparação com a "
-        "semana anterior. Não há oferta, preço de plano nem divulgação."),
-))
+# O RESUMO DE GASTOS NÃO TEM TEMPLATE, e isso é decisão declarada.
+#
+# Ele existia aqui até 26/08/2026, e a Meta recusou pelo mesmo motivo do
+# reengajamento: um resumo semanal é um AGREGADO, e agregado é mensagem
+# sobre o produto, não sobre um compromisso da pessoa. Não existe versão
+# dele que fale de um item só sem deixar de ser um resumo — então não dá
+# pra "consertar o texto", dá pra escolher onde ele vive.
+#
+# ESCOLHA: ele vive dentro da janela de 24h, como texto livre. O custo é
+# pequeno e vale escrever por quê: o resumo só é montado pra quem registrou
+# 2+ despesas na semana (`GASTOS_MIN_LANCAMENTOS`), ou seja, pra quem está
+# usando o bot — e quem usa quase sempre falou com ele nas últimas 24h.
+# Quem sumiu há dias não tem gasto registrado e não receberia o resumo de
+# jeito nenhum.
+#
+# A alternativa era submeter como MARKETING: mais caro por mensagem, com
+# opt-out obrigatório e contando na cota de marketing do número — num
+# número que já levou duas restrições da Meta. Não compensa por um digest.
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +224,6 @@ KIND_TEMPLATE = {
     "winback": "resolveai_reengajamento_pendentes",
     "trial-ending": "resolveai_fim_de_trial_aviso",
     "vencimento": "resolveai_conta_a_vencer",
-    "gastos": "resolveai_resumo_de_gastos",
 }
 
 # EXCEÇÕES DECLARADAS: kind que NÃO tem template, de propósito.
@@ -232,6 +239,10 @@ KINDS_SEM_TEMPLATE = {
     # link de afiliado. Template com link comercial é MARKETING na Meta, e
     # abrir essa porta é abrir o número inteiro pra recusa por categoria.
     "1-click-buy",
+    # resumo semanal de gastos: agregado, e a Meta classifica agregado como
+    # marketing. Ver o comentário no lugar onde o template morava. Dentro da
+    # janela de 24h ele sai normalmente, como texto livre.
+    "gastos",
 } | {
     # nudges do trial guiado: são a coreografia dos primeiros dias, com texto
     # próprio em cada etapa (amostra, primeiro item, oferta do kit...).
@@ -261,6 +272,32 @@ def _descricao_do_item(item_id) -> str:
             "[template] falha ao ler descricao do item %s", item_id,
             exc_info=True)
         return ""
+
+
+def _dia_e_mes(carimbo) -> str:
+    """"2026-08-12 09:31:00" -> "12/08". String vazia quando nao da pra ler.
+
+    O vazio e significativo: quem chama usa ele pra NAO enviar (a mensagem
+    promete uma data). Devolver "hoje" ou a data de agora seria inventar
+    dado sobre a vida da pessoa pra nao deixar a mensagem morrer.
+    """
+    import datetime as _dt
+    import tempo
+    texto = str(carimbo or "").strip()
+    # Fatiar ANTES de indexar: string de 5 caracteres estourava IndexError
+    # em `texto[7]`, e a exceção subia por `para_disparo` até matar o ciclo
+    # inteiro do `dispatch_proactive` (mutante sobrevivente da auditoria).
+    try:
+        d = _dt.date.fromisoformat(texto[:10])
+    except (ValueError, TypeError):
+        return ""
+    # COM O ANO quando for outro ano. Sem isso, item parado desde
+    # 03/09/2025 aparecia como "desde 03/09" — uma data que ainda não
+    # aconteceu. E o `min()` do reengajamento MAXIMIZA a chance disso,
+    # porque escolhe justamente o item mais antigo (auditoria M2.6).
+    if d.year == tempo.hoje().year:
+        return f"{d.day:02d}/{d.month:02d}"
+    return f"{d.day:02d}/{d.month:02d}/{d.year}"
 
 
 def _pendentes(user_id):
@@ -299,6 +336,13 @@ def para_disparo(d: dict) -> tuple[Optional[str], list]:
         return None, []
     t = CATALOGO.get(nome)
     if not t:
+        # Era o unico retorno mudo desta funcao — e o M2.6 acabou de criar
+        # um nome que esteve no catalogo e nao esta mais, que e exatamente
+        # como este ramo passa a ser alcancado sem ninguem perceber.
+        import logging
+        logging.getLogger("resolveai").error(
+            "[template] kind mapeado para %r, que nao esta no catalogo — "
+            "fora da janela essa mensagem nao sai", nome)
         return None, []
 
     primeiro = _primeiro_nome(d)
@@ -320,12 +364,31 @@ def para_disparo(d: dict) -> tuple[Optional[str], list]:
         variaveis = [primeiro, str(len(pend)), com_data[0]["descricao"]]
     elif nome == "resolveai_reengajamento_pendentes":
         pend = _pendentes(d.get("user_id"))
-        antigo = pend[0]["descricao"] if pend else ""
         if not pend:
             # Sem item pendente, "você tem 0 itens" é mensagem sem serviço —
             # e o que sobra é só o pedido de voltar, que é marketing.
             return None, []
-        variaveis = [primeiro, str(len(pend)), antigo]
+        # O MAIS ANTIGO, e não o primeiro da lista: é o que a pessoa mais
+        # deixou parado, e portanto o que mais justifica a mensagem.
+        antigo = min(pend, key=lambda i: (i.get("data_criacao") or "9999"))
+        desde = _dia_e_mes(antigo.get("data_criacao"))
+        if not desde:
+            # FAIL-CLOSED, igual ao `conta_a_vencer`: o corpo promete uma
+            # data, e template que promete data e entrega vazio é o mesmo
+            # defeito de data errada com outro nome.
+            import logging
+            logging.getLogger("resolveai").error(
+                "[template] reengajamento sem data legivel no item %s — "
+                "nao envio", antigo.get("id"))
+            return None, []
+        # `.strip()` antes do `or`: o `or` pega None e "", nao pega
+        # "   " — e o collapse de espaco em branco (mais abaixo)
+        # transformaria isso num parametro VAZIO, que a Cloud API
+        # recusa. A unica mensagem que essa pessoa ia receber morreria
+        # na borda, e o CLAUDE.md declara que o caminho degradado
+        # grava descricao suja.
+        desc = (antigo.get("descricao") or "").strip() or "seu item"
+        variaveis = [primeiro, desc, desde]
     elif nome == "resolveai_fim_de_trial_aviso":
         pend = _pendentes(d.get("user_id"))
         variaveis = [primeiro, str(d.get("dias_restantes") or 1),
@@ -344,31 +407,10 @@ def para_disparo(d: dict) -> tuple[Optional[str], list]:
             return None, []
         desc = _descricao_do_item(d.get("item_id"))
         variaveis = [primeiro, desc or "sua conta", d["quando"]]
-    elif nome == "resolveai_resumo_de_gastos":
-        # O template REMONTA a partir do dado, e nao fatia o texto livre.
-        # Recortar a mensagem pronta em cinco pedacos funcionaria ate o dia
-        # em que alguem mexesse numa virgula do texto — e ai sairia template
-        # truncado, que a Meta aceita e a pessoa le como defeito.
-        import db as _db
-        import scheduler as _sched
-        try:
-            g = _db.gastos_da_semana(d["user_id"])
-        except Exception:
-            import logging
-            logging.getLogger("resolveai").warning(
-                "[template] falha ao somar gastos do user %s",
-                d.get("user_id"), exc_info=True)
-            return None, []
-        if g["total"] <= 0 or not g["por_categoria"]:
-            return None, []          # sem dado nao ha resumo (nem template)
-        anterior = g["total_anterior"]
-        comp = (f"Na semana passada foram {_sched._brl(anterior)}."
-                if anterior > 0
-                else "E a primeira semana que eu tenho pra comparar.")
-        variaveis = [primeiro, _sched._brl(g["total"]),
-                     next(iter(g["por_categoria"])), comp,
-                     _sched.convite_de_uso(d["user_id"],
-                                           d.get("semana") or 0)]
+    # (o ramo do `resolveai_resumo_de_gastos` morava aqui e foi REMOVIDO
+    # junto com o template, em 26/08/2026. Ele tinha virado código órfão:
+    # inalcançável, porque o nome saiu do catálogo — e código órfão é o
+    # lugar onde a próxima pessoa procura a regra que já não existe.)
     else:
         # MUDO ATÉ AQUI. Template mapeado em `KIND_TEMPLATE` sem ramo de
         # montagem caía neste `return` sem log nenhum — e fora da janela de
