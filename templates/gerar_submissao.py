@@ -27,6 +27,16 @@ WhatsApp Manager > Modelos de mensagem > Criar modelo
 - **Rodapé:** nenhum
 - **Botões:** nenhum nesta primeira leva (ver DECISOES.md)
 
+ARMADILHA DA INTERFACE, e ela custou meia hora: no passo "Configurar seu
+modelo", clicar na aba **Utilidade** NÃO fixa a categoria. É preciso clicar
+na aba **e depois marcar o rádio "Padrão"** logo abaixo dela. Se pular o
+rádio, o passo seguinte aparece com "Marketing · Padrão" no cabeçalho e o
+template inteiro vai para a categoria errada — e categoria errada na Meta é
+preço errado e regra de opt-out errada.
+
+**Sempre confira o cabeçalho da tela de edição antes de preencher.** Ele diz
+a categoria em letra pequena embaixo do nome.
+
 Depois que a Meta aprovar, configure no EasyPanel:
 
 ```

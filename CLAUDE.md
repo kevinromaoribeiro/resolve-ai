@@ -133,6 +133,53 @@ banimento, e sem receita não dá pra reconstruir base em número novo.
 
 ---
 
+## 2b. RETOMADA — o que fazer quando a VPS voltar
+
+A VPS da KingHost saiu do ar em **25/08/2026** por fatura não paga. O Kevin
+resolve **a partir de 28/08**. Enquanto isso o bot está mudo para os 11.
+
+**Nada disso é trabalho de código.** As regras, prazos e freios já estão
+parametrizados e testados. O que falta é ambiente e cliques, nesta ordem:
+
+1. **Pagar a VPS** (KingHost) e confirmar que `http://177.153.58.163:3000`
+   volta a responder. O EasyPanel roda em cima dela e cai junto.
+2. **Deploy no EasyPanel** → `resolveai / compose / bot`. Confirmar no
+   `/health` que o BUILD é o do repo, não o do container velho.
+3. **Conferir os templates** no WhatsApp Manager. Setar no EasyPanel
+   **só os que estiverem Ativos** e dar redeploy:
+   ```
+   TEMPLATES_APROVADOS=resolveai_lembrete_hora,resolveai_item_vencido,resolveai_resumo_do_dia,resolveai_conta_a_vencer,resolveai_reengajamento_pendentes,resolveai_fim_de_trial_aviso
+   ```
+   Com a variável vazia, fora da janela de 24h **nada sai** — e isso é de
+   propósito, não bug. A recusa fica no log com o motivo.
+4. **Devolver os 14 dias:** o Kevin manda `resetar trial de todos` do
+   número dele. Frase exata; "me lembra de resetar o trial" não dispara.
+
+**O que observar nas primeiras horas:** conta que sumiu da lista sem ninguém
+ter pedido, ou um "qual deles eu dou baixa?" respondendo mensagem que não
+era baixa. Rollback: `git revert <hash>`.
+
+**Cuidado com a volta:** o bot fica dias fora e volta com vencimento
+acumulado. Os freios existem (5 por ciclo, 6 por pessoa/dia), mas esse
+cenário nunca foi testado de ponta a ponta — vale simular antes, adiantando
+o relógio e lendo o que cada um dos 11 receberia no primeiro ciclo.
+
+### Estado dos templates na Meta (27/08/2026)
+
+| Template | Categoria | Status |
+|---|---|---|
+| `resolveai_lembrete_hora` | Utilidade | **Ativo** |
+| `resolveai_item_vencido` | Utilidade | **Ativo** |
+| `resolveai_resumo_do_dia` | Utilidade | **Ativo** |
+| `resolveai_conta_a_vencer` | Utilidade | **Ativo** |
+| `resolveai_reengajamento_pendentes` | Utilidade | em análise |
+| `resolveai_fim_de_trial_aviso` | **Marketing** | em análise |
+
+A régua completa de quando cada um dispara está no artefato "Régua de
+disparos" e, com autoridade, no código (`scheduler.py`).
+
+---
+
 ## 3. As 10 regras inegociáveis
 
 1. **Uma feature por vez.** Ao terminar, reporte o status da lista inteira.
