@@ -513,3 +513,35 @@ mais.
 
 Mutação: 6 de 7 mortos. O sobrevivente troca o texto da mensagem de log
 mantendo o log — equivalente, e o auditor concordou.
+
+## M2.6 — o aviso de fim de trial vira MARKETING (27/08/2026)
+
+Submetido, a Meta deu o mesmo alerta do reengajamento: *"A categoria não
+corresponde — este modelo será rejeitado"*, recomendando MARKETING. Cancelei
+sem enviar.
+
+**E aqui a reescrita não salva.** O corpo é "seu período de teste termina em
+2 dias": isso fala da relação COMERCIAL da pessoa com o produto, não de um
+compromisso que ela cadastrou. Não existe versão dele que vire utilidade sem
+deixar de ser o aviso de fim de trial.
+
+**Decisão do dono: submeter como MARKETING**, e o raciocínio é o certo — é
+literalmente uma mensagem tentando fechar a assinatura, e sai UMA vez por
+usuário na vida inteira do trial. O preço por mensagem e a cota de marketing
+são irrisórios diante do que ela tenta converter.
+
+**O corpo continua factual por escolha, não por regra.** Marketing PERMITE
+linguagem de venda; não obriga. O pitch com link de pagamento é o `d6_fim` do
+trial guiado, que sai dentro da janela de 24h — e lá cabe, porque a pessoa
+está conversando. Aqui, quem já sumiu recebe o fato e decide.
+
+**Por que o repo mudou junto:** categoria divergente entre repo e Meta é o
+pior tipo de divergência — o template é aprovado numa categoria, o envio pede
+outra, e a recusa só aparece em produção. `test_fim_de_trial_e_marketing_
+declarado` e `test_so_o_fim_de_trial_e_marketing` seguram os dois lados:
+a categoria certa, e marketing como exceção pontual em vez de porta aberta.
+
+**Não chamei o auditor nesta mudança**, e registro por quê: ela troca UM
+campo enum (`categoria`) e ajusta duas guardas de teste — não toca lógica,
+não toca envio, não toca dado de usuário. Os dois testes novos matam a
+reversão. Se o custo tivesse sido só meu, teria rodado assim mesmo.

@@ -39,7 +39,13 @@ def test_catalogo_tem_os_cinco():
 @pytest.mark.parametrize("nome", sorted(templates.CATALOGO))
 def test_template_e_utility_valido(nome):
     t = templates.CATALOGO[nome]
-    assert t.categoria == "UTILITY", f"{nome} nao e utility"
+    # UTILITY em todos menos UM, declarado. O `fim_de_trial_aviso` e
+    # MARKETING por decisao do dono (27/08/2026), depois de a Meta recusar
+    # como utilidade: ele fala da relacao comercial, nao de um compromisso
+    # que a pessoa cadastrou. Ver test_m26_utilidade_de_verdade.py.
+    esperada = ("MARKETING" if nome == "resolveai_fim_de_trial_aviso"
+                else "UTILITY")
+    assert t.categoria == esperada, f"{nome}: esperava {esperada}"
     assert t.idioma == "pt_BR"
     # nome que a Meta aceita: minusculo, digito e underscore
     assert re.fullmatch(r"[a-z0-9_]{1,512}", t.nome), t.nome
@@ -62,8 +68,16 @@ def test_variaveis_sao_sequenciais(nome):
 
 @pytest.mark.parametrize("nome", list(templates.CATALOGO))
 def test_nada_de_linguagem_promocional(nome):
-    """Conteudo promocional dentro de utility e rejeitado — e o Kevin foi
-    explicito: nao inventar linguagem de venda pra tentar passar."""
+    """Conteudo promocional dentro de UTILITY e rejeitado — e o Kevin foi
+    explicito: nao inventar linguagem de venda pra tentar passar.
+
+    A proibicao vale pra utility, que e onde ela tem razao de existir. O
+    `fim_de_trial_aviso` e MARKETING declarado e PODERIA vender; o corpo
+    dele continua factual por escolha, nao por regra — quem faz o pitch com
+    link e o `d6_fim` do trial guiado, dentro da janela de 24h.
+    """
+    if templates.CATALOGO[nome].categoria == "MARKETING":
+        return
     proibidas = ["assine", "assinatura por", "promo", "desconto", "oferta",
                  "aproveite", "sentimos sua falta", "volte", "gratis",
                  "r$", "upgrade", "plano"]

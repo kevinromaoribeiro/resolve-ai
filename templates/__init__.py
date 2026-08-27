@@ -139,7 +139,22 @@ _reg(Template(
 
 _reg(Template(
     nome="resolveai_fim_de_trial_aviso",
-    categoria="UTILITY",
+    # MARKETING, e é o único aqui. Decisão do dono em 27/08/2026, depois de
+    # a Meta recusar como utilidade — e ela está certa: "seu período de teste
+    # termina em 2 dias" não fala de um compromisso que a pessoa cadastrou,
+    # fala da relação COMERCIAL dela com o produto. Não existe reescrita que
+    # mude isso sem mudar a mensagem.
+    #
+    # O raciocínio dele, e é o certo: é literalmente uma mensagem tentando
+    # fechar a assinatura, e sai UMA vez por usuário na vida inteira do
+    # trial. O preço por mensagem e a cota de marketing são irrisórios
+    # diante do que ela tenta converter.
+    #
+    # O corpo continua factual de propósito. Marketing PERMITE linguagem de
+    # venda; não obriga. O pitch com link de pagamento é o `d6_fim` do trial
+    # guiado, que sai dentro da janela de 24h — e lá cabe, porque a pessoa
+    # está conversando. Aqui, quem já sumiu recebe o fato e decide.
+    categoria="MARKETING",
     idioma="pt_BR",
     corpo=("Oi {{1}}, seu período de teste termina em *{{2}}* dia(s).\n\n"
            "Seus *{{3}}* item(ns) e lembretes continuam guardados. "

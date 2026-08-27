@@ -151,9 +151,10 @@ VEREDITO_DA_META = {
     # reescrito em 26/08 pra citar o item parado + a data. Nao resubmetido
     # ainda — o veredito da versao nova ainda nao existe.
     "resolveai_reengajamento_pendentes": "reescrito_aguardando",
-    # nunca submetido: fala de fim de periodo de teste, e a regua da Meta
-    # pode ler isso como retencao. Descobrimos submetendo.
-    "resolveai_fim_de_trial_aviso": "nao_submetido",
+    # recusado como utilidade em 27/08 ("sera rejeitado", recomendando
+    # MARKETING) — e a Meta esta certa: fala da relacao comercial, nao de um
+    # compromisso da pessoa. Decisao do dono: submeter como MARKETING.
+    "resolveai_fim_de_trial_aviso": "marketing_por_decisao",
 }
 
 
@@ -293,3 +294,36 @@ def test_item_sem_data_nao_e_escolhido_na_frente_de_um_datavel(usuario):
          "user_nome": "Kevin"})
     assert nome is not None, "o item sem data engoliu o reengajamento"
     assert variaveis[1] == "item com data", variaveis
+
+
+# ---------------------------------------------------------------------------
+# O AVISO DE FIM DE TRIAL E MARKETING, POR DECISAO DO DONO (27/08/2026)
+# ---------------------------------------------------------------------------
+def test_fim_de_trial_e_marketing_declarado():
+    """A Meta recusou como utilidade, e ela esta certa.
+
+    "Seu periodo de teste termina em 2 dias" nao fala de um compromisso que
+    a pessoa cadastrou — fala da relacao COMERCIAL dela com o produto. Nao
+    existe reescrita que mude isso sem mudar a mensagem.
+
+    Decisao do dono: submeter como MARKETING. O raciocinio dele:
+    e literalmente uma mensagem tentando fechar a assinatura, e sai UMA vez
+    por usuario na vida inteira do trial — entao o custo por mensagem e a
+    cota de marketing sao irrisorios diante do que ela tenta converter.
+
+    O teste existe pra que a categoria no repo nao divirja da categoria na
+    Meta. Divergencia ai e o pior tipo: o template e aprovado numa categoria
+    e o envio pede outra, e a recusa so aparece em producao.
+    """
+    t = templates.CATALOGO["resolveai_fim_de_trial_aviso"]
+    assert t.categoria == "MARKETING", (
+        "a Meta tem este template como MARKETING; o repo precisa concordar")
+
+
+def test_so_o_fim_de_trial_e_marketing():
+    """Marketing e excecao pontual, nao porta aberta. Todo o resto e
+    utilidade — e template de utilidade e o que sustenta a promessa do
+    produto (lembrar), nao a cobranca."""
+    marketing = {n for n, t in templates.CATALOGO.items()
+                 if t.categoria == "MARKETING"}
+    assert marketing == {"resolveai_fim_de_trial_aviso"}, marketing

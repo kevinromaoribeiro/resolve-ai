@@ -131,7 +131,7 @@ Responda *ver tudo* para revisar seus itens.
 ## `resolveai_fim_de_trial_aviso`
 
 - **Nome:** `resolveai_fim_de_trial_aviso`
-- **Categoria:** UTILITY
+- **Categoria:** MARKETING
 - **Idioma:** pt_BR
 
 **Corpo:**
