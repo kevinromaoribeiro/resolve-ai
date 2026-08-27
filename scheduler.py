@@ -124,7 +124,33 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
                 alerta = DUE_ALERT_DAYS_POR_CATEGORIA.get(
                     item.get("categoria") or "", DUE_ALERT_DAYS)
                 if days_left not in alerta:
-                    continue
+                    # REDE DE SEGURANCA DO DIA DO VENCIMENTO.
+                    #
+                    # A politica e avisar na vespera. Se o bot estava fora do
+                    # ar naquele dia (apagao da VPS em 25-28/08/2026), ou o
+                    # teto diario cortou, ou a pessoa estava fora da janela, o
+                    # aviso simplesmente nunca saiu — e no dia do vencimento
+                    # ela nao ouve nada. So no dia seguinte recebe "venceu e
+                    # nao vi a baixa", quando ja e tarde.
+                    #
+                    # `dispatched_ever_item` (nao `dispatched_today`, que e
+                    # por dia) garante que isto NAO duplica: quem foi avisado
+                    # na vespera ja tem o carimbo e cai fora aqui.
+                    #
+                    # Vale so pra "vencimento". Link de afiliado nao ganha
+                    # caminho de envio novo.
+                    # `criado_hoje`: a rede e pra aviso PERDIDO, nao pra eco.
+                    # Quem acabou de mandar "pagar o condominio hoje" sabe que
+                    # e hoje; devolver "passando pra lembrar" segundos depois
+                    # e uma vibracao que nao informa nada.
+                    _cri = str(item.get("data_criacao") or "")[:10]
+                    criado_hoje = _cri == ref.isoformat()
+                    if (days_left != 0
+                            or criado_hoje
+                            or item.get("link_afiliado")
+                            or db.dispatched_ever_item("vencimento",
+                                                       item["id"])):
+                        continue
                 if days_left == 0 and item.get("hora_alvo"):
                     continue  # D-0 com hora marcada: o alarme ⏰ é o aviso
             kind = "1-click-buy" if item.get("link_afiliado") else "vencimento"
@@ -320,12 +346,29 @@ def check_overdue(ref: Optional[date] = None) -> list[dict]:
         if db.item_silenciado(item["id"]):
             continue          # M1.5 — silenciado nao cobra tambem
         if atraso >= ARCHIVE_AFTER_DAYS:
-            if not db.dispatched_ever_item("arquivado", item["id"]):
+            # ARQUIVA SO DEPOIS QUE O AVISO COMPROVADAMENTE SAIU.
+            #
+            # Antes, `archive_item` rodava aqui na GERACAO do disparo. Só que
+            # "arquivado" esta em KINDS_SEM_TEMPLATE: fora da janela de 24h a
+            # mensagem nao sai. E quem tem item parado ha 15 dias e justamente
+            # quem nao conversa ha semanas — a condicao que dispara o
+            # arquivamento e quase a mesma que impede o aviso de sair. O item
+            # sumia da lista da pessoa, ela nunca era avisada, e como
+            # `overdue_items` so olha status='pendente' o disparo nunca mais
+            # era regerado. Perda silenciosa de dado do usuario.
+            #
+            # O carimbo de `dispatched_ever_item` so existe se o `falar`
+            # retornou enviado (wa_bot so chama `log_dispatch` no sucesso).
+            # Entao: um ciclo avisa, o seguinte arquiva. Se a pessoa responder
+            # no meio, o item sai de 'pendente' e nunca chega a ser arquivado
+            # — que e exatamente o certo.
+            if db.dispatched_ever_item("arquivado", item["id"]):
                 db.archive_item(item["id"])
+            else:
                 dispatches.append({
                     "user_id": item["user_id"], "telefone": item["telefone"],
                     "item_id": item["id"], "kind": "arquivado",
-                    "message": (f"Arquivei *{item['descricao']}* — venceu há "
+                    "message": (f"Vou arquivar *{item['descricao']}* — venceu há "
                                 f"{atraso} dias sem baixa. Se ainda estiver em "
                                 f"aberto, me manda de novo que eu reagendo. 🗂️")})
         elif atraso >= OVERDUE_NUDGE_DAYS:

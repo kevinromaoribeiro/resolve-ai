@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v24.1-m26-fim-de-trial-marketing-2026-08-27"
+BUILD = "v24.2-m27-volta-do-apagao-2026-08-27"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -4342,6 +4342,39 @@ def dispatch_proactive() -> int:
     _hoje_iso = tempo.hoje().isoformat()
     for _k in [k for k in FALHA_JA_LOGADA if k and k[0] != _hoje_iso]:
         FALHA_JA_LOGADA.discard(_k)
+    # PODA DOS NATIMORTOS, ANTES do corte do ciclo.
+    #
+    # O corte e `all_dispatches[:MAX]` — os primeiros CANDIDATOS, nao os
+    # primeiros ENVIADOS. Um disparo que nao tem como sair (kind sem template,
+    # pessoa fora da janela de 24h) consumiria uma vaga em TODO ciclo, para
+    # sempre, empurrando pra tras quem esta alcancavel. E os kinds sem
+    # template ("arquivado", "gastos", nudges do trial) sao justamente os de
+    # quem anda sumido — a fila encheria de gente inalcancavel.
+    #
+    # Nao e descarte: o disparo nao e carimbado e volta assim que a pessoa
+    # responder qualquer coisa e reabrir a janela.
+    import templates as _cat_poda
+    _janela_cache: dict = {}
+
+    def _tem_como_sair(_d) -> bool:
+        if (_d.get("kind") or "") not in _cat_poda.KINDS_SEM_TEMPLATE:
+            return True
+        # A chave inclui o TELEFONE: disparo sem user_id existe (o webhook
+        # grava entrada com user_id=None) e dois deles compartilhariam a
+        # mesma entrada de cache, respondendo pela janela de outra pessoa.
+        _chave = (_d.get("user_id"), _d.get("telefone") or "")
+        if _chave not in _janela_cache:
+            _janela_cache[_chave] = db.dentro_da_janela(
+                user_id=_chave[0], telefone=_chave[1])
+        return _janela_cache[_chave]
+
+    _antes_poda = len(all_dispatches)
+    all_dispatches = [d for d in all_dispatches if _tem_como_sair(d)]
+    if len(all_dispatches) != _antes_poda:
+        log.info("[cron] %d disparo(s) sem template e fora da janela adiados "
+                 "— voltam quando a pessoa responder",
+                 _antes_poda - len(all_dispatches))
+
     for d in all_dispatches[:DISPATCH_MAX_PER_CYCLE]:
         number = re.sub(r"\D", "", d["telefone"])
         if not number:

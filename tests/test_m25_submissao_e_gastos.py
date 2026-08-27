@@ -556,6 +556,14 @@ def test_o_motor_entrega_o_resumo_de_gastos_ao_envio(usuario,
     """
     _despesa(usuario["id"], 120.0, "Contas", 2, "luz")
     _despesa(usuario["id"], 80.0, "Casa", 3, "faxina")
+    # A JANELA PRECISA ESTAR ABERTA PRA ESTE TESTE MEDIR ALGO.
+    # "gastos" esta em KINDS_SEM_TEMPLATE: fora da janela de 24h ele nao sai
+    # — nem antes desta linha existir. O que acontecia e que o `falar` estava
+    # mockado pra aceitar sempre, entao o teste media um caminho impossivel
+    # em producao. Com a pessoa dentro da janela o caminho e real, e o
+    # proposito do teste (toda chave `*_dispatches` chega ao envio) continua
+    # sendo exercido de ponta a ponta.
+    db.log_message(None, usuario["telefone"], "in", "texto", "oi")
     enviadas = []
     monkeypatch.setattr(wa_bot.wasender, "falar",
                         lambda tel, txt, **kw: enviadas.append(txt)
