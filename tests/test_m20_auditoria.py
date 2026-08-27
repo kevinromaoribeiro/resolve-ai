@@ -301,6 +301,10 @@ def test_instrucoes_dos_templates_existem_no_codigo():
     conhecidos |= {p.strip() for p in wa_bot._BAIXA_RE.pattern.split("|")
                    if p.strip().isalpha()}
     conhecidos |= {"feito", "adiar", "adiar 1h"}   # baixa e adiamento
+    # DERIVADO, nao escrito a mao: o template de fim de trial (MARKETING,
+    # 27/08/2026) manda responder *assinar*, e o comando existe no wa_bot.
+    # Se alguem renomear la, este teste reprova aqui — que e o ponto.
+    conhecidos |= set(wa_bot.COMANDOS_ASSINATURA)
     desconhecidos = citados - conhecidos
     assert not desconhecidos, (
         f"template manda responder comando que ninguem implementou: "

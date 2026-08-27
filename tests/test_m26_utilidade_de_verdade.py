@@ -21,6 +21,7 @@ import db
 import scheduler
 import templates
 import tempo
+from conftest import responder
 
 
 def test_reengajamento_fala_de_um_item_com_data(usuario):
@@ -327,3 +328,42 @@ def test_so_o_fim_de_trial_e_marketing():
     marketing = {n for n, t in templates.CATALOGO.items()
                  if t.categoria == "MARKETING"}
     assert marketing == {"resolveai_fim_de_trial_aviso"}, marketing
+
+
+# ---------------------------------------------------------------------------
+# O CORPO DO FIM DE TRIAL, AGORA QUE ELE E MARKETING (27/08/2026)
+# ---------------------------------------------------------------------------
+def test_fim_de_trial_pede_uma_acao_que_existe_no_codigo():
+    """A regra que custou o P0 desta fase: prometer no corpo so o que o
+    Python garante.
+
+    O template manda responder *assinar*. Esse comando tem que existir de
+    verdade — e a lista vem do wa_bot, nao escrita a mao aqui, senao um
+    rename no codigo passa e o template vira promessa morta.
+    """
+    import wa_bot
+    corpo = templates.CATALOGO["resolveai_fim_de_trial_aviso"].corpo.lower()
+    citados = [c for c in wa_bot.COMANDOS_ASSINATURA if f"*{c}*" in corpo]
+    assert citados, (
+        f"o corpo nao manda responder nenhum comando de assinatura "
+        f"conhecido ({wa_bot.COMANDOS_ASSINATURA}): {corpo}")
+
+
+def test_o_comando_de_assinatura_devolve_o_link(usuario):
+    """Fim a fim: a pessoa responde o que o template mandou e recebe o
+    link. Sem isso o template abre a janela de 24h e entrega silencio."""
+    import wa_bot
+    r = responder(wa_bot.COMANDOS_ASSINATURA[0])
+    assert r, "o comando do template nao respondeu nada"
+    assert "19,90" in r, r
+
+
+def test_fim_de_trial_diz_o_que_a_pessoa_perde():
+    """O argumento de conversao tem que ser VERDADE. O que acaba com o
+    trial nao sao os dados — eles ficam no banco — e sim o AVISO, que e o
+    produto. Prometer que "seus itens somem" seria mentira que gera
+    reembolso; omitir o que muda seria pitch sem conteudo.
+    """
+    corpo = templates.CATALOGO["resolveai_fim_de_trial_aviso"].corpo.lower()
+    assert "continuam" in corpo or "continua" in corpo, corpo
+    assert "aviso" in corpo or "avisar" in corpo or "avisei" in corpo, corpo

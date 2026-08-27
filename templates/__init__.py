@@ -150,21 +150,41 @@ _reg(Template(
     # trial. O preço por mensagem e a cota de marketing são irrisórios
     # diante do que ela tenta converter.
     #
-    # O corpo continua factual de propósito. Marketing PERMITE linguagem de
-    # venda; não obriga. O pitch com link de pagamento é o `d6_fim` do trial
-    # guiado, que sai dentro da janela de 24h — e lá cabe, porque a pessoa
-    # está conversando. Aqui, quem já sumiu recebe o fato e decide.
+    # O CORPO VENDE, e é a única mensagem do catálogo que faz isso.
+    #
+    # Enquanto ele tentava passar como utilidade, o texto tinha que ser
+    # neutro. Agora que é marketing assumido, ser neutro seria só perder o
+    # tiro: esta mensagem existe para converter, sai UMA vez por usuário, e
+    # é a última coisa que quem sumiu vai ler antes do trial acabar.
+    #
+    # O ARGUMENTO É O QUE DE FATO MUDA, e isso importa mais que o tom. Os
+    # itens NÃO são apagados quando o trial vence (`user_can_receive` só
+    # deixa de liberar disparo; o banco continua intacto). Dizer "seus
+    # dados somem" seria mentira, e mentira que gera pedido de reembolso.
+    # O que a pessoa perde é o AVISO — que é o produto inteiro. Então é
+    # isso que o texto diz, e nada além.
+    #
+    # "Responda *assinar*" só está aqui porque o comando EXISTE
+    # (`COMANDOS_ASSINATURA`, no wa_bot) e devolve o link de pagamento. É a
+    # regra que custou o P0 desta fase: prometer no corpo só o que o Python
+    # garante. E o link não vai no template de propósito — a resposta dela
+    # abre a janela de 24h, e aí o link sai como texto livre, com preço
+    # mensal e anual, sem depender de botão aprovado pela Meta.
     categoria="MARKETING",
     idioma="pt_BR",
-    corpo=("Oi {{1}}, seu período de teste termina em *{{2}}* dia(s).\n\n"
-           "Seus *{{3}}* item(ns) e lembretes continuam guardados. "
-           "Se precisar de qualquer coisa, é só responder aqui."),
+    corpo=("Oi {{1}}, seu teste grátis acaba em *{{2}}* dia(s).\n\n"
+           "Nesse tempo eu guardei *{{3}}* compromisso(s) seu(s) e te avisei "
+           "antes de cada um vencer. Depois que acabar, tudo continua "
+           "guardado aqui — mas eu paro de te avisar.\n\n"
+           "São R$ 19,90 por mês pra seguir. Responda *assinar* que eu te "
+           "mando o link."),
     variaveis=["primeiro_nome", "dias", "quantidade_itens"],
     exemplo=["Kevin", "2", "7"],
     justificativa=(
-        "Aviso factual sobre o fim do período de teste da conta e sobre a "
-        "preservação dos dados do usuário. Não contém oferta, preço nem "
-        "chamada de compra."),
+        "Aviso ao usuário de que o período de teste da conta dele está "
+        "acabando, com o número de compromissos que ele cadastrou, e oferta "
+        "de continuidade do serviço. O usuário responde na mesma conversa "
+        "para receber o link de pagamento."),
 ))
 
 

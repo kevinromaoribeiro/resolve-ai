@@ -179,6 +179,16 @@ EVOLUTION_APIKEY = os.environ.get("EVOLUTION_APIKEY", "")
 EVOLUTION_INSTANCE = os.environ.get("EVOLUTION_INSTANCE", "resolveai")
 
 # Link de pagamento (Kirvano, Mercado Pago Assinaturas, Stripe Payment Link…)
+# OS COMANDOS QUE DEVOLVEM O LINK DE PAGAMENTO, num lugar so.
+#
+# Vira constante porque o template de fim de trial (MARKETING, 27/08/2026)
+# manda a pessoa responder um deles. Corpo de template e contrato com a Meta:
+# se alguem renomear o comando aqui, o template continua mandando responder
+# uma palavra que o codigo nao atende mais — e a mensagem que existe pra
+# converter passa a abrir a janela de 24h e entregar silencio.
+# `test_fim_de_trial_pede_uma_acao_que_existe_no_codigo` deriva desta tupla.
+COMANDOS_ASSINATURA = ("assinar", "planos", "quero assinar", "pagar")
+
 PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://SEU-LINK-DE-PAGAMENTO")
 PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL", "")
 # 14 dias, não 7. O produto só prova valor quando o usuário É LEMBRADO de algo
@@ -503,7 +513,7 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 "e seu cadastro (LGPD). Não tem volta.\n\n"
                 "Responda *APAGAR* para confirmar ou qualquer outra coisa "
                 "para cancelar.")
-    if low in ("assinar", "planos", "quero assinar", "pagar"):
+    if low in COMANDOS_ASSINATURA:
         anual = (f"\n📅 Anual (R$ 149 ≈ R$ 12,40/mês): {PAYMENT_LINK_ANUAL}"
                  if PAYMENT_LINK_ANUAL else "")
         return (f"Bora, {first_name}! 🚀\n"

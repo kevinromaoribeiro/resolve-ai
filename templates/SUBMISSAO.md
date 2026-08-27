@@ -137,9 +137,11 @@ Responda *ver tudo* para revisar seus itens.
 **Corpo:**
 
 ```
-Oi {{1}}, seu período de teste termina em *{{2}}* dia(s).
+Oi {{1}}, seu teste grátis acaba em *{{2}}* dia(s).
 
-Seus *{{3}}* item(ns) e lembretes continuam guardados. Se precisar de qualquer coisa, é só responder aqui.
+Nesse tempo eu guardei *{{3}}* compromisso(s) seu(s) e te avisei antes de cada um vencer. Depois que acabar, tudo continua guardado aqui — mas eu paro de te avisar.
+
+São R$ 19,90 por mês pra seguir. Responda *assinar* que eu te mando o link.
 ```
 
 **Variáveis (exemplo para a submissão):**
@@ -150,7 +152,7 @@ Seus *{{3}}* item(ns) e lembretes continuam guardados. Se precisar de qualquer c
 
 **Justificativa (cole no campo de descrição, se pedido):**
 
-> Aviso factual sobre o fim do período de teste da conta e sobre a preservação dos dados do usuário. Não contém oferta, preço nem chamada de compra.
+> Aviso ao usuário de que o período de teste da conta dele está acabando, com o número de compromissos que ele cadastrou, e oferta de continuidade do serviço. O usuário responde na mesma conversa para receber o link de pagamento.
 
 ---
 
