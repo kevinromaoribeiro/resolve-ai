@@ -179,6 +179,98 @@ def send_text(number: str, text: str, tentativas: int = 3) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 1b. ENVIO — texto com botoes (dentro da janela)
+# ---------------------------------------------------------------------------
+MAX_BOTOES = 3           # limite da Meta pra interactive/button
+MAX_TITULO_BOTAO = 20    # limite da Meta pro title de cada botao
+
+
+def _validar_botoes(botoes: list) -> list:
+    """Valida ANTES de chamar a Meta. Erro aqui e melhor que 400 la.
+
+    Um 400 e uma mensagem que simplesmente nao chega, e o log diz "falhou"
+    sem dizer que o problema era um titulo de 21 caracteres.
+    """
+    lista = [str(b or "").strip() for b in (botoes or [])]
+    if not lista:
+        raise ValueError("nenhum botao")
+    if len(lista) > MAX_BOTOES:
+        raise ValueError(f"a Meta aceita no maximo {MAX_BOTOES} botoes, "
+                         f"vieram {len(lista)}")
+    for b in lista:
+        if not b:
+            raise ValueError("botao com titulo vazio")
+        if len(b) > MAX_TITULO_BOTAO:
+            raise ValueError(f"titulo de botao acima de {MAX_TITULO_BOTAO} "
+                             f"chars: {b!r}")
+    if len(set(lista)) != len(lista):
+        raise ValueError(f"titulos de botao repetidos: {lista}")
+    return lista
+
+
+def send_buttons(number: str, texto: str, botoes: list,
+                 tentativas: int = 3) -> bool:
+    """Texto com ate 3 botoes de resposta rapida. SO dentro da janela de 24h.
+
+    O titulo do botao e o que volta pro bot: `to_evolution_shape` converte
+    `button_reply.title` em texto de conversa, entao o clique entra no mesmo
+    parser da digitacao. Por isso o titulo TEM que ser um comando que o bot
+    entende — quem clicou escolheu o caminho mais facil e nao pode ser quem
+    leva "nao entendi" de volta.
+    """
+    import time
+    import httpx
+
+    if not configurado():
+        log.error("[botoes] META_TOKEN/META_PHONE_NUMBER_ID ausentes")
+        return False
+    to = _so_digitos(number)
+    if not to:
+        log.warning("[botoes] numero vazio")
+        return False
+    lista = _validar_botoes(botoes)
+
+    corpo = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": texto},
+            # `id` e obrigatorio pra Meta mesmo sem uso nosso; deriva do
+            # indice pra nunca colidir nem estourar o limite de 256 chars.
+            "action": {"buttons": [
+                {"type": "reply", "reply": {"id": f"b{i}", "title": t}}
+                for i, t in enumerate(lista)]},
+        },
+    }
+
+    for tentativa in range(1, tentativas + 1):
+        try:
+            r = httpx.post(f"{GRAPH}/{PHONE_NUMBER_ID}/messages",
+                           headers=_HEADERS, json=corpo, timeout=25)
+            if r.status_code == 200:
+                j = r.json() or {}
+                msgs = j.get("messages") or []
+                if msgs and msgs[0].get("id"):
+                    return True
+                log.warning("[botoes] 200 sem message id: %s", str(j)[:200])
+                return False
+            # Mesma regra do send_text: erro de regra de negocio nao melhora
+            # com insistencia, so queima cota.
+            if r.status_code not in (429, 500, 502, 503, 504):
+                log.error("[botoes] %s: %s", r.status_code, r.text[:300])
+                return False
+            log.warning("[botoes] %s (tentativa %s)", r.status_code, tentativa)
+        except Exception as e:
+            log.warning("[botoes] falha de rede (%s): %s", tentativa, e)
+        if tentativa < tentativas:
+            time.sleep(2 ** tentativa)
+    return False
+
+
+# ---------------------------------------------------------------------------
 # 2. ENVIO — template (proativa, fora da janela)
 # ---------------------------------------------------------------------------
 def send_template(number: str, nome_template: str, variaveis: list,

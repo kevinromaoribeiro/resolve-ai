@@ -37,8 +37,11 @@ motivo, em vez de sumir.
 ## `resolveai_lembrete_hora`
 
 - **Nome:** `resolveai_lembrete_hora`
+- **O que faz:** Avisa na hora marcada de um compromisso
 - **Categoria:** UTILITY
 - **Idioma:** pt_BR
+
+**Botões:** nenhum
 
 **Corpo:**
 
@@ -61,8 +64,11 @@ Responda *feito* que eu dou baixa, ou *adiar 1h* se precisar de mais tempo.
 ## `resolveai_item_vencido`
 
 - **Nome:** `resolveai_item_vencido`
+- **O que faz:** Cobra um item que venceu e nao teve baixa
 - **Categoria:** UTILITY
 - **Idioma:** pt_BR
+
+**Botões:** nenhum
 
 **Corpo:**
 
@@ -87,8 +93,11 @@ Responda *feito* se já resolveu, ou *adiar* que eu remarco.
 ## `resolveai_resumo_do_dia`
 
 - **Nome:** `resolveai_resumo_do_dia`
+- **O que faz:** Resumo dos compromissos dos proximos dias
 - **Categoria:** UTILITY
 - **Idioma:** pt_BR
+
+**Botões:** nenhum
 
 **Corpo:**
 
@@ -115,8 +124,11 @@ Responda *ver tudo* para a lista completa.
 ## `resolveai_reengajamento_pendentes`
 
 - **Nome:** `resolveai_reengajamento_pendentes`
+- **O que faz:** Lembra de um item parado ha dias na lista
 - **Categoria:** UTILITY
 - **Idioma:** pt_BR
+
+**Botões:** nenhum
 
 **Corpo:**
 
@@ -141,8 +153,11 @@ Responda *ver tudo* para revisar seus itens.
 ## `resolveai_fim_de_trial_aviso`
 
 - **Nome:** `resolveai_fim_de_trial_aviso`
+- **O que faz:** Avisa que o teste esta acabando e oferece a assinatura
 - **Categoria:** MARKETING
 - **Idioma:** pt_BR
+
+**Botões:** nenhum
 
 **Corpo:**
 
@@ -169,8 +184,11 @@ São R$ 19,90 por mês pra seguir. Responda *assinar* que eu te mando o link.
 ## `resolveai_conta_a_vencer`
 
 - **Nome:** `resolveai_conta_a_vencer`
+- **O que faz:** Avisa que uma conta vence em breve
 - **Categoria:** UTILITY
 - **Idioma:** pt_BR
+
+**Botões:** nenhum
 
 **Corpo:**
 
@@ -189,5 +207,67 @@ Responda *feito* quando resolver, ou *adiar* que eu remarco.
 **Justificativa (cole no campo de descrição, se pedido):**
 
 > Aviso de vencimento de um compromisso financeiro que o próprio usuário cadastrou no assistente, com a data que ele informou. Enviado uma vez por item por dia de aviso, e o usuário pode encerrar ou remarcar respondendo na mesma conversa.
+
+---
+
+## `resolveai_trial_estendido`
+
+- **Nome:** `resolveai_trial_estendido`
+- **O que faz:** Conta que voce liberou mais dias de teste
+- **Categoria:** UTILITY
+- **Idioma:** pt_BR
+
+**Botões — tipo `Resposta rápida`, um por linha:**
+
+  - `Ver tudo`
+
+**Corpo:**
+
+```
+Oi {{1}}, liberei mais *{{2}}* dia(s) de teste pra você.
+
+Seu acesso vale até *{{3}}*. Continuo te avisando dos seus compromissos até lá.
+```
+
+**Variáveis (exemplo para a submissão):**
+
+  - `{{1}}` -> `Ana`
+  - `{{2}}` -> `7`
+  - `{{3}}` -> `12/09/2026`
+
+**Justificativa (cole no campo de descrição, se pedido):**
+
+> Confirmação de mudança no prazo da conta do próprio usuário. O administrador estendeu o período de teste e o usuário é informado da nova data de validade do acesso que ele já contratou. Não contém oferta, preço ou link de compra. Enviada uma vez a cada extensão, apenas para o usuário afetado.
+
+---
+
+## `resolveai_cobranca_link`
+
+- **Nome:** `resolveai_cobranca_link`
+- **O que faz:** Cobra quem pediu o link e nao pagou
+- **Categoria:** MARKETING
+- **Idioma:** pt_BR
+
+**Botões — tipo `Resposta rápida`, um por linha:**
+
+  - `Já paguei`
+  - `Assinar`
+
+**Corpo:**
+
+```
+Oi {{1}}, você pediu o link do Resolve AI há *{{2}}* dia(s) e eu ainda não vi o pagamento entrar.
+
+Se já pagou, me avisa que eu libero na hora. Se preferir, posso te mandar o link de novo.
+```
+
+**Variáveis (exemplo para a submissão):**
+
+  - `{{1}}` -> `Ana`
+  - `{{2}}` -> `3`
+
+**Justificativa (cole no campo de descrição, se pedido):**
+
+> Acompanhamento de uma assinatura que o próprio usuário solicitou. Ele pediu o link de pagamento no assistente e a cobrança ainda não foi confirmada. A mensagem só é enviada para quem pediu o link, uma vez por ciclo de cobrança, e sempre por ação manual do administrador.
 
 ---

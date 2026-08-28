@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v24.4-m29-controle-de-assinatura-2026-08-28"
+BUILD = "v24.5-m30-botoes-e-lote-2026-08-28"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -1134,6 +1134,61 @@ _BAIXA_RE = re.compile(
 
 # Fim de mensagem que e so pontuacao/emoji — nao e nome de item.
 _SO_ENFEITE_RE = re.compile(r"^[\W_]*$", re.UNICODE)
+
+
+def entende_comando(texto: str) -> bool:
+    """O bot reconhece este texto como comando? (M3.0)
+
+    Existe por causa dos BOTÕES. O webhook converte o clique no TÍTULO do
+    botão, como se a pessoa tivesse digitado aquilo — então um título que o
+    parser não reconhece transforma o caminho mais fácil da interface na
+    pior resposta possível: a pessoa clica e leva "não entendi".
+
+    O teste que varre `BOTOES_POR_KIND` deriva daqui: botão novo com título
+    inventado quebra a suíte, e não o cliente.
+    """
+    t = (texto or "").strip()
+    if not t:
+        return False
+    baixo = t.lower()
+    return bool(
+        _BAIXA_RE.match(t)
+        or _ADIAR_RE.match(t)
+        or baixo in LISTA_COMANDOS
+        or baixo in COMANDOS_ASSINATURA
+        or baixo in _COMANDOS_DO_BOT)
+
+
+# OS BOTÕES DE CADA AVISO (M3.0).
+#
+# Títulos curtos (a Meta corta em 20 chars) e, acima de tudo, títulos que
+# `entende_comando` reconhece. A ordem importa: a ação mais provável primeiro,
+# porque no celular o primeiro botão é o que o polegar alcança.
+BOTOES_POR_KIND = {
+    "vencimento": ["Paguei", "Adiar", "Ver tudo"],
+    "vencido": ["Paguei", "Adiar", "Ver tudo"],
+    "hora": ["Feito", "Adiar"],
+    "resumo": ["Ver tudo"],
+    "trial-ending": ["Assinar", "Ver tudo"],
+    "winback": ["Ver tudo", "Assinar"],
+    "reengajamento": ["Ver tudo", "Feito"],
+}
+
+def _botoes_do_disparo(d: dict):
+    """Botões deste disparo, ou None. Kind desconhecido não quebra nada.
+
+    Um disparo de GRUPO (vários itens numa mensagem só) não leva "Paguei":
+    o clique viraria baixa de UM item, e qual deles seria adivinhação — o
+    mesmo erro que em 14/08 deu baixa no item errado. Nesses, só "Ver tudo".
+    """
+    kind = (d or {}).get("kind") or ""
+    botoes = BOTOES_POR_KIND.get(kind)
+    if not botoes:
+        return None
+    if not d.get("item_id") and kind in ("vencimento", "vencido", "hora"):
+        return ["Ver tudo"]
+    return list(botoes)
+
 
 # Palavras de baixa que TAMBEM sao resposta legitima do menu 1/2 da imagem
 # ("1 = despesa paga"). Quando existe decisao pendente mais recente que o
@@ -3993,6 +4048,35 @@ def maybe_admin_report() -> bool:
 DASH_URL_BASE = os.environ.get("DASH_URL_BASE", "").rstrip("/")
 
 
+def _avisar_trial_estendido(user_id: int, dias: int) -> str:
+    """Conta pra pessoa que o teste dela ganhou dias. Devolve "" se deu certo.
+
+    Sai por template (`resolveai_trial_estendido`) porque quem levou mais
+    dias normalmente é justamente quem sumiu — e quem sumiu está fora da
+    janela de 24h. Texto livre aqui morreria calado.
+    """
+    u = db.get_user(user_id)
+    if not u:
+        return "usuário não encontrado"
+    restam = db.trial_days_left(u)
+    nova = (tempo.hoje() + timedelta(days=max(0, restam))).strftime("%d/%m/%Y")
+    res = wasender.falar(
+        re.sub(r"\D", "", u["telefone"] or ""),
+        (f"Oi {(u.get('nome') or '').split()[0] or 'tudo bem'}, liberei mais "
+         f"*{dias}* dia(s) de teste pra você.\n\nSeu acesso vale até "
+         f"*{nova}*. Continuo te avisando dos seus compromissos até lá."),
+        user_id=user_id, template="resolveai_trial_estendido",
+        variaveis=[(u.get("nome") or "?").split()[0] or "Oi", str(dias), nova],
+        botoes=["Ver tudo"])
+    if res.get("enviado"):
+        return ""
+    if res.get("motivo") == "template_nao_aprovado":
+        return ("dias liberados, mas o aviso não saiu: "
+                "`resolveai_trial_estendido` ainda não está em "
+                "TEMPLATES_APROVADOS")
+    return f"dias liberados, mas o aviso não saiu ({res.get('motivo')})"
+
+
 def _enviar_template_manual(user_id: int, nome_template: str):
     """Manda um template aprovado pra UMA pessoa, por ordem do dono (M2.9).
 
@@ -4106,10 +4190,31 @@ def _dados_do_painel() -> dict:
         # no topo do painel: é a única fila em que dinheiro está parado
         # esperando alguém clicar.
         "aprovacoes": db.aguardando_aprovacao(),
-        # Os templates que o dono pode disparar na mão, pelo nome exato. A
-        # tela não inventa nomes: escolhe desta lista.
-        "templates": sorted(_templates_manuais()),
+        # Os templates que o dono pode disparar na mão, com o RÓTULO do que
+        # cada um faz — "resolveai_conta_a_vencer" não ajuda a decidir, "Avisa
+        # que uma conta vence em breve" ajuda. A tela não inventa nomes:
+        # escolhe desta lista.
+        "templates": _templates_com_rotulo(),
+        # Os recortes da base pro envio em lote, já com a contagem.
+        "segmentos": {k: len(v) for k, v in
+                      db.segmentos(excluir_telefones=fora).items()},
     }
+
+
+def _templates_com_rotulo() -> list:
+    """[{nome, rotulo, categoria, automatico}] pro painel.
+
+    `automatico` diz se algum kind do motor já dispara aquele template
+    sozinho. O Kevin pediu o botão manual "caso eu queira", mas precisa ver
+    de relance o que já roda sem ele — senão manda na mão o que o motor ia
+    mandar de qualquer jeito, e a pessoa recebe duas vezes.
+    """
+    import templates as _cat
+    auto = set(_cat.KIND_TEMPLATE.values())
+    return [{"nome": n, "rotulo": _cat.CATALOGO[n].rotulo or n,
+             "categoria": _cat.CATALOGO[n].categoria,
+             "automatico": n in auto}
+            for n in sorted(_templates_manuais())]
 
 
 def _templates_manuais() -> list:
@@ -4559,8 +4664,12 @@ def dispatch_proactive() -> int:
         # quem não recebia, e o log dizia "FALHOU" sem dizer por quê.
         import templates as _cat
         _tpl, _vars = _cat.para_disparo(d)
+        # BOTÕES (M3.0): valem só dentro da janela — fora dela quem manda
+        # botão é o template aprovado, e os dele são declarados na submissão.
+        # `falar` ignora este parâmetro quando cai no caminho do template.
         res = wasender.falar(number, d["message"], user_id=d.get("user_id"),
-                             template=_tpl, variaveis=_vars)
+                             template=_tpl, variaveis=_vars,
+                             botoes=_botoes_do_disparo(d))
         ok = res.get("enviado")
         log.info("[cron] envio p/ ...%s (%s): %s", number[-4:],
                  d.get("kind", "?"),
@@ -5274,8 +5383,12 @@ td{padding:6px 3px;text-align:right;border-top:1px solid #1c2740}
 .b:active{transform:scale(.97)}
 .bok{border-color:#1d6b3f;background:#14301f;color:#7ee2a8}
 .berr{border-color:#6b1d1d;background:#301414;color:#f0a3a3}
-.sel{flex:1;min-height:34px;background:#1a2540;color:#dbe6f7;font-size:12px;
- border:1px solid #2b3a5c;border-radius:9px;padding:6px}
+/* `min-width:0` é o que impede o <select> de empurrar o botão "enviar" pra
+   fora da linha: por padrão um item flex não encolhe abaixo do conteúdo, e
+   rótulo longo ("Avisa que o teste está acabando e oferece a assinatura")
+   deixava o botão inalcançável no celular. */
+.sel{flex:1;min-width:0;min-height:34px;background:#1a2540;color:#dbe6f7;
+ font-size:12px;border:1px solid #2b3a5c;border-radius:9px;padding:6px}
 .filtros{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:11px}
 .fl{min-height:30px;padding:5px 10px;border-radius:99px;font-size:11px;
  border:1px solid #2b3a5c;background:transparent;color:#8296b3;cursor:pointer}
@@ -5529,13 +5642,29 @@ async function carrega(){
  }
  // BASE COM CONTROLE. Filtro por status + os botoes de admin em cada linha.
  const F=window.__filtro||'todos';
+ window.__users=d.usuarios||[];   // `zerar` lê o nome daqui, não do onclick
  const cont={todos:(d.usuarios||[]).length};
  (d.usuarios||[]).forEach(u=>{const k=u.status||'trial';
    cont[k]=(cont[k]||0)+1});
  const abas=['todos','trial','ativo','bloqueado','cancelado'].map(k=>
    `<button class="fl ${F===k?'on':''}" onclick="filtro('${k}')">${k}
     <span class="muted">${cont[k]||0}</span></button>`).join('');
+ // DISPAROS EM LOTE. O card fica ANTES da lista porque a decisao aqui e
+ // "quero falar com um grupo", nao "quero mexer numa pessoa".
  const TPL=d.templates||[];
+ const SEG=d.segmentos||{};
+ const optSeg=Object.keys(SEG).map(k=>
+   `<option value="${k}">${k} (${SEG[k]})</option>`).join('');
+ const optTplLote=TPL.map(t=>
+   `<option value="${t.nome}">${t.rotulo}${t.automatico?' · já automático':''}</option>`
+ ).join('');
+ h+=card('Mandar pra uma lista',
+  `<div class="muted" style="font-size:11px;margin-bottom:9px">
+     Os marcados como <b>já automático</b> o motor manda sozinho na hora
+     certa — use aqui só se quiser antecipar.</div>
+   <select id="segLote" class="sel" style="width:100%;margin-bottom:7px">${optSeg}</select>
+   <select id="tplLote" class="sel" style="width:100%;margin-bottom:9px">${optTplLote}</select>
+   <button class="b bok" style="width:100%" onclick="lote()">Enviar pra lista</button>`);
  const us=(d.usuarios||[]).filter(u=>F==='todos'||(u.status||'trial')===F)
   .map(u=>{
    const a=u.assinatura||{};
@@ -5556,7 +5685,7 @@ async function carrega(){
        ? `<span class="err">trial acabou — não recebe mais avisos</span>`
        : `<span class="muted">trial · ${dt}d restantes</span>`;
    }
-   const opts=TPL.map(t=>`<option value="${t}">${t.replace('resolveai_','')}</option>`).join('');
+   const opts=TPL.map(t=>`<option value="${t.nome}">${t.rotulo}</option>`).join('');
    return `<div style="padding:11px 0;border-bottom:1px solid #1f2c47">
      <div style="display:flex;justify-content:space-between;align-items:center">
        <b>${u.nome}</b>
@@ -5570,6 +5699,7 @@ async function carrega(){
        ${(u.status==='bloqueado')
          ? `<button class="b" onclick="acao(${u.id},'liberar')">desbloquear</button>`
          : `<button class="b berr" onclick="acao(${u.id},'bloquear')">bloquear</button>`}
+       <button class="b berr" onclick="zerar(${u.id})">zerar</button>
      </div>
      <div style="margin-top:7px;display:flex;gap:6px">
        <select id="t${u.id}" class="sel">${opts}</select>
@@ -5617,10 +5747,118 @@ function mandar(uid){
   acao(uid,'enviar_template',{template:s.value});
 }
 function cobrar(uid){ acao(uid,'reenviar_link',{}); }
+// ZERAR É IRREVERSÍVEL: digitar o nome, e não só confirmar. Um "OK" no
+// celular é um toque; digitar o nome é uma decisão.
+function zerar(uid){
+  // O NOME VEM DOS DADOS, não interpolado no onclick. Um cliente chamado
+  // D'Ávila fecharia a string do atributo e quebraria a tela INTEIRA — não
+  // só o botão dele. Dado de usuário nunca entra em código gerado.
+  const u=(window.__users||[]).find(x=>x.id===uid);
+  const nome=(u&&u.nome)||'este cliente';
+  const r=prompt('Isso APAGA '+nome+' por completo: itens, conversas, tudo. '
+    +'Não tem desfazer. Digite o nome pra confirmar:');
+  if(!r || r.trim().toLowerCase()!==(nome||'').trim().toLowerCase()){
+    if(r!==null) alert('Nome não confere. Nada foi apagado.');
+    return;
+  }
+  acao(uid,'zerar',{confirmo:true});
+}
+async function lote(){
+  const seg=document.getElementById('segLote'),
+        tpl=document.getElementById('tplLote');
+  if(!seg||!tpl) return;
+  const txtSeg=seg.options[seg.selectedIndex].text;
+  const qtd=(txtSeg.match(/[(]([0-9]+)[)]/)||[])[1] || '?';
+  if(!confirm('Enviar "'+tpl.options[tpl.selectedIndex].text+'" pra '+qtd
+      +' pessoa(s) do grupo "'+seg.value+'"?')) return;
+  try{
+    const r=await fetch('/painel/lote?k='+encodeURIComponent(K),
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({segmento:seg.value,template:tpl.value,
+                            confirmo:true})});
+    const j=await r.json();
+    if(!j.ok){ alert('Não deu: '+(j.erro||'tente de novo')); }
+    else {
+      let m='Enviados: '+j.enviados+' de '+j.total+'.';
+      if(j.falharam){
+        // Quem NAO recebeu tem que aparecer com o motivo: lote que diz so
+        // "enviado" esconde a pessoa que ficou sem, e ela e a que importa.
+        m+='\\n\\nNão saiu pra '+j.falharam+':\\n'
+          +(j.detalhes||[]).map(f=>'· '+f.nome+': '+f.motivo).join('\\n');
+      }
+      alert(m);
+    }
+  }catch(e){ alert('Sem conexão com o servidor.'); }
+  carrega();
+}
 carrega(); setInterval(carrega,20000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()});
 </script></body></html>"""
         return HTMLResponse(html)
+
+    @app.post("/painel/lote")
+    async def painel_lote(request: Request):
+        """Manda um template aprovado pra um SEGMENTO inteiro (M3.0).
+
+        Pedido do Kevin: "por lista de clientes, por exemplo desengajados, eu
+        mando ideias de uso".
+
+        Três cuidados, e nenhum é decoração:
+
+        1. `confirmo` obrigatório. É a única rota do sistema que fala com
+           várias pessoas de uma vez; um clique sem querer vira mensagem em
+           massa, e é exatamente essa assinatura que a Meta lê como spam.
+        2. Espaçamento entre envios, o mesmo do motor. Em 04/08 o número foi
+           restringido por RITMO — 4 mensagens num minuto — e não por
+           conteúdo. Um lote de 11 disparado de uma vez é pior que isso.
+        3. Passa por `_enviar_template_manual`, que já valida catálogo e
+           variáveis por pessoa. Quem não tiver dado pra preencher é PULADO
+           com motivo, não recebe mensagem quebrada.
+        """
+        from fastapi.responses import JSONResponse
+        if not _painel_autorizado(request):
+            return _negado(request)
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "erro": "corpo inválido"})
+        if not body.get("confirmo"):
+            return JSONResponse({"ok": False,
+                                 "erro": "confirmação obrigatória pra envio "
+                                         "em lote"})
+        seg = str(body.get("segmento") or "")
+        tpl = str(body.get("template") or "")
+        grupos = db.segmentos(excluir_telefones=[ADMIN_PHONE, MASTER_PHONE])
+        if seg not in grupos:
+            return JSONResponse({"ok": False,
+                                 "erro": f"segmento {seg!r} não existe"})
+        import templates as _cat
+        if tpl not in _cat.CATALOGO:
+            return JSONResponse({"ok": False,
+                                 "erro": f"template {tpl!r} não existe"})
+        gente = grupos[seg]
+        enviados, falhas = 0, []
+        import random as _rnd
+        import time as _time
+        for i, p in enumerate(gente):
+            if i:
+                _time.sleep(_rnd.uniform(ENVIO_INTERVALO_MIN,
+                                         ENVIO_INTERVALO_MAX))
+            ok_um, motivo = _enviar_template_manual(p["id"], tpl)
+            if ok_um:
+                enviados += 1
+            else:
+                falhas.append({"nome": p["nome"], "motivo": motivo})
+        db.registrar_acao_admin(
+            "lote", por="painel",
+            detalhe=f"{tpl} -> {seg}: {enviados} de {len(gente)}")
+        import logging as _lg
+        _lg.getLogger("resolveai").info(
+            "[lote] %s -> %s: %d enviados, %d falharam",
+            tpl, seg, enviados, len(falhas))
+        return JSONResponse({"ok": True, "enviados": enviados,
+                             "falharam": len(falhas), "total": len(gente),
+                             "detalhes": falhas[:20]})
 
     @app.get("/api/pulso")
     def api_pulso(request: Request):
@@ -5748,7 +5986,19 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
             acao = body.get("acao")
             ok = False
             if acao == "estender":
-                ok = db.admin_extend_trial(uid, int(body.get("dias", 7)))
+                _dias = int(body.get("dias", 7))
+                ok = db.admin_extend_trial(uid, _dias)
+                if ok:
+                    # AVISA A PESSOA DO PRAZO NOVO (M3.0).
+                    #
+                    # Ganhar dias e não saber é o mesmo que não ganhar: a
+                    # pessoa segue achando que o teste acabou e some. Melhor
+                    # esforço, e a falha aparece pro dono em `aviso` — os
+                    # dias NÃO são desfeitos se a mensagem não sair, senão
+                    # ele clicaria de novo e daria o dobro sem perceber.
+                    _av = _avisar_trial_estendido(uid, _dias)
+                    if _av:
+                        return JSONResponse({"ok": True, "aviso": _av})
             elif acao == "aprovar":
                 # O DONO CONFERIU NO MERCADO PAGO E CONFIRMOU (M2.9).
                 # Plano inválido não vira "ativo sem plano": isso deixaria a
@@ -5805,6 +6055,18 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
                 ok = db.admin_set_status(uid, "ativo")
             elif acao == "liberar":  # desbloqueia -> volta pra trial
                 ok = db.admin_set_status(uid, "trial")
+            elif acao == "zerar":
+                # IRREVERSÍVEL: exige `confirmo` no corpo, não só o clique.
+                # O painel é usado no celular; um toque errado aqui apaga a
+                # pessoa inteira, e não existe desfazer.
+                if not body.get("confirmo"):
+                    return JSONResponse({
+                        "ok": False,
+                        "erro": "confirmação obrigatória pra apagar tudo"})
+                ok = db.zerar_cliente(uid, por="painel")
+                if not ok:
+                    return JSONResponse({"ok": False,
+                                         "erro": "usuário não encontrado"})
             elif acao == "apagar":
                 db.delete_user(uid); ok = True
             elif acao == "listar_itens":

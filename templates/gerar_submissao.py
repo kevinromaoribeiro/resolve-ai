@@ -60,11 +60,24 @@ def gerar_conteudo() -> str:
     for nome, t in templates.CATALOGO.items():
         exemplo = "\n".join(f"  - `{{{{{i}}}}}` -> `{v}`"
                             for i, v in enumerate(t.exemplo, 1))
+        # OS BOTÕES PRECISAM SER DECLARADOS NA SUBMISSÃO (M3.0). Fora da
+        # janela de 24h só sai template, então botão em proativa nasce aqui —
+        # não dá pra acrescentar na hora do envio. No Business Manager é a
+        # seção "Botões" -> "Resposta rápida", um título por linha, e o texto
+        # do botão é o que volta pro bot quando a pessoa clica.
+        if t.botoes:
+            botoes = ("**Botões — tipo `Resposta rápida`, um por linha:**\n\n"
+                      + "\n".join(f"  - `{b}`" for b in t.botoes))
+        else:
+            botoes = "**Botões:** nenhum"
         partes.append(f"""## `{t.nome}`
 
 - **Nome:** `{t.nome}`
+- **O que faz:** {t.rotulo or '—'}
 - **Categoria:** {t.categoria}
 - **Idioma:** {t.idioma}
+
+{botoes}
 
 **Corpo:**
 

@@ -53,6 +53,10 @@ log.info("[canal] falando pelo canal: %s", NOME)
 
 # --- interface que o wa_bot.py consome -------------------------------------
 send_text = _mod.send_text
+# Botoes so existem no canal oficial. No reserva (wasender) fica None e o
+# `falar` cai pra texto puro: melhor a mensagem chegar sem botao do que a
+# pessoa nao receber o lembrete por causa de um enfeite.
+send_buttons = getattr(_mod, "send_buttons", None)
 to_evolution_shape = _mod.to_evolution_shape
 baixar_midia = _mod.baixar_midia
 instance_state = _mod.instance_state
@@ -88,10 +92,15 @@ def _aprovados() -> set:
 
 
 def falar(telefone: str, texto: str, *, user_id=None, template=None,
-          variaveis=None, tipo: str = "texto") -> dict:
+          variaveis=None, tipo: str = "texto", botoes=None) -> dict:
     """Fala com o usuario respeitando a janela de 24h. Devolve o que houve.
 
-    {"enviado": bool, "via": "texto"|"template"|None, "motivo": str}
+    {"enviado": bool, "via": "texto"|"botoes"|"template"|None, "motivo": str}
+
+    `botoes`: ate 3 titulos de resposta rapida, so DENTRO da janela. Fora
+    dela quem manda botao e o template aprovado (os botoes sao declarados na
+    submissao, nao aqui) — mensagem interativa nao e excecao a janela, e
+    tratar como excecao seria abrir a porta que rendeu duas restricoes.
 
     DENTRO da janela  -> texto livre (a pessoa falou com o bot ha pouco).
     FORA da janela    -> so template aprovado. Sem ele, NAO SAI.
@@ -110,6 +119,17 @@ def falar(telefone: str, texto: str, *, user_id=None, template=None,
     # telefone vai junto porque o webhook grava msg_log com user_id nulo —
     # sem ele a janela nunca abre e NADA sai (auditoria M2.0, P0-1).
     if db.dentro_da_janela(user_id, telefone):
+        if botoes and send_buttons:
+            try:
+                ok = send_buttons(telefone, texto, list(botoes))
+                if ok:
+                    return {"enviado": True, "via": "botoes", "motivo": ""}
+                # Botao falhou (titulo invalido, 400 da Meta): NAO desiste da
+                # mensagem. O lembrete importa mais que o enfeite — cai pro
+                # texto, que ja carrega as mesmas palavras no corpo.
+                log.warning("[canal] botoes falharam, mandando texto puro")
+            except ValueError as e:
+                log.error("[canal] botoes invalidos (%s) — texto puro", e)
         ok = send_text(telefone, texto)
         return {"enviado": bool(ok), "via": "texto" if ok else None,
                 "motivo": "" if ok else "falha_no_envio"}

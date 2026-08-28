@@ -39,12 +39,11 @@ def test_catalogo_tem_os_cinco():
 @pytest.mark.parametrize("nome", sorted(templates.CATALOGO))
 def test_template_e_utility_valido(nome):
     t = templates.CATALOGO[nome]
-    # UTILITY em todos menos UM, declarado. O `fim_de_trial_aviso` e
-    # MARKETING por decisao do dono (27/08/2026), depois de a Meta recusar
-    # como utilidade: ele fala da relacao comercial, nao de um compromisso
-    # que a pessoa cadastrou. Ver test_m26_utilidade_de_verdade.py.
-    esperada = ("MARKETING" if nome == "resolveai_fim_de_trial_aviso"
-                else "UTILITY")
+    # UTILITY em todos, menos os declarados em MARKETING_AUTORIZADO. A lista
+    # vem de test_m26 pra existir num lugar so: dois testes com a propria
+    # copia da lista viram duas verdades que divergem na primeira mudanca.
+    from tests.test_m26_utilidade_de_verdade import MARKETING_AUTORIZADO
+    esperada = "MARKETING" if nome in MARKETING_AUTORIZADO else "UTILITY"
     assert t.categoria == esperada, f"{nome}: esperava {esperada}"
     assert t.idioma == "pt_BR"
     # nome que a Meta aceita: minusculo, digito e underscore

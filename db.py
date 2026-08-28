@@ -1749,6 +1749,70 @@ _FIXOS = [
 ]
 
 
+def zerar_cliente(user_id: int, por: str = "") -> bool:
+    """Apaga TUDO de um cliente pra ele voltar como usuário novo (M3.0).
+
+    Pedido do Kevin pro caso do Davi, que travou e não conseguia mais mandar
+    mensagem: em vez de caçar o estado corrompido, zera e ele reentra pela
+    landing page.
+
+    É `delete_user` com log de admin. `delete_user` já apaga items, msg_log,
+    memoria e dispatches — isso foi auditado em 11/08/2026, quando se
+    descobriu que ele só limpava `users` e o texto das conversas continuava
+    no banco depois de o bot dizer que tinha apagado tudo.
+
+    IRREVERSÍVEL, e por isso registrado: daqui a um mês ninguém lembra quem
+    sumiu da base nem por quê.
+    """
+    u = get_user(user_id)
+    if not u:
+        return False
+    apelido = (u.get("nome") or "?").split()[0]
+    telefone = u.get("telefone") or ""
+    delete_user(user_id)
+    registrar_acao_admin("zerar_cliente", alvo=user_id, por=por,
+                         detalhe=f"{apelido} {telefone} — apagado por completo")
+    return True
+
+
+# Quem é quem, pro envio em lote. Cada segmento é uma pergunta de negócio,
+# não um filtro genérico: "quem sumiu", "quem entrou e não usou".
+SEGMENTO_DESENGAJADO_DIAS = 10
+
+
+def segmentos(excluir_telefones: Optional[list] = None,
+              ref: Optional[datetime] = None) -> dict:
+    """Agrupa a base nos recortes que o dono usa pra decidir uma ação.
+
+    O dono é excluído: mandar template pra si mesmo gasta cota e polui o
+    teste do que ele está tentando medir.
+    """
+    agora = ref or tempo.agora()
+    fora = {re.sub(r"\D", "", t) for t in (excluir_telefones or []) if t}
+    out: dict = {"todos": [], "desengajados": [], "sem_itens": [],
+                 "trial": [], "ativos": []}
+    for u in list_users():
+        if re.sub(r"\D", "", u.get("telefone") or "") in fora:
+            continue
+        visto = _dias_desde(u.get("ultima_interacao"), agora)
+        with get_conn() as conn:
+            n = conn.execute("SELECT COUNT(*) c FROM items WHERE user_id=?",
+                             (u["id"],)).fetchone()["c"]
+        p = {"id": u["id"], "nome": (u.get("nome") or "?").split()[0],
+             "telefone": u.get("telefone"), "status": u.get("status"),
+             "itens": n, "visto_ha": visto}
+        out["todos"].append(p)
+        if visto is not None and visto > SEGMENTO_DESENGAJADO_DIAS:
+            out["desengajados"].append(p)
+        if not n:
+            out["sem_itens"].append(p)
+        if (u.get("status") or "trial") == "trial":
+            out["trial"].append(p)
+        elif u.get("status") == "ativo":
+            out["ativos"].append(p)
+    return out
+
+
 PLANOS = ("mensal", "anual")
 # Quantos dias depois do vencimento a assinatura vira "atrasada" no painel.
 # Zero: o Mercado Pago cobra no dia, então no dia seguinte já vale conferir.

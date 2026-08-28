@@ -156,6 +156,22 @@ VEREDITO_DA_META = {
     # MARKETING) — e a Meta esta certa: fala da relacao comercial, nao de um
     # compromisso da pessoa. Decisao do dono: submeter como MARKETING.
     "resolveai_fim_de_trial_aviso": "marketing_por_decisao",
+    # CRIADOS EM 28/08/2026, AINDA NAO SUBMETIDOS.
+    #
+    # O veredito honesto e "nao sabemos": a regua da Meta so se descobre
+    # submetendo. O que da pra afirmar e o raciocinio que guiou a categoria,
+    # e ele segue a regra aprendida nas duas recusas anteriores — o criterio
+    # e o MOTIVO da mensagem, nao o tom.
+    #
+    # `trial_estendido` como UTILITY: informa mudanca de prazo numa conta que
+    # a pessoa ja tem, sem oferta, preco ou link. Se ganhar um "assine" no
+    # corpo, vira marketing e a recusa sera merecida.
+    #
+    # `cobranca_link` como MARKETING desde o inicio, sem tentar utilidade:
+    # falar de pagamento pendente E a relacao comercial. Tentar como utility
+    # so gastaria uma rodada de recusa, que foi o erro cometido duas vezes.
+    "resolveai_trial_estendido": "nao_submetido",
+    "resolveai_cobranca_link": "nao_submetido",
 }
 
 
@@ -321,13 +337,36 @@ def test_fim_de_trial_e_marketing_declarado():
         "a Meta tem este template como MARKETING; o repo precisa concordar")
 
 
-def test_so_o_fim_de_trial_e_marketing():
+# MARKETING E LISTA FECHADA, e cada nome aqui precisa de um porque.
+#
+# Nao e burocracia: template de MARKETING custa mais por mensagem, entra na
+# cota de marketing e pode ser silenciado pelo usuario nas preferencias do
+# WhatsApp. Se essa lista crescer sozinha, o produto vira lista de
+# transmissao — e quem silenciar marketing para de receber TUDO.
+MARKETING_AUTORIZADO = {
+    # Ultima mensagem antes do trial acabar. Recusada como utilidade em
+    # 27/08 e a Meta estava certa: fala da relacao comercial. Sai UMA vez
+    # por usuario na vida inteira do trial.
+    "resolveai_fim_de_trial_aviso",
+    # Cobranca de quem pediu o link e nao pagou (28/08). Pagamento pendente
+    # e relacao comercial pela regua da Meta — nao ha reescrita que torne
+    # isso utilidade, e tentar so gastaria uma rodada de recusa. So sai por
+    # acao manual do dono, pra quem pediu o link.
+    "resolveai_cobranca_link",
+}
+
+
+def test_marketing_so_o_que_foi_autorizado():
     """Marketing e excecao pontual, nao porta aberta. Todo o resto e
     utilidade — e template de utilidade e o que sustenta a promessa do
     produto (lembrar), nao a cobranca."""
     marketing = {n for n, t in templates.CATALOGO.items()
                  if t.categoria == "MARKETING"}
-    assert marketing == {"resolveai_fim_de_trial_aviso"}, marketing
+    assert marketing == MARKETING_AUTORIZADO, (
+        "mudou o conjunto de templates MARKETING. Cada um custa mais e pode "
+        "ser silenciado pelo usuario: se a adicao e proposital, documente o "
+        "porque em MARKETING_AUTORIZADO. Diferenca: %s"
+        % (marketing ^ MARKETING_AUTORIZADO))
 
 
 # ---------------------------------------------------------------------------

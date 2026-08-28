@@ -32,6 +32,21 @@ class Template:
     variaveis: list         # nomes, na ordem de {{1}}, {{2}}, ...
     justificativa: str      # o texto que explica o uso na submissão
     exemplo: list = field(default_factory=list)
+    # M3.0 — botões de resposta rápida, declarados NA SUBMISSÃO.
+    #
+    # Fora da janela de 24h só sai template, então botão em proativa tem que
+    # nascer aqui: não dá pra acrescentar na hora do envio. Cada título vira
+    # o texto que volta pro bot quando a pessoa clica, e por isso tem que ser
+    # um comando que o parser entende — há teste varrendo isto.
+    #
+    # Limites da Meta: no máximo 3 botões, até 20 caracteres cada.
+    botoes: list = field(default_factory=list)
+    # M3.0 — o que este template FAZ, em português, pro painel.
+    #
+    # O Kevin: "eu preciso ter o nome do que ele faz e um botão pra ativar".
+    # `resolveai_conta_a_vencer` não diz nada pra quem está decidindo o que
+    # mandar; "Avisa que uma conta vence amanhã" diz.
+    rotulo: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +70,7 @@ def _reg(t: Template) -> None:
 
 _reg(Template(
     nome="resolveai_lembrete_hora",
+    rotulo="Avisa na hora marcada de um compromisso",
     categoria="UTILITY",
     idioma="pt_BR",
     corpo=("Chegou a hora: *{{1}}*.\n\n"
@@ -71,6 +87,7 @@ _reg(Template(
 
 _reg(Template(
     nome="resolveai_item_vencido",
+    rotulo="Cobra um item que venceu e nao teve baixa",
     categoria="UTILITY",
     idioma="pt_BR",
     corpo=("Oi {{1}}, *{{2}}* venceu {{3}} e eu não registrei a baixa.\n\n"
@@ -85,6 +102,7 @@ _reg(Template(
 
 _reg(Template(
     nome="resolveai_resumo_do_dia",
+    rotulo="Resumo dos compromissos dos proximos dias",
     categoria="UTILITY",
     idioma="pt_BR",
     corpo=("Oi {{1}}, você tem *{{2}}* compromisso(s) guardado(s) para os "
@@ -101,6 +119,7 @@ _reg(Template(
 
 _reg(Template(
     nome="resolveai_reengajamento_pendentes",
+    rotulo="Lembra de um item parado ha dias na lista",
     categoria="UTILITY",
     idioma="pt_BR",
     # REESCRITO EM 26/08/2026, depois de a Meta recusar a versão anterior.
@@ -139,6 +158,7 @@ _reg(Template(
 
 _reg(Template(
     nome="resolveai_fim_de_trial_aviso",
+    rotulo="Avisa que o teste esta acabando e oferece a assinatura",
     # MARKETING, e é o único aqui. Decisão do dono em 27/08/2026, depois de
     # a Meta recusar como utilidade — e ela está certa: "seu período de teste
     # termina em 2 dias" não fala de um compromisso que a pessoa cadastrou,
@@ -192,6 +212,7 @@ _reg(Template(
 
 _reg(Template(
     nome="resolveai_conta_a_vencer",
+    rotulo="Avisa que uma conta vence em breve",
     categoria="UTILITY",
     idioma="pt_BR",
     # O DISPARO MAIS COMUM DO PRODUTO, e ate agora o unico sem template.
@@ -251,8 +272,69 @@ _reg(Template(
 # escalonamento do M1.5 ("já te chamei 3x, remarcar ou tirar da lista?") —
 # e achatar as três em "Chegou a hora... responda feito ou adiar 1h" traz de
 # volta exatamente os bugs que essas duas variantes existem pra consertar.
+TRIAL_ESTENDIDO = Template(
+    nome="resolveai_trial_estendido",
+    rotulo="Conta que voce liberou mais dias de teste",
+    # UTILITY, e desta vez a régua da Meta está do nosso lado. A régua é o
+    # MOTIVO da mensagem: falar de um prazo determinado que mudou na conta da
+    # pessoa é utilidade; convidar a voltar ou a comprar é marketing. Aqui é
+    # a primeira coisa — o teste dela ganhou dias e a data nova é esta.
+    #
+    # Comparar com `fim_de_trial_aviso`, que é MARKETING: aquele pede a
+    # assinatura, este só informa o prazo novo. Se este ganhar um "assine
+    # agora" no corpo, vira marketing e a Meta recusa — com razão.
+    categoria="UTILITY",
+    idioma="pt_BR",
+    corpo=("Oi {{1}}, liberei mais *{{2}}* dia(s) de teste pra você.\n\n"
+           "Seu acesso vale até *{{3}}*. Continuo te avisando dos seus "
+           "compromissos até lá."),
+    variaveis=["primeiro_nome", "dias_extras", "nova_data"],
+    justificativa=(
+        "Confirmação de mudança no prazo da conta do próprio usuário. O "
+        "administrador estendeu o período de teste e o usuário é informado "
+        "da nova data de validade do acesso que ele já contratou. Não "
+        "contém oferta, preço ou link de compra. Enviada uma vez a cada "
+        "extensão, apenas para o usuário afetado."),
+    exemplo=["Ana", "7", "12/09/2026"],
+    # "Ver tudo" é o único que faz sentido: a mensagem não pede decisão, e
+    # o melhor uso do prazo novo é a pessoa reabrir a lista dela.
+    botoes=["Ver tudo"],
+)
+
+COBRANCA_LINK = Template(
+    nome="resolveai_cobranca_link",
+    rotulo="Cobra quem pediu o link e nao pagou",
+    # MARKETING, assumido. Pela régua da Meta não há discussão: falar de
+    # pagamento pendente da assinatura é a relação comercial, não um
+    # compromisso que a pessoa cadastrou. Tentar passar como utilidade só
+    # gastaria uma recusa — foi o que aconteceu com os dois primeiros.
+    categoria="MARKETING",
+    idioma="pt_BR",
+    corpo=("Oi {{1}}, você pediu o link do Resolve AI há *{{2}}* dia(s) e "
+           "eu ainda não vi o pagamento entrar.\n\n"
+           "Se já pagou, me avisa que eu libero na hora. Se preferir, "
+           "posso te mandar o link de novo."),
+    variaveis=["primeiro_nome", "dias_desde_o_pedido"],
+    justificativa=(
+        "Acompanhamento de uma assinatura que o próprio usuário solicitou. "
+        "Ele pediu o link de pagamento no assistente e a cobrança ainda não "
+        "foi confirmada. A mensagem só é enviada para quem pediu o link, uma "
+        "vez por ciclo de cobrança, e sempre por ação manual do "
+        "administrador."),
+    exemplo=["Ana", "3"],
+    # "Já paguei" cai no parser de baixa (`_BAIXA_RE` reconhece "paguei"), e
+    # "Assinar" reenvia o link pela resposta que já existe. Nenhum título
+    # novo: botão que o bot não entende é pior que botão nenhum.
+    botoes=["Já paguei", "Assinar"],
+)
+
+_reg(TRIAL_ESTENDIDO)
+_reg(COBRANCA_LINK)
+
 KIND_TEMPLATE = {
     "hora": "resolveai_lembrete_hora",
+    "trial-estendido": "resolveai_trial_estendido",
+    "cobranca-link": "resolveai_cobranca_link",
     "vencido": "resolveai_item_vencido",
     "resumo": "resolveai_resumo_do_dia",
     "anti-churn": "resolveai_reengajamento_pendentes",
