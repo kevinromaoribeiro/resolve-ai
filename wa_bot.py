@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v24.7-m30-reset-em-botao-2026-08-28"
+BUILD = "v24.8-m31-reset-nao-sequestrado-2026-08-28"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -406,6 +406,30 @@ _MASTER_RESET_RE = re.compile(
     re.IGNORECASE)
 
 
+def _master_reset_pega(texto: str) -> bool:
+    """O modo teste captura esta mensagem? (M3.1)
+
+    COMANDO ESPECÍFICO GANHA DO GENÉRICO — e essa regra nasceu de um
+    estrago real, em 28/08/2026.
+
+    `_MASTER_RESET_RE` casa com QUALQUER coisa começando em "resetar", e é
+    avaliado antes do `_RESET_TRIAL_RE`. Como o número do dono é MASTER e
+    ADMIN ao mesmo tempo, `resetar trial de todos` sempre caía no modo teste:
+    apagava o cadastro DELE (6 itens perdidos) e não tocava em nenhum dos 10
+    clientes. O comando de reset de trial era inalcançável — nenhuma frase
+    funcionaria, e o bot ainda respondia com sucesso, de outra coisa.
+
+    Não basta reordenar os `if`: eles vivem em funções diferentes e a próxima
+    pessoa a mexer não veria a dependência. A exclusão fica escrita aqui.
+    """
+    t = (texto or "").strip()
+    if not t:
+        return False
+    if _RESET_TRIAL_RE.match(t) or _RESET_TRIAL_ANTIGO_RE.match(t):
+        return False
+    return bool(_MASTER_RESET_RE.match(t))
+
+
 def _parse_landing_payload(text: str) -> Optional[dict]:
     """Decodifica a mensagem estruturada que a landing page envia via wa.me.
     Formato: '#RESOLVE|nome|idade|interesse1,interesse2'
@@ -462,7 +486,7 @@ def _maybe_master_reset(phone: str, text: str) -> Optional[str]:
     Retorna a mensagem de confirmação, ou None se não for o caso."""
     if not MASTER_PHONE or phone != MASTER_PHONE:
         return None
-    if not _MASTER_RESET_RE.match(text.strip()):
+    if not _master_reset_pega(text):
         return None
     # apaga tudo desse número e recria como novo
     for u in db.list_users():
@@ -475,8 +499,28 @@ def _maybe_master_reset(phone: str, text: str) -> Optional[str]:
 
 
 # M2.5 — a frase exata, e nada perto dela. Ver o comentario no handler.
+# O COMANDO NAO COMECA MAIS COM "RESETAR" (M3.1, pedido do Kevin).
+#
+# Dois motivos, os dois vindos do estrago de 28/08/2026:
+#
+# 1. Qualquer coisa iniciada em "reset"/"resetar"/"zerar" e capturada pelo
+#    MODO TESTE (`_MASTER_RESET_RE`), que apaga o cadastro do dono. Comecar
+#    o comando com outra palavra tira ele desse campo minado de vez.
+# 2. "resetar trial de todos" e facil demais de digitar sem querer pra uma
+#    acao que vale a base inteira. O Kevin: "eu nunca mais acho que vou
+#    precisar resetar todos, entao deixe um comando menos comum".
+#
+# A frase antiga continua RECONHECIDA de proposito — nao pra funcionar, mas
+# pra ser barrada antes do modo teste. Sem isso, quem digitasse o comando
+# velho zeraria os proprios dados de novo, que foi exatamente o acidente.
 _RESET_TRIAL_RE = re.compile(
-    r"^\s*resetar\s+(?:o\s+)?trial\s+(?:de\s+)?todos\s*[.!]?\s*$",
+    r"^\s*liberar\s+14\s+dias\s+(?:para|pra)\s+todos"
+    r"(?:\s+os\s+clientes)?\s*[.!]?\s*$",
+    re.IGNORECASE)
+
+# So pra proteger do modo teste. NAO executa nada.
+_RESET_TRIAL_ANTIGO_RE = re.compile(
+    r"^\s*(?:resetar|zerar)\s+(?:o\s+)?trial\s+(?:de\s+)?todos\s*[.!]?\s*$",
     re.IGNORECASE)
 
 
@@ -677,6 +721,16 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     # e um `startswith("resetar")` transformaria essa frase numa acao de
     # banco — o mesmo modo de falha do menu 1/2 que custou a FASE 1 inteira.
     # Por isso: frase exata, e so do numero do dono.
+    # A FRASE ANTIGA ENSINA A NOVA, em vez de cair no vazio. Ela chega aqui
+    # porque `_master_reset_pega` a barra do modo teste; sem esta resposta o
+    # dono digitaria o comando velho, veria o bot conversar sobre outra
+    # coisa, e concluiria que resetou.
+    if (ADMIN_PHONE and phone == ADMIN_PHONE
+            and _RESET_TRIAL_ANTIGO_RE.match(text)):
+        return ("Esse comando mudou pra ser mais difícil de disparar sem "
+                "querer.\n\nAgora é: *liberar 14 dias para todos*\n\n"
+                "_(nada foi alterado)_")
+
     if ADMIN_PHONE and phone == ADMIN_PHONE and _RESET_TRIAL_RE.match(text):
         alvos = [u["id"] for u in db.list_users()
                  if re.sub(r"\D", "", u.get("telefone") or "") != ADMIN_PHONE]

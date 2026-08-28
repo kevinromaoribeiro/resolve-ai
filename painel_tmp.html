@@ -1,0 +1,81 @@
+<!doctype html><html lang="pt-BR"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="15">
+<title>Resolve AI — Painel</title>
+<style>
+body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f8fafc;margin:0;padding:16px;color:#0f172a}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:#64748b;font-size:13px;margin-bottom:16px}
+.wa{display:inline-block;padding:6px 12px;border-radius:8px;color:#fff;font-weight:600;font-size:13px;background:#22c55e;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:14px}
+.card .n{font-size:26px;font-weight:700;color:#00A86B}
+.card .l{font-size:12px;color:#64748b;margin-top:2px}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;font-size:13px}
+td{padding:8px 10px;border-bottom:1px solid #f1f5f9}
+th{text-align:left;padding:8px 10px;background:#f1f5f9;font-size:12px;color:#475569}
+.foot{color:#94a3b8;font-size:11px;margin-top:12px;text-align:center}
+</style></head><body>
+<h1>🟢 Resolve AI — Painel ao vivo</h1>
+<div class="sub">Atualiza sozinho a cada 15s · 11 usuários no total</div>
+<div class="wa">WhatsApp: 🟢 Conectado</div>
+<div style="display:inline-block;padding:6px 12px;border-radius:8px;color:#fff;font-weight:600;font-size:13px;background:#22c55e;margin-bottom:16px;margin-left:8px">Lembretes: 🟢 Motor ativo (última checagem há 0 min)</div>
+<button onclick="testarMotor()" style="cursor:pointer;padding:6px 14px;border-radius:8px;border:1px solid #00A86B;background:#00A86B;color:#fff;font-weight:600;font-size:13px;margin-left:8px">▶ Testar motor agora</button>
+<div class="grid">
+<div class="card"><div class="n">0</div><div class="l">mensagens recebidas hoje</div></div>
+<div class="card"><div class="n">1</div><div class="l">respostas enviadas hoje</div></div>
+<div class="card"><div class="n">1</div><div class="l">novos usuários hoje</div></div>
+<div class="card"><div class="n">0</div><div class="l">itens criados hoje</div></div>
+<div class="card"><div class="n">1</div><div class="l">lembretes disparados hoje</div></div>
+<div class="card"><div class="n">0</div><div class="l">assinantes ativos</div></div>
+<div class="card"><div class="n">11</div><div class="l">em teste grátis</div></div>
+<div class="card"><div class="n">R$ 0</div><div class="l">MRR</div></div>
+</div>
+<h1 style="font-size:15px">Últimas mensagens</h1>
+<table><tr><th>Hora</th><th>Nº</th><th>Direção</th><th>Conteúdo</th></tr>
+<tr style="background:#dcfce7"><td>16:57</td><td>…0459</td><td>➡️ enviada</td><td>🧪 *Modo teste:* seus dados foram zerados. Você é um usuário novo agora — pode te</td></tr><tr style="background:#e0f2fe"><td>16:03</td><td>…0621</td><td>⬅️ recebida</td><td></td></tr><tr style="background:#dcfce7"><td>09:41</td><td>…0621</td><td>➡️ enviada</td><td>⚠️ Ainda *não registrei* o que você mandou — preciso do seu aceite primeiro. Gua</td></tr><tr style="background:#e0f2fe"><td>09:41</td><td>…0621</td><td>⬅️ recebida</td><td>Desculpe, não entendi 😕
+
+Para responder, selecione uma das opções.</td></tr><tr style="background:#dcfce7"><td>09:40</td><td>…0621</td><td>➡️ enviada</td><td>🔒 Antes de começar, preciso do seu aceite.
+
+Suas mensagens são processadas com s</td></tr><tr style="background:#dcfce7"><td>09:40</td><td>…0621</td><td>➡️ enviada</td><td>Oi! Eu sou o *Resolve AI* 🟢 — o assistente que tira da sua cabeça contas, lembre</td></tr><tr style="background:#e0f2fe"><td>09:40</td><td>…0621</td><td>⬅️ recebida</td><td></td></tr><tr style="background:#dcfce7"><td>21:44</td><td>…0929</td><td>➡️ enviada</td><td>De nada, Carol! Se precisar de algo, é só avisar. 😊</td></tr><tr style="background:#e0f2fe"><td>21:44</td><td>…0929</td><td>⬅️ recebida</td><td>Por enquanto é isso obrigada</td></tr><tr style="background:#dcfce7"><td>21:43</td><td>…0929</td><td>➡️ enviada</td><td>Seu compromisso com o dentista é no dia *11/08* às *16:00*. Alguma outra coisa q</td></tr><tr style="background:#e0f2fe"><td>21:43</td><td>…0929</td><td>⬅️ recebida</td><td>11/08 as 16:0]</td></tr><tr style="background:#dcfce7"><td>21:43</td><td>…0929</td><td>➡️ enviada</td><td>Anotado ✅ — *dentista*.</td></tr><tr style="background:#e0f2fe"><td>21:43</td><td>…0929</td><td>⬅️ recebida</td><td>✅ Isso mesmo</td></tr><tr style="background:#dcfce7"><td>21:43</td><td>…0929</td><td>➡️ enviada</td><td>Anotado. Qual o dia e horário?</td></tr><tr style="background:#e0f2fe"><td>21:43</td><td>…0929</td><td>⬅️ recebida</td><td>Por favor me lembre</td></tr><tr style="background:#dcfce7"><td>21:43</td><td>…0929</td><td>➡️ enviada</td><td>O seu dentista está registrado para amanhã às 16h. Não se preocupa que eu vou te</td></tr><tr style="background:#e0f2fe"><td>21:43</td><td>…0929</td><td>⬅️ recebida</td><td>Amanha tenho dentista as 16</td></tr><tr style="background:#dcfce7"><td>06:42</td><td>…9692</td><td>➡️ enviada</td><td>Anotado ✅ — *Mané*</td></tr><tr style="background:#e0f2fe"><td>06:42</td><td>…9692</td><td>⬅️ recebida</td><td>Mané</td></tr><tr style="background:#dcfce7"><td>06:41</td><td>…9692</td><td>➡️ enviada</td><td>Anotado. Qual o valor?
+
+Guardei:
+• *Mané*</td></tr><tr style="background:#e0f2fe"><td>06:41</td><td>…9692</td><td>⬅️ recebida</td><td>O nomeada parcela é mané</td></tr><tr style="background:#dcfce7"><td>06:41</td><td>…9692</td><td>➡️ enviada</td><td>Oi, Mael!</td></tr><tr style="background:#e0f2fe"><td>06:41</td><td>…9692</td><td>⬅️ recebida</td><td>Mané</td></tr><tr style="background:#dcfce7"><td>06:41</td><td>…9692</td><td>➡️ enviada</td><td>Anotado. Qual o nome das parcelas?</td></tr><tr style="background:#e0f2fe"><td>06:41</td><td>…9692</td><td>⬅️ recebida</td><td>Duas parcelas de 83,25, vence 1/09 e 01/10</td></tr><tr style="background:#dcfce7"><td>23:05</td><td>…9692</td><td>➡️ enviada</td><td>⏰ *Olha eu aqui.*
+
+Do nada, sem você pedir:
+*Voo com 2 horas de antecedência* — </td></tr><tr style="background:#dcfce7"><td>23:03</td><td>…9692</td><td>➡️ enviada</td><td>Anotado.
+
+Guardei:
+• *Voo com 2 horas de antecedência* · *10/08 às 00:00*</td></tr><tr style="background:#e0f2fe"><td>23:03</td><td>…9692</td><td>⬅️ recebida</td><td>✅ Isso mesmo</td></tr><tr style="background:#dcfce7"><td>23:03</td><td>…9692</td><td>➡️ enviada</td><td>Anotado. Vou te lembrar do seu voo com duas horas de antecedência.</td></tr><tr style="background:#e0f2fe"><td>23:03</td><td>…9692</td><td>⬅️ recebida</td><td>Sim, com duas horas de antecedência</td></tr>
+</table>
+
+<h1 style="font-size:15px;margin-top:24px">👥 Usuários</h1>
+<table><tr><th>Nome</th><th>Nº</th><th>Status</th><th>Trial</th><th>Itens</th><th>Ações</th></tr>
+<tr><td>Usuário 0459</td><td>…0459</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>14d</td><td>0</td><td><button onclick="acao(39,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(39,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(39,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr><tr><td>Usuário 0621</td><td>…0621</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>1d</td><td>0</td><td><button onclick="acao(37,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(37,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(37,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr><tr><td>Mael</td><td>…9692</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>0d</td><td>4</td><td><button onclick="acao(34,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(34,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(34,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr><tr><td>Carol</td><td>…0929</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>0d</td><td>3</td><td><button onclick="acao(33,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(33,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(33,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr><tr><td>Fabio</td><td>…9574</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>0d</td><td>1</td><td><button onclick="acao(31,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(31,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(31,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr><tr><td>Rogerio</td><td>…7428</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>0d</td><td>2</td><td><button onclick="acao(30,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(30,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(30,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr><tr><td>WAGNER</td><td>…5410</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>0d</td><td>1</td><td><button onclick="acao(29,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(29,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(29,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr><tr><td>Agatha</td><td>…0716</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>0d</td><td>1</td><td><button onclick="acao(28,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(28,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(28,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr><tr><td>Leonardo</td><td>…2773</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>0d</td><td>3</td><td><button onclick="acao(25,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(25,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(25,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr><tr><td>...</td><td>…5657</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>0d</td><td>0</td><td><button onclick="acao(18,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(18,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(18,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr><tr><td>Usuário 3736</td><td>…3736</td><td><span style='color:#3b82f6;font-weight:600'>trial</span></td><td>0d</td><td>0</td><td><button onclick="acao(7,'estender')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #cbd5e1;background:#fff'>+dias</button><button onclick="acao(7,'ativar')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #86efac;background:#f0fdf4'>ativar</button><button onclick="acao(7,'bloquear')" style='cursor:pointer;padding:3px 7px;border-radius:6px;font-size:11px;margin:1px;border:1px solid #fca5a5;background:#fef2f2'>bloquear</button></td></tr>
+</table>
+<div class="foot">Resolve AI · painel interno · dados ao vivo do servidor de produção</div>
+<script>
+// o token que abriu a página segue nas chamadas seguintes
+const K = new URLSearchParams(location.search).get('k') || '';
+const H = {'Content-Type':'application/json', 'X-Painel-Token': K};
+async function acao(uid, tipo, extra) {
+  let body = {user_id: uid, acao: tipo};
+  if (tipo === 'estender') {
+    let d = prompt('Quantos dias extras de trial?', '7');
+    if (!d) return;
+    body.dias = parseInt(d);
+  }
+  const r = await fetch('/painel/acao', {method:'POST',
+    headers:H, body: JSON.stringify(body)});
+  if (r.ok) { location.reload(); } else { alert('Falhou. Tente de novo.'); }
+}
+async function testarMotor() {
+  const r = await fetch('/cron/proactive', {method:'POST', headers:H});
+  const j = await r.json();
+  alert('Motor executado! Lembretes disparados agora: ' + (j.sent||0) +
+        '\n\nSe você tinha um lembrete na hora, ele foi enviado. ' +
+        'Recarregando o painel...');
+  location.reload();
+}
+</script>
+</body></html>

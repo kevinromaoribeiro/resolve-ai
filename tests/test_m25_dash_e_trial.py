@@ -285,7 +285,10 @@ def test_reset_nao_repete_a_regua_do_trial(base_de_teste):
 
 # --- o comando, pelo WhatsApp ---------------------------------------------
 
-_COMANDO = "resetar trial de todos"
+# M3.1: o comando mudou de frase — nao comeca mais com "resetar",
+# porque qualquer coisa iniciada assim caia no modo teste e apagava o
+# cadastro do dono (aconteceu em producao em 28/08/2026).
+_COMANDO = "liberar 14 dias para todos"
 
 
 def test_so_o_dono_dispara(usuario, monkeypatch):
