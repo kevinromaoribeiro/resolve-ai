@@ -291,3 +291,44 @@ def test_o_dash_renderiza_os_cards_novos(monkeypatch):
     for marca in ("Mandar pra uma lista", "function lote(", "function zerar(",
                   "segLote", "tplLote", "já automático"):
         assert marca in html, "sumiu da tela: %r" % marca
+
+
+# ---------------------------------------------------------------------------
+# avisar quem ganhou dias (reset ou extensao)
+# ---------------------------------------------------------------------------
+
+def test_trial_estendido_e_ofertado_no_painel():
+    """Sem isso o botao de lote nao consegue avisar quem teve o trial
+    resetado — que e exatamente pra isso que o template foi criado."""
+    nomes = [t["nome"] for t in wa_bot._templates_com_rotulo()]
+    assert "resolveai_trial_estendido" in nomes, nomes
+
+
+def test_preenche_dias_extras_e_nova_data(usuario):
+    """As duas variaveis que faltavam."""
+    import datetime as dt
+    import db
+    import tempo
+    ok, motivo = wa_bot._variaveis_do_template(
+        "resolveai_trial_estendido", db.get_user(usuario["id"]))
+    assert ok, motivo
+    nome, dias, data = motivo
+    assert nome
+    assert dias.isdigit() and int(dias) > 0, dias
+    # a data tem que bater com os dias que a pessoa ainda tem
+    esperada = (tempo.hoje() + dt.timedelta(days=int(dias))).strftime("%d/%m/%Y")
+    assert data == esperada, (data, esperada)
+
+
+def test_nao_promete_dias_a_quem_nao_tem(usuario):
+    """Trial vencido: o template diria "liberei mais 0 dias", que e piada."""
+    import db
+    import tempo
+    import datetime as dt
+    with db.get_conn() as c:
+        c.execute("UPDATE users SET trial_base=? WHERE id=?",
+                  ((tempo.agora() - dt.timedelta(days=40)
+                    ).strftime("%Y-%m-%d %H:%M:%S"), usuario["id"]))
+    ok, motivo = wa_bot._variaveis_do_template(
+        "resolveai_trial_estendido", db.get_user(usuario["id"]))
+    assert not ok, "prometeu dias pra quem tem trial vencido: %r" % (motivo,)

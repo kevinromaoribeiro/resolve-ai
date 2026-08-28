@@ -278,10 +278,12 @@ def test_so_oferece_template_que_sabe_preencher(monkeypatch):
     """Botao que so falha depois de clicado e pior que botao ausente."""
     import wa_bot
     import templates as _cat
-    sabe = {"primeiro_nome", "dias", "quantidade_itens", "descricao", "item",
-            "desde", "hora", "quando"}
+    # A lista vem do CODIGO, nao copiada aqui: uma copia no teste vira uma
+    # segunda verdade que diverge na primeira variavel nova — foi assim que
+    # `trial_estendido` ficou de fora do painel sem ninguem perceber.
     for nome in wa_bot._templates_manuais():
-        faltando = set(_cat.CATALOGO[nome].variaveis or []) - sabe
+        faltando = (set(_cat.CATALOGO[nome].variaveis or [])
+                    - wa_bot.VARIAVEIS_QUE_SEI_PREENCHER)
         assert not faltando, (nome, faltando)
 
 

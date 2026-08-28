@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v24.5-m30-botoes-e-lote-2026-08-28"
+BUILD = "v24.6-m30-aviso-de-trial-2026-08-28"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -4077,6 +4077,72 @@ def _avisar_trial_estendido(user_id: int, dias: int) -> str:
     return f"dias liberados, mas o aviso não saiu ({res.get('motivo')})"
 
 
+VARIAVEIS_QUE_SEI_PREENCHER = {
+    "primeiro_nome", "dias", "quantidade_itens", "descricao", "item",
+    "desde", "hora", "quando", "dias_extras", "nova_data",
+}
+
+
+def _variaveis_do_template(nome_template: str, u: dict):
+    """Monta os valores das variáveis a partir dos dados REAIS da pessoa.
+
+    Devolve (True, [valores]) ou (False, "motivo").
+
+    Existe separado do envio porque `_templates_manuais` precisa saber, ANTES
+    de oferecer o botão, se o template é preenchível — botão que só falha
+    depois de clicado é pior que botão ausente.
+    """
+    import templates as _cat
+    if nome_template not in _cat.CATALOGO:
+        return False, f"template {nome_template!r} não existe no catálogo"
+    user_id = u.get("id")
+    primeiro = (u.get("nome") or "?").split()[0] or "Oi"
+    pendentes = db.list_items(user_id, status="pendente") or []
+    valores = []
+    for var in _cat.CATALOGO[nome_template].variaveis:
+        if var == "primeiro_nome":
+            valores.append(primeiro)
+        elif var == "dias":
+            valores.append(str(max(0, db.trial_days_left(u))))
+        elif var == "dias_extras":
+            # QUANTOS DIAS A PESSOA TEM AGORA. Depois de um reset são os 14
+            # cheios; depois de um "+7" é o que sobrou mais os 7.
+            #
+            # Zero é recusa, não "0": "liberei mais 0 dia(s) de teste pra
+            # você" é piada de mau gosto com quem está com o trial vencido.
+            _d = db.trial_days_left(u)
+            if _d <= 0:
+                return False, ("essa pessoa está com o trial vencido — o "
+                               "template prometeria 0 dia(s)")
+            valores.append(str(_d))
+        elif var == "nova_data":
+            _d = db.trial_days_left(u)
+            if _d <= 0:
+                return False, "trial vencido: não há data futura pra anunciar"
+            valores.append((tempo.hoje()
+                            + timedelta(days=_d)).strftime("%d/%m/%Y"))
+        elif var == "quantidade_itens":
+            valores.append(str(len(pendentes)))
+        elif var in ("descricao", "item"):
+            if not pendentes:
+                return False, ("essa pessoa não tem item pendente — o "
+                               "template ficaria com variável vazia")
+            valores.append((pendentes[0].get("descricao") or "").strip()
+                           or "seu compromisso")
+        elif var == "desde":
+            alvo = pendentes[0] if pendentes else {}
+            valores.append(_cat._dia_e_mes(alvo.get("data_criacao")))
+        elif var in ("hora", "quando"):
+            alvo = pendentes[0] if pendentes else {}
+            valores.append(alvo.get("hora_alvo")
+                           or _fmt_br(alvo.get("data_vencimento")) or "hoje")
+        else:
+            return False, f"não sei preencher a variável {var!r}"
+        if not str(valores[-1]).strip():
+            return False, f"variável {var!r} ficaria vazia"
+    return True, valores
+
+
 def _enviar_template_manual(user_id: int, nome_template: str):
     """Manda um template aprovado pra UMA pessoa, por ordem do dono (M2.9).
 
@@ -4099,35 +4165,9 @@ def _enviar_template_manual(user_id: int, nome_template: str):
     if nome_template not in _cat.CATALOGO:
         return False, f"template {nome_template!r} não existe no catálogo"
 
-    primeiro = (u.get("nome") or "?").split()[0] or "Oi"
-    pendentes = db.list_items(user_id, status="pendente") or []
-    variaveis = _cat.CATALOGO[nome_template].variaveis
-
-    valores = []
-    for var in variaveis:
-        if var == "primeiro_nome":
-            valores.append(primeiro)
-        elif var == "dias":
-            valores.append(str(max(0, db.trial_days_left(u))))
-        elif var == "quantidade_itens":
-            valores.append(str(len(pendentes)))
-        elif var in ("descricao", "item"):
-            if not pendentes:
-                return False, ("essa pessoa não tem item pendente — o "
-                               "template ficaria com variável vazia")
-            valores.append((pendentes[0].get("descricao") or "").strip()
-                           or "seu compromisso")
-        elif var == "desde":
-            alvo = pendentes[0] if pendentes else {}
-            valores.append(_cat._dia_e_mes(alvo.get("data_criacao")))
-        elif var in ("hora", "quando"):
-            alvo = pendentes[0] if pendentes else {}
-            valores.append(alvo.get("hora_alvo")
-                           or _fmt_br(alvo.get("data_vencimento")) or "hoje")
-        else:
-            return False, f"não sei preencher a variável {var!r}"
-        if not str(valores[-1]).strip():
-            return False, f"variável {var!r} ficaria vazia"
+    ok, valores = _variaveis_do_template(nome_template, u)
+    if not ok:
+        return False, valores
 
     res = wasender.falar(re.sub(r"\D", "", u["telefone"] or ""), "",
                          user_id=user_id, template=nome_template,
@@ -4224,10 +4264,8 @@ def _templates_manuais() -> list:
     não sabe preencher seria um botão que só falha depois de clicado.
     """
     import templates as _cat
-    sabe = {"primeiro_nome", "dias", "quantidade_itens", "descricao", "item",
-            "desde", "hora", "quando"}
     return [n for n, t in _cat.CATALOGO.items()
-            if set(t.variaveis or []) <= sabe]
+            if set(t.variaveis or []) <= VARIAVEIS_QUE_SEI_PREENCHER]
 
 
 def _linha_risco(env: dict) -> str:
