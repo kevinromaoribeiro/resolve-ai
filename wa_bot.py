@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v24.2-m27-volta-do-apagao-2026-08-27"
+BUILD = "v24.3-m28-painel-de-validacao-2026-08-28"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -189,8 +189,28 @@ EVOLUTION_INSTANCE = os.environ.get("EVOLUTION_INSTANCE", "resolveai")
 # `test_fim_de_trial_pede_uma_acao_que_existe_no_codigo` deriva desta tupla.
 COMANDOS_ASSINATURA = ("assinar", "planos", "quero assinar", "pagar")
 
-PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://SEU-LINK-DE-PAGAMENTO")
-PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL", "")
+# LINKS DE ASSINATURA DO MERCADO PAGO (Kevin, 28/08/2026).
+#
+# Ficam como DEFAULT no codigo, nao so em env var, de proposito: o default
+# antigo era "https://SEU-LINK-DE-PAGAMENTO", e uma VPS sem a variavel
+# configurada entregava esse placeholder literal a quem respondesse
+# "assinar" — a pessoa mais valiosa que este bot encontra, no unico momento
+# de conversao que o produto tem. Link de cobranca e publico por natureza
+# (o cliente clica nele), entao versiona-lo nao expoe segredo nenhum. A env
+# var continua valendo como override, pra trocar de link sem deploy.
+#
+# Sao ASSINATURAS recorrentes no Mercado Pago: o cartao e cobrado sozinho
+# todo mes/ano. O bot nao lembra ninguem de pagar mensalidade e nao toca em
+# cobranca — quem cobra e o Mercado Pago.
+PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://mpago.la/2oashdp")
+PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL",
+                                    "https://mpago.la/2n5pEVS")
+PRECO_MENSAL = float(os.environ.get("PRECO_MENSAL", "19.90"))
+PRECO_ANUAL = float(os.environ.get("PRECO_ANUAL", "149.00"))
+
+
+def _brl(v: float) -> str:
+    return ("R$ %.2f" % v).replace(".", ",")
 # 14 dias, não 7. O produto só prova valor quando o usuário É LEMBRADO de algo
 # que ele tinha esquecido — e uma conta com vencimento mensal não cabe numa
 # janela de 7 dias. Trial curto demais cobra antes de a pessoa ter vivido o
@@ -514,11 +534,18 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 "Responda *APAGAR* para confirmar ou qualquer outra coisa "
                 "para cancelar.")
     if low in COMANDOS_ASSINATURA:
-        anual = (f"\n📅 Anual (R$ 149 ≈ R$ 12,40/mês): {PAYMENT_LINK_ANUAL}"
+        # O "/mês" do anual é DERIVADO do valor, nunca escrito à mão: os dois
+        # já estiveram fora de sincronia aqui (R$ 149 anunciado como
+        # "R$ 12,40/mês", quando dá 12,42). Preço errado numa mensagem de
+        # venda custa a confiança inteira por um detalhe de digitação.
+        anual = (f"\n📅 Anual — {_brl(PRECO_ANUAL)} "
+                 f"({_brl(PRECO_ANUAL / 12)}/mês): {PAYMENT_LINK_ANUAL}"
                  if PAYMENT_LINK_ANUAL else "")
-        return (f"Bora, {first_name}! 🚀\n"
-                f"💳 Mensal (R$ 19,90): {PAYMENT_LINK}{anual}\n\n"
-                f"Pagou, me avisa aqui que eu ativo na hora.")
+        return (f"Bora, {first_name}! 🚀\n\n"
+                f"💳 Mensal — {_brl(PRECO_MENSAL)}: {PAYMENT_LINK}{anual}\n\n"
+                f"É assinatura: renova sozinho, você não precisa pagar na mão "
+                f"todo mês. Pra sair, é só me mandar *cancelar*.\n\n"
+                f"Pagou? Me avisa aqui que eu ativo na hora.")
     # M1.6 — "meus dados" responde com NUMERO, nao com juridiques.
     if low in ("meus dados", "meus dado"):
         try:
@@ -3993,6 +4020,11 @@ def _dados_do_painel() -> dict:
         # Soma incompleta é dita, não maquiada de total.
         "gastos_falharam": falhou,
         "gastos_base": len(_usuarios),
+        # M2.8 — as três perguntas que decidem se isto vira negócio.
+        # `fora` é o mesmo do heatmap: o dono é o usuário mais ativo da base
+        # e não é cliente. Deixá-lo entrar inflaria justamente os dois
+        # numeradores que o Kevin usa pra decidir se sai prospectar.
+        "validacao": db.validacao(TRIAL_DAYS, excluir_telefones=fora),
     }
 
 
@@ -5212,6 +5244,48 @@ async function carrega(){
  const hab=(g.veredito||'').includes('🟢')?'ok':(g.veredito||'').includes('🟡')?'warn':'bad';
  const cron=d.cron_min==null?'bad':(d.cron_min<=3?'ok':'warn');
  let h='';
+ // 0. O FUNIL DE VALIDACAO — vem PRIMEIRO de proposito.
+ //
+ // O topo da tela era "está no ar?", que é pergunta de plantão, não de
+ // decisão: quando o bot está de pé (o normal) esse card não muda nada do
+ // que o Kevin vai fazer no dia. A pergunta que ele precisa responder no
+ // beta é "isto está virando negócio?", e ela se decide em quatro degraus.
+ // Cada degrau é um gargalo diferente, e só o primeiro que estiver vazio
+ // importa — por isso o veredito aponta um só.
+ const V=d.validacao||{base:0,ativados:0,salvos:0,pagantes:0,retidos:0,pessoas:[]};
+ const barra=(rot,n,tot,cor,dica)=>{
+   const pct=tot?Math.round(n/tot*100):0;
+   return `<div style="margin-bottom:11px">
+     <div style="display:flex;justify-content:space-between;font-size:12px;
+       margin-bottom:4px"><span>${rot}</span>
+       <b style="font-variant-numeric:tabular-nums">${n}<span
+        style="color:#8296b3;font-weight:400">/${tot} · ${pct}%</span></b></div>
+     <div style="height:9px;background:#0b1220;border-radius:5px;overflow:hidden">
+       <i style="display:block;height:100%;width:${pct}%;background:${cor}"></i></div>
+     <div style="font-size:10px;color:#8296b3;margin-top:3px">${dica}</div></div>`;
+ };
+ h+=card('Isto está virando negócio?',
+  `<div style="font-size:14px;line-height:1.5;margin-bottom:14px;
+     padding:11px;background:#0b1220;border-radius:10px;
+     border-left:3px solid #f59e0b">${V.veredito||'—'}</div>`+
+  barra('Entraram',V.base,V.base||1,'#3b82f6','pessoas na base (sem contar você)')+
+  barra('Registram sozinhas',V.ativados,V.base,'#8b5cf6','3+ itens cadastrados')+
+  barra('O bot já salvou',V.salvos,V.base,'#22c55e','deram baixa depois de um lembrete')+
+  barra('Voltaram essa semana',V.retidos,V.base,'#14b8a6','falaram nos últimos 7 dias')+
+  barra('Pagam',V.pagantes,V.base,'#f59e0b','assinatura ativa'));
+ // 0b. PRA QUEM LIGAR. Com 11 pessoas, a acao util nao e "melhorar a
+ // metrica" — e falar com o fulano que sumiu. Por isso nome, e nao contagem.
+ const sumidos=(V.pessoas||[]).filter(p=>p.sumido);
+ if(sumidos.length){
+   h+=card('Sumiram — vale uma ligação',
+     sumidos.map(p=>`<div style="display:flex;justify-content:space-between;
+       padding:7px 0;border-bottom:1px solid #1f2c47">
+       <span><b>${p.nome}</b> <span class="muted" style="font-size:11px">
+       ${p.itens} ${p.itens===1?'item':'itens'} · ${p.salvo?'já foi salvo pelo bot':'nunca deu baixa'}
+       </span></span>
+       <span class="muted" style="font-size:12px;white-space:nowrap">
+       ${p.visto_ha}d atrás</span></div>`).join(''));
+ }
  // 1. esta no ar?
  h+=card('Está no ar?',
   `<div class="st"><span class="dot ${conn}"></span>WhatsApp: ${d.conectado?'conectado':d.whatsapp}</div>

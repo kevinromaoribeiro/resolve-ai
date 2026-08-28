@@ -182,6 +182,18 @@ def init_db() -> None:
             conn.execute("ALTER TABLE items ADD COLUMN recorrencia TEXT")
         if "recorrencia" not in item_cols:
             conn.execute("ALTER TABLE items ADD COLUMN recorrencia TEXT")
+        # M2.8: QUANDO o item foi concluído, não só que foi.
+        #
+        # Sem esta coluna a pergunta que valida o produto era impossível de
+        # responder: "o bot lembrou e a pessoa deu baixa?". Dava pra ver que
+        # um item estava concluído, nunca se a baixa veio DEPOIS do lembrete
+        # nem quanto tempo levou. É a diferença entre "o bot mandou
+        # mensagem" e "o bot resolveu alguma coisa pra alguém".
+        #
+        # Linhas antigas ficam com NULL — conclusão anterior à coluna, cuja
+        # data ninguém sabe. O painel conta essas à parte em vez de inventar.
+        if "data_conclusao" not in item_cols:
+            conn.execute("ALTER TABLE items ADD COLUMN data_conclusao TEXT")
         # v6.5: CHECK antigo de status não conhece 'vencido' -> rebuild
         sql_items = conn.execute(
             "SELECT sql FROM sqlite_master WHERE name='items'").fetchone()
@@ -615,10 +627,36 @@ def list_items(
 
 
 def update_item_status(item_id: int, status: str) -> None:
+    """Muda o status e, em 'concluido', carimba QUANDO (M2.8).
+
+    O carimbo é escrito aqui porque este é o ponto único por onde toda
+    conclusão passa — "pago", "feito", baixa pelo painel, rolagem de
+    recorrente. Carimbar em cada chamador seria esquecer em um deles, e o
+    esquecido é sempre o que mais importa.
+
+    `COALESCE`: reconcluir um item não empurra a data pra frente — a primeira
+    baixa é a que responde "quanto tempo depois do lembrete". Sair de
+    'concluido' limpa o carimbo, senão um item reaberto fica alegando uma
+    conclusão que não vale mais.
+    """
     if status not in VALID_STATUSES:
         raise ValueError(f"status inválido: {status!r}")
     with get_conn() as conn:
-        conn.execute("UPDATE items SET status=? WHERE id=?", (status, item_id))
+        if status == "concluido":
+            conn.execute(
+                "UPDATE items SET status=?, "
+                "data_conclusao=COALESCE(data_conclusao, ?) WHERE id=?",
+                # `_now_iso()` (com ESPAÇO), o mesmo formato de
+                # `dispatches.sent_at`. Gravar isoformat com 'T' aqui criaria
+                # de novo o bug que `dentro_da_janela` documenta: 'T' (0x54) >
+                # ' ' (0x20), então comparar as duas colunas como string daria
+                # resultado errado — e é exatamente essa comparação que diz se
+                # a baixa veio depois do lembrete.
+                (status, _now_iso(), item_id))
+        else:
+            conn.execute(
+                "UPDATE items SET status=?, data_conclusao=NULL WHERE id=?",
+                (status, item_id))
 
 
 # ---------------------------------------------------------------------------
@@ -1688,6 +1726,137 @@ _FIXOS = [
     ("Chip do bot", "CUSTO_CHIP_MES"),
     ("Outros", "CUSTO_OUTROS_MES"),
 ]
+
+
+VALIDACAO_ITENS_PARA_ATIVAR = 3  # cadastrou de verdade, não só deu "oi"
+VALIDACAO_SUMIDO_DIAS = 10       # sem falar com o bot há mais que isso
+VALIDACAO_RETIDO_DIAS = 7
+
+
+def _dias_desde(carimbo, agora=None):
+    """Dias inteiros entre um carimbo do banco e agora. None se não dá.
+
+    Aceita os dois formatos que convivem no banco ('T' e espaço) porque esta
+    função lê `users.ultima_interacao` e `users.data_criacao`, gravados por
+    caminhos diferentes ao longo de várias versões.
+    """
+    if not carimbo:
+        return None
+    agora = agora or tempo.agora()
+    try:
+        quando = datetime.strptime(
+            str(carimbo)[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None
+    return max(0, (agora - quando).days)
+
+
+def validacao(trial_days: int = 14, excluir_telefones: Optional[list] = None,
+              ref: Optional[datetime] = None) -> dict:
+    """As três perguntas que decidem se isto vira negócio.
+
+    NÃO é quantas mensagens o bot mandou — esse número sobe sozinho e não
+    prova nada. As perguntas são:
+
+      1. ATIVAÇÃO — a pessoa registra sozinha? (>= 3 itens criados)
+      2. "AHA"    — o bot avisou e ela deu baixa? (a única métrica que prova
+                    que o produto fez alguma coisa por alguém)
+      3. RETENÇÃO — ela volta? (falou nos últimos 7 dias)
+
+    A pergunta 2 depende de `items.data_conclusao` (M2.8) e compara com
+    `dispatches.sent_at`. As duas colunas gravam no MESMO formato, com
+    espaço: comparar 'T' com ' ' daria a resposta errada silenciosamente.
+
+    Devolve também a lista de pessoas COM NOME, porque com 11 usuários a
+    ação que o painel precisa provocar é "ligar pra fulano", não "melhorar
+    a métrica".
+    """
+    agora = ref or tempo.agora()
+    fora = {re.sub(r"\D", "", t) for t in (excluir_telefones or []) if t}
+    pessoas: list[dict] = []
+    with get_conn() as conn:
+        linhas = conn.execute(
+            """SELECT u.id, u.nome, u.telefone, u.status, u.data_criacao,
+                      u.ultima_interacao,
+                      (SELECT COUNT(*) FROM items i
+                        WHERE i.user_id=u.id) AS itens,
+                      (SELECT COUNT(*) FROM items i
+                        WHERE i.user_id=u.id
+                          AND i.status='concluido') AS baixas,
+                      (SELECT COUNT(DISTINCT i.id) FROM items i
+                         JOIN dispatches d ON d.item_id=i.id
+                        WHERE i.user_id=u.id
+                          AND i.status='concluido'
+                          AND i.data_conclusao IS NOT NULL
+                          AND d.sent_at <= i.data_conclusao)
+                          AS baixas_apos_lembrete
+                 FROM users u ORDER BY u.id""").fetchall()
+
+    for r in linhas:
+        if re.sub(r"\D", "", r["telefone"] or "") in fora:
+            continue
+        visto = _dias_desde(r["ultima_interacao"], agora)
+        casa = _dias_desde(r["data_criacao"], agora)
+        pessoas.append({
+            "id": r["id"],
+            "nome": (r["nome"] or "?").split()[0],
+            "telefone": r["telefone"],
+            "status": r["status"] or "trial",
+            "dias_de_casa": casa,
+            "visto_ha": visto,
+            "itens": r["itens"] or 0,
+            "baixas": r["baixas"] or 0,
+            "baixas_apos_lembrete": r["baixas_apos_lembrete"] or 0,
+            "ativado": (r["itens"] or 0) >= VALIDACAO_ITENS_PARA_ATIVAR,
+            "salvo": (r["baixas_apos_lembrete"] or 0) > 0,
+            # "sumido" só vale pra quem teve tempo de sumir: alguém que
+            # entrou ontem e não falou hoje não é churn, é segunda-feira.
+            "sumido": (visto is not None
+                       and visto > VALIDACAO_SUMIDO_DIAS
+                       and (casa or 0) > VALIDACAO_SUMIDO_DIAS),
+            "retido": visto is not None and visto <= VALIDACAO_RETIDO_DIAS,
+        })
+
+    base = len(pessoas)
+    ativados = sum(1 for p in pessoas if p["ativado"])
+    salvos = sum(1 for p in pessoas if p["salvo"])
+    retidos = sum(1 for p in pessoas if p["retido"])
+    pagantes = sum(1 for p in pessoas if p["status"] == "ativo")
+
+    # O VEREDITO DIZ O QUE FAZER, NÃO SÓ COMO ESTÁ.
+    #
+    # Ordem proposital: o gargalo mais a montante manda. Não adianta falar de
+    # conversão com ninguém ativado — o problema seria outro, e a ação
+    # sugerida ("mande o link") desperdiçaria a semana.
+    if not base:
+        veredito = "Sem base pra medir ainda."
+    elif ativados == 0:
+        veredito = ("Ninguém registrou 3 itens. O gargalo é o CADASTRO, não "
+                    "o lembrete: descubra por que não usam antes de "
+                    "construir mais.")
+    elif salvos == 0:
+        veredito = ("Registram, mas o bot ainda não salvou ninguém. Confira "
+                    "se os lembretes estão saindo antes de vender.")
+    elif retidos < max(1, base // 2):
+        veredito = (f"{salvos} de {base} foram salvos pelo bot, mas só "
+                    f"{retidos} voltaram essa semana. É retenção, não "
+                    f"aquisição, que trava.")
+    elif pagantes == 0:
+        veredito = (f"Produto funciona ({salvos} salvos, {retidos} ativos) e "
+                    f"ninguém paga. Agora o gargalo é PEDIR.")
+    else:
+        veredito = (f"{pagantes} pagante(s), {salvos} salvos. Hora de "
+                    f"prospectar fora dos conhecidos.")
+
+    return {
+        "base": base,
+        "ativados": ativados,
+        "salvos": salvos,
+        "retidos": retidos,
+        "pagantes": pagantes,
+        "pessoas": pessoas,
+        "veredito": veredito,
+    }
 
 
 def financeiro(trial_days: int = 14) -> dict:
