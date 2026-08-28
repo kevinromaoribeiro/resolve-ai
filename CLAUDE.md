@@ -173,8 +173,17 @@ NAO fixa a categoria; tem que marcar o radio "Padrao" embaixo. E clicar
 Depois de aprovados, acrescentar os nomes em `TEMPLATES_APROVADOS`.
 
 ### Passo 5 — devolver os 14 dias
-O Kevin manda `resetar trial de todos` do numero dele. **Frase exata** —
-"me lembra de resetar o trial" nao dispara.
+O Kevin manda **`liberar 14 dias para todos`** do numero dele.
+
+A frase NAO comeca com "resetar" de proposito. Qualquer mensagem iniciada em
+reset/resetar/zerar e capturada pelo MODO TESTE (`_MASTER_RESET_RE`), que
+apaga o cadastro do dono — e em 28/08/2026 isso aconteceu de verdade: ele
+mandou o comando antigo, o bot respondeu "Modo teste: seus dados foram
+zerados", apagou os 6 itens dele e nao tocou em nenhum cliente. A resposta
+parecia sucesso; so o painel mostrou que nada tinha sido resetado.
+
+O comando antigo continua reconhecido, mas so pra responder ensinando a
+frase nova — nao executa nada.
 
 ### Passo 6 — zerar o Davi
 Pedido de 28/08: ele travou e nao conseguia mais mandar mensagem. No

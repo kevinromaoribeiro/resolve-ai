@@ -8,3 +8,7 @@ __pycache__/
 *.db
 .env
 .pytest_cache/
+
+# arquivos de inspecao de producao (nao versionar)
+painel_tmp.html
+pulso_tmp.json
