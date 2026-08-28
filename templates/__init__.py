@@ -328,13 +328,60 @@ COBRANCA_LINK = Template(
     botoes=["Já paguei", "Assinar"],
 )
 
+REATIVAR_BOAS_VINDAS = Template(
+    # SEM o prefixo `resolveai_`: este template foi criado direto no Business
+    # Manager pelo Kevin em 05/08/2026, e o nome no catálogo TEM que ser o
+    # mesmo aprovado na Meta — é ele que viaja na chamada. Um alias bonito
+    # aqui faria todo envio falhar com "template não existe".
+    nome="reativar_boas_vindas",
+    rotulo="Pede desculpa pelo apagão e ensina a usar (14 dias valendo)",
+    # MARKETING, e corretamente: existe pra trazer alguém de volta. Não tenta
+    # ser utilidade — e foi por isso que passou de primeira.
+    categoria="MARKETING",
+    idioma="pt_BR",
+    # CORPO EXATO do aprovado, inclusive sem acento em "Voce"/"gratis". O
+    # corpo aqui é documentação e base de teste; quem entrega o texto é a
+    # Meta. Divergir daria a falsa impressão de que dá pra editar a mensagem
+    # sem passar por nova aprovação.
+    corpo=("Oi, {{1}}! Aqui e o Resolve AI. 👋\n\n"
+           "Voce se cadastrou pra testar e a gente falhou: nosso sistema "
+           "ficou fora do ar e voce nao recebeu resposta. Foi erro nosso, e "
+           "pedimos desculpa.\n\n"
+           "Ja esta tudo funcionando, num numero novo e oficial. E seus 14 "
+           "dias gratis estao intactos, valendo a partir de agora.\n\n"
+           "Pra comecar, me manda uma coisa que voce nao pode esquecer:\n\n"
+           "\"luz 187 vence dia 20\"\n"
+           "\"dentista dia 15 as 14h\"\n\n"
+           "Eu te aviso antes, sozinho, aqui no Zap. E se nao quiser mais, e "
+           "so responder parar que eu nao te incomodo de novo."),
+    variaveis=["primeiro_nome"],
+    exemplo=["Leonardo"],
+    justificativa=(
+        "Retomada de contato com usuários que se cadastraram no assistente e "
+        "ficaram sem resposta por uma falha de infraestrutura nossa. A "
+        "mensagem reconhece a falha, informa que o período de teste que eles "
+        "contrataram segue válido, e oferece opt-out explícito já na "
+        "primeira interação."),
+    # ESTE BOTÃO PRECISOU DE TRATAMENTO NO CÓDIGO. "Quero comecar" não era
+    # comando nenhum: o clique cairia no LLM e podia virar "não entendi" — no
+    # primeiro contato depois de semanas sumido, que é o pior momento
+    # possível pra parecer quebrado.
+    botoes=["Quero comecar"],
+)
+
 _reg(TRIAL_ESTENDIDO)
 _reg(COBRANCA_LINK)
+_reg(REATIVAR_BOAS_VINDAS)
 
 KIND_TEMPLATE = {
     "hora": "resolveai_lembrete_hora",
     "trial-estendido": "resolveai_trial_estendido",
     "cobranca-link": "resolveai_cobranca_link",
+    # Reativacao pos-apagao. NAO tem checagem no scheduler de proposito: quem
+    # decide reabrir conversa com quem esfriou e o dono, no botao de lote do
+    # painel. Automatizar isso seria o bot decidindo sozinho reabrir janela
+    # com a base inteira — o caminho mais curto pra terceira restricao.
+    "reativacao": "reativar_boas_vindas",
     "vencido": "resolveai_item_vencido",
     "resumo": "resolveai_resumo_do_dia",
     "anti-churn": "resolveai_reengajamento_pendentes",

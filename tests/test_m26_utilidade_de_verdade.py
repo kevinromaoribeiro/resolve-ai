@@ -172,6 +172,8 @@ VEREDITO_DA_META = {
     # so gastaria uma rodada de recusa, que foi o erro cometido duas vezes.
     "resolveai_trial_estendido": "nao_submetido",
     "resolveai_cobranca_link": "nao_submetido",
+    # APROVADO de verdade — verificado no Business Manager em 28/08/2026.
+    "reativar_boas_vindas": "aprovado",
 }
 
 
@@ -353,6 +355,12 @@ MARKETING_AUTORIZADO = {
     # isso utilidade, e tentar so gastaria uma rodada de recusa. So sai por
     # acao manual do dono, pra quem pediu o link.
     "resolveai_cobranca_link",
+    # Reativacao pos-apagao, criada pelo Kevin no Business Manager em
+    # 05/08/2026 e ja APROVADA. Pede desculpa, diz que os 14 dias estao
+    # valendo e ensina a usar com dois exemplos. E marketing pela regua da
+    # Meta (existe pra trazer alguem de volta) — e passou de primeira
+    # justamente por nao tentar se disfarcar de utilidade.
+    "reativar_boas_vindas",
 }
 
 

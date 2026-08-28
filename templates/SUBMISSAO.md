@@ -271,3 +271,41 @@ Se já pagou, me avisa que eu libero na hora. Se preferir, posso te mandar o lin
 > Acompanhamento de uma assinatura que o próprio usuário solicitou. Ele pediu o link de pagamento no assistente e a cobrança ainda não foi confirmada. A mensagem só é enviada para quem pediu o link, uma vez por ciclo de cobrança, e sempre por ação manual do administrador.
 
 ---
+
+## `reativar_boas_vindas`
+
+- **Nome:** `reativar_boas_vindas`
+- **O que faz:** Pede desculpa pelo apagão e ensina a usar (14 dias valendo)
+- **Categoria:** MARKETING
+- **Idioma:** pt_BR
+
+**Botões — tipo `Resposta rápida`, um por linha:**
+
+  - `Quero comecar`
+
+**Corpo:**
+
+```
+Oi, {{1}}! Aqui e o Resolve AI. 👋
+
+Voce se cadastrou pra testar e a gente falhou: nosso sistema ficou fora do ar e voce nao recebeu resposta. Foi erro nosso, e pedimos desculpa.
+
+Ja esta tudo funcionando, num numero novo e oficial. E seus 14 dias gratis estao intactos, valendo a partir de agora.
+
+Pra comecar, me manda uma coisa que voce nao pode esquecer:
+
+"luz 187 vence dia 20"
+"dentista dia 15 as 14h"
+
+Eu te aviso antes, sozinho, aqui no Zap. E se nao quiser mais, e so responder parar que eu nao te incomodo de novo.
+```
+
+**Variáveis (exemplo para a submissão):**
+
+  - `{{1}}` -> `Leonardo`
+
+**Justificativa (cole no campo de descrição, se pedido):**
+
+> Retomada de contato com usuários que se cadastraram no assistente e ficaram sem resposta por uma falha de infraestrutura nossa. A mensagem reconhece a falha, informa que o período de teste que eles contrataram segue válido, e oferece opt-out explícito já na primeira interação.
+
+---

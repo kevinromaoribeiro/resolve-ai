@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v24.8-m31-reset-nao-sequestrado-2026-08-28"
+BUILD = "v24.9-m32-reativacao-2026-08-28"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -714,6 +714,20 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 f"{'Eu vinha te chamando de ' + anterior.split()[0] + ' — foi mal. ' if anterior and anterior.split()[0].lower() != novo.split()[0].lower() else ''}"
                 f"Anotado pra sempre. ✅")
 
+    # --- "Quero começar": o botão do template de reativação (M3.2) ---------
+    #
+    # A pessoa clicou depois de semanas sem falar com o bot. A resposta tem
+    # que ENSINAR com exemplo concreto, não dizer "manda aí" — o template já
+    # disse isso, e repetir sem exemplo é onde ela desiste.
+    if _COMECAR_RE.match(text):
+        return (f"Boa, {first_name}! 🎯\n\n"
+                f"Me manda do jeito que você falaria, tudo numa linha só:\n\n"
+                f"• _luz 187 vence dia 20_\n"
+                f"• _dentista dia 15 às 14h_\n"
+                f"• _IPVA em março_\n\n"
+                f"Eu guardo e te aviso *antes* de vencer. Pode mandar áudio "
+                f"também, se for mais fácil.")
+
     # --- admin: reset de trial da base inteira (M2.5) -----------------------
     #
     # PORTA ESTREITA, e nao por preciosismo: este comando escreve em TODA a
@@ -1208,9 +1222,20 @@ def entende_comando(texto: str) -> bool:
     return bool(
         _BAIXA_RE.match(t)
         or _ADIAR_RE.match(t)
+        or _COMECAR_RE.match(t)
         or baixo in LISTA_COMANDOS
         or baixo in COMANDOS_ASSINATURA
         or baixo in _COMANDOS_DO_BOT)
+
+
+# "QUERO COMECAR" — o botão do template de reativação (M3.2).
+#
+# Aceita com e sem acento porque o título do botão na Meta está sem ("Quero
+# comecar"), mas quem digita escreve com. Os dois têm que cair no mesmo
+# lugar: é a primeira coisa que a pessoa faz depois de semanas sumida.
+_COMECAR_RE = re.compile(
+    r"^\s*(quero\s+come[çc]ar|vamos\s+come[çc]ar|come[çc]ar|bora)"
+    r"\s*[.!]?\s*$", re.IGNORECASE)
 
 
 # OS BOTÕES DE CADA AVISO (M3.0).
