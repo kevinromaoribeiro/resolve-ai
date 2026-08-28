@@ -133,52 +133,66 @@ banimento, e sem receita não dá pra reconstruir base em número novo.
 
 ---
 
-## 2b. RETOMADA — o que fazer quando a VPS voltar
+## 2b. RETOMADA — o roteiro do dia em que a VPS voltar
 
-A VPS da KingHost saiu do ar em **25/08/2026** por fatura não paga. O Kevin
-resolve **a partir de 28/08**. Enquanto isso o bot está mudo para os 11.
+A VPS da KingHost saiu do ar em **25/08/2026** por fatura nao paga. O bot
+esta mudo para os 11 desde entao. **Nada aqui e trabalho de codigo** — as
+regras, prazos e freios ja estao parametrizados e testados (1246 testes).
+O que falta e ambiente e cliques, nesta ordem.
 
-**Nada disso é trabalho de código.** As regras, prazos e freios já estão
-parametrizados e testados. O que falta é ambiente e cliques, nesta ordem:
+### Passo 1 — servidor de pe
+Pagar a KingHost e confirmar que `http://177.153.58.163:3000` responde.
+O EasyPanel roda em cima dela e cai junto.
 
-1. **Pagar a VPS** (KingHost) e confirmar que `http://177.153.58.163:3000`
-   volta a responder. O EasyPanel roda em cima dela e cai junto.
-2. **Deploy no EasyPanel** → `resolveai / compose / bot`. Confirmar no
-   `/health` que o BUILD é o do repo, não o do container velho.
-3. **Conferir os templates** no WhatsApp Manager. Setar no EasyPanel
-   **só os que estiverem Ativos** e dar redeploy:
-   ```
-   TEMPLATES_APROVADOS=resolveai_lembrete_hora,resolveai_item_vencido,resolveai_resumo_do_dia,resolveai_conta_a_vencer,resolveai_reengajamento_pendentes,resolveai_fim_de_trial_aviso
-   ```
-   Com a variável vazia, fora da janela de 24h **nada sai** — e isso é de
-   propósito, não bug. A recusa fica no log com o motivo.
-4. **Devolver os 14 dias:** o Kevin manda `resetar trial de todos` do
-   número dele. Frase exata; "me lembra de resetar o trial" não dispara.
+### Passo 2 — deploy
+EasyPanel -> `resolveai / compose / bot` -> Deploy.
+Conferir no `/health` que o BUILD e o do repo, nao o do container velho.
 
-**O que observar nas primeiras horas:** conta que sumiu da lista sem ninguém
-ter pedido, ou um "qual deles eu dou baixa?" respondendo mensagem que não
-era baixa. Rollback: `git revert <hash>`.
+### Passo 3 — variaveis de ambiente (ANTES de acordar o motor)
+```
+TEMPLATES_APROVADOS=resolveai_lembrete_hora,resolveai_item_vencido,resolveai_resumo_do_dia,resolveai_conta_a_vencer,resolveai_reengajamento_pendentes,resolveai_fim_de_trial_aviso
+PAINEL_TOKEN=<um segredo qualquer, sem ele o painel fica FECHADO>
+```
+So os que estiverem **Ativos** no WhatsApp Manager. Com a variavel vazia,
+fora da janela de 24h **nada sai** — de proposito, e a recusa fica no log.
 
-**Cuidado com a volta:** o bot fica dias fora e volta com vencimento
-acumulado. Os freios existem (5 por ciclo, 6 por pessoa/dia), mas esse
-cenário nunca foi testado de ponta a ponta — vale simular antes, adiantando
-o relógio e lendo o que cada um dos 11 receberia no primeiro ciclo.
+`PAYMENT_LINK` e `PAYMENT_LINK_ANUAL` ja estao no codigo (mpago.la), nao
+precisam de variavel. So sobrescreva se trocar de link.
 
-### Estado dos templates na Meta (27/08/2026)
+### Passo 4 — os dois templates novos (M3.0)
+`resolveai_trial_estendido` e `resolveai_cobranca_link` ainda **nao foram
+submetidos**. Corpo, categoria, exemplos e BOTOES estao em
+`templates/SUBMISSAO.md`. Os botoes vao na secao "Botoes -> Resposta
+rapida", um titulo por linha — sem eles o template sai sem botao e nao ha
+como acrescentar depois.
 
-| Template | Categoria | Status |
-|---|---|---|
-| `resolveai_lembrete_hora` | Utilidade | **Ativo** |
-| `resolveai_item_vencido` | Utilidade | **Ativo** |
-| `resolveai_resumo_do_dia` | Utilidade | **Ativo** |
-| `resolveai_conta_a_vencer` | Utilidade | **Ativo** |
-| `resolveai_reengajamento_pendentes` | Utilidade | em análise |
-| `resolveai_fim_de_trial_aviso` | **Marketing** | em análise |
+Armadilha da interface, ja custou ~15 chamadas: clicar na aba "Utilidade"
+NAO fixa a categoria; tem que marcar o radio "Padrao" embaixo. E clicar
+"Avancar" por coordenada, nao por ref, senao a categoria se perde.
 
-A régua completa de quando cada um dispara está no artefato "Régua de
-disparos" e, com autoridade, no código (`scheduler.py`).
+Depois de aprovados, acrescentar os nomes em `TEMPLATES_APROVADOS`.
 
----
+### Passo 5 — devolver os 14 dias
+O Kevin manda `resetar trial de todos` do numero dele. **Frase exata** —
+"me lembra de resetar o trial" nao dispara.
+
+### Passo 6 — zerar o Davi
+Pedido de 28/08: ele travou e nao conseguia mais mandar mensagem. No
+`/dash?k=TOKEN`, achar o Davi e clicar **zerar** (pede digitar o nome).
+Depois o Kevin manda a landing page pra ele voltar como usuario novo.
+
+### O que observar nas primeiras horas
+- Conta que sumiu da lista sem ninguem ter pedido.
+- "Qual deles eu dou baixa?" respondendo mensagem que nao era baixa.
+- Rajada na volta: **ja simulado** em `tests/test_zz_apagao.py` — 6
+  mensagens pra 6 pessoas, uma cada. Se sair diferente disso, e defeito.
+- Rollback: `git revert <hash>`.
+
+### O que NAO fazer
+- Nao mandar cobranca de mensalidade pelo motor. O bot nao sabe se o cartao
+  passou; quem aprova pagamento e o dono, no painel, e cobrar quem ja pagou
+  (ou quem pagou o anual) e o jeito mais rapido de perder um dos 11.
+- Nao adicionar template a `TEMPLATES_APROVADOS` sem ver "Ativo" na Meta.
 
 ## 3. As 10 regras inegociáveis
 
