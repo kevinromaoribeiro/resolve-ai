@@ -171,7 +171,15 @@ def init_db() -> None:
                          ("trial_base", "TEXT"),
                          # M2.5 rodada 2: o final da placa. Sem ele, o
                          # "Anotei o final N da sua placa" era so texto.
-                         ("placa_final", "INTEGER")]:
+                         ("placa_final", "INTEGER"),
+                         # M2.9 — assinatura aprovada NA MÃO pelo dono.
+                         # `plano`: 'mensal' | 'anual'. `pago_em`: o dia em
+                         # que o Kevin conferiu no Mercado Pago e aprovou —
+                         # é ele que inicia o ciclo, não a data do cadastro
+                         # nem a do pedido. O bot não tem como saber se o
+                         # cartão passou, então quem sabe carimba.
+                         ("plano", "TEXT"),
+                         ("pago_em", "TEXT")]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
         # items: coluna de horário-alvo (v6.1)
@@ -332,8 +340,21 @@ def update_user_fields(user_id: int, **fields) -> None:
     allowed = {"nome", "idade", "profissao", "interesses", "carro_modelo",
                "carro_km", "pet_info", "dia_resumo", "status",
                "onboarding_step", "trial_nudges_sent", "lgpd_aceite_em",
-               "trial_base", "placa_final"}
+               "trial_base", "placa_final",
+               # M2.9 — assinatura aprovada na mão pelo dono.
+               "plano", "pago_em"}
     cols = {k: v for k, v in fields.items() if k in allowed}
+    # DESCARTE SILENCIOSO ERA UMA ARMADILHA. Coluna nova no banco e esquecida
+    # aqui vira UPDATE que não acontece, sem erro e sem log: o chamador acha
+    # que gravou. Aconteceu com `plano`/`pago_em`, e o sintoma foi um teste
+    # de OUTRO arquivo falhando por estado que ninguém conseguiu limpar.
+    ignorados = set(fields) - allowed
+    if ignorados:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[db] update_user_fields ignorou campo(s) fora da whitelist: %s "
+            "— se a coluna existe, acrescente em `allowed`",
+            ", ".join(sorted(ignorados)))
     if not cols:
         return
     sets = ", ".join(f"{k}=?" for k in cols)
@@ -1728,6 +1749,101 @@ _FIXOS = [
 ]
 
 
+PLANOS = ("mensal", "anual")
+# Quantos dias depois do vencimento a assinatura vira "atrasada" no painel.
+# Zero: o Mercado Pago cobra no dia, então no dia seguinte já vale conferir.
+ASSINATURA_TOLERANCIA_DIAS = 0
+
+
+def _soma_meses(d: date, meses: int) -> date:
+    """Mesmo dia do mês N meses depois; em mês curto, o último dia.
+
+    31/01 + 1 mês não existe. Cair em 28/02 é o que o Mercado Pago faz e o
+    que a pessoa espera; estourar exceção aqui derrubaria o painel inteiro
+    num dia 31.
+    """
+    ano = d.year + (d.month - 1 + meses) // 12
+    mes = (d.month - 1 + meses) % 12 + 1
+    if mes == 12:
+        ultimo = 31
+    else:
+        ultimo = (date(ano + (mes == 12), mes % 12 + 1, 1)
+                  - timedelta(days=1)).day
+    return date(ano, mes, min(d.day, ultimo))
+
+
+def aprovar_pagamento(user_id: int, plano: str, em: Optional[str] = None,
+                      por: str = "") -> bool:
+    """O dono confirmou no Mercado Pago: vira ativo e o ciclo começa HOJE.
+
+    `em` existe pra lançar retroativo (ele conferiu na segunda um pagamento
+    de sexta), mas o padrão é o dia da aprovação — foi o que o Kevin pediu:
+    "no dia que eu colocar é o dia que começa a contar".
+    """
+    if plano not in PLANOS:
+        raise ValueError(f"plano inválido: {plano!r} (use {PLANOS})")
+    quando = em or tempo.hoje().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE users SET status='ativo', plano=?, pago_em=? WHERE id=?",
+            (plano, quando, user_id))
+        ok = cur.rowcount > 0
+    if ok:
+        registrar_acao_admin("aprovar_pagamento", alvo=user_id, por=por,
+                             detalhe=f"plano={plano} inicio={quando}")
+    return ok
+
+
+def assinatura(user: dict, hoje: Optional[date] = None) -> dict:
+    """Onde a assinatura desta pessoa está no ciclo.
+
+    NÃO dispara nada. É leitura pro painel — a decisão de cobrar de novo é
+    do dono, num botão, porque só ele viu o extrato do Mercado Pago.
+    """
+    hoje = hoje or tempo.hoje()
+    plano = (user or {}).get("plano")
+    pago_em = (user or {}).get("pago_em")
+    vazio = {"plano": None, "pago_em": None, "vence_em": None,
+             "dias_para_vencer": None, "dias_atraso": 0, "atrasado": False}
+    if plano not in PLANOS or not pago_em:
+        return vazio
+    try:
+        inicio = date.fromisoformat(str(pago_em)[:10])
+    except (ValueError, TypeError):
+        return vazio
+    vence = (_soma_meses(inicio, 1) if plano == "mensal"
+             else _soma_meses(inicio, 12))
+    faltam = (vence - hoje).days
+    atraso = max(0, -faltam - ASSINATURA_TOLERANCIA_DIAS)
+    return {"plano": plano, "pago_em": str(pago_em)[:10],
+            "vence_em": vence.isoformat(), "dias_para_vencer": faltam,
+            "dias_atraso": atraso, "atrasado": atraso > 0}
+
+
+def aguardando_aprovacao(limite: int = 50) -> list[dict]:
+    """Quem pediu o link de pagamento e ainda não foi aprovado pelo dono.
+
+    A fila existe porque o pedido e a confirmação são eventos diferentes: o
+    bot manda o link na hora, mas quem diz se o dinheiro entrou é o Kevin,
+    olhando o Mercado Pago. Sem esta lista o pedido se perderia no meio das
+    conversas.
+    """
+    hoje = tempo.agora()
+    with get_conn() as conn:
+        linhas = conn.execute(
+            """SELECT u.id, u.nome, u.telefone, u.status,
+                      MAX(d.sent_at) AS pediu_em
+                 FROM users u JOIN dispatches d ON d.user_id=u.id
+                WHERE d.kind='link-pagamento' AND u.status <> 'ativo'
+                GROUP BY u.id ORDER BY pediu_em DESC LIMIT ?""",
+            (limite,)).fetchall()
+    return [{"id": r["id"], "nome": (r["nome"] or "?").split()[0],
+             "telefone": r["telefone"], "status": r["status"],
+             "pediu_em": r["pediu_em"],
+             "pediu_ha_dias": _dias_desde(r["pediu_em"], hoje)}
+            for r in linhas]
+
+
 VALIDACAO_ITENS_PARA_ATIVAR = 3  # cadastrou de verdade, não só deu "oi"
 VALIDACAO_SUMIDO_DIAS = 10       # sem falar com o bot há mais que isso
 VALIDACAO_RETIDO_DIAS = 7
@@ -2051,6 +2167,10 @@ def admin_list_users() -> list[dict]:
         bruto = dict(r)
         d = {k: bruto.get(k) for k in campos}
         d["dias_trial_restantes"] = trial_days_left(bruto)
+        # M2.9 — onde a assinatura está no ciclo. Vai junto do usuário porque
+        # o painel decide por PESSOA ("esse aqui venceu, vou conferir no
+        # Mercado Pago"), não por agregado.
+        d["assinatura"] = assinatura(bruto)
         out.append(d)
     return out
 

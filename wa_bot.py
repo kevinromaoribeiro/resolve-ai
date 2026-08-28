@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v24.3-m28-painel-de-validacao-2026-08-28"
+BUILD = "v24.4-m29-controle-de-assinatura-2026-08-28"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -541,6 +541,18 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         anual = (f"\n📅 Anual — {_brl(PRECO_ANUAL)} "
                  f"({_brl(PRECO_ANUAL / 12)}/mês): {PAYMENT_LINK_ANUAL}"
                  if PAYMENT_LINK_ANUAL else "")
+        # A FILA DE APROVAÇÃO COMEÇA AQUI (M2.9).
+        #
+        # Pedir o link e pagar são eventos diferentes, e o bot não tem como
+        # saber se o cartão passou — quem sabe é o Kevin, olhando o Mercado
+        # Pago. Sem este registro o pedido se perde no meio das conversas e
+        # o cliente fica esperando uma ativação que ninguém lembrou de dar.
+        try:
+            db.log_dispatch(user["id"], "link-pagamento")
+        except Exception:
+            log.warning("[assinatura] pedido de link do user %s NAO entrou na "
+                        "fila de aprovacao — ative pelo telefone",
+                        user.get("id"), exc_info=True)
         return (f"Bora, {first_name}! 🚀\n\n"
                 f"💳 Mensal — {_brl(PRECO_MENSAL)}: {PAYMENT_LINK}{anual}\n\n"
                 f"É assinatura: renova sozinho, você não precisa pagar na mão "
@@ -3981,6 +3993,71 @@ def maybe_admin_report() -> bool:
 DASH_URL_BASE = os.environ.get("DASH_URL_BASE", "").rstrip("/")
 
 
+def _enviar_template_manual(user_id: int, nome_template: str):
+    """Manda um template aprovado pra UMA pessoa, por ordem do dono (M2.9).
+
+    Devolve (ok, motivo). Três travas, todas fail-closed:
+
+    1. O template tem que estar no catálogo do repo — nome inventado não vira
+       chamada à Meta.
+    2. As variáveis são montadas dos dados REAIS da pessoa. Template com
+       variável vazia é recusado pela Meta e queima reputação do número.
+    3. O envio passa por `canal.falar` como qualquer proativa. O painel não
+       ganha porta própria: fora da janela, só template aprovado.
+
+    Fica no log de admin porque é o dono falando com um cliente específico —
+    e daqui a um mês ninguém lembra quem recebeu o quê.
+    """
+    import templates as _cat
+    u = db.get_user(user_id)
+    if not u:
+        return False, "usuário não encontrado"
+    if nome_template not in _cat.CATALOGO:
+        return False, f"template {nome_template!r} não existe no catálogo"
+
+    primeiro = (u.get("nome") or "?").split()[0] or "Oi"
+    pendentes = db.list_items(user_id, status="pendente") or []
+    variaveis = _cat.CATALOGO[nome_template].variaveis
+
+    valores = []
+    for var in variaveis:
+        if var == "primeiro_nome":
+            valores.append(primeiro)
+        elif var == "dias":
+            valores.append(str(max(0, db.trial_days_left(u))))
+        elif var == "quantidade_itens":
+            valores.append(str(len(pendentes)))
+        elif var in ("descricao", "item"):
+            if not pendentes:
+                return False, ("essa pessoa não tem item pendente — o "
+                               "template ficaria com variável vazia")
+            valores.append((pendentes[0].get("descricao") or "").strip()
+                           or "seu compromisso")
+        elif var == "desde":
+            alvo = pendentes[0] if pendentes else {}
+            valores.append(_cat._dia_e_mes(alvo.get("data_criacao")))
+        elif var in ("hora", "quando"):
+            alvo = pendentes[0] if pendentes else {}
+            valores.append(alvo.get("hora_alvo")
+                           or _fmt_br(alvo.get("data_vencimento")) or "hoje")
+        else:
+            return False, f"não sei preencher a variável {var!r}"
+        if not str(valores[-1]).strip():
+            return False, f"variável {var!r} ficaria vazia"
+
+    res = wasender.falar(re.sub(r"\D", "", u["telefone"] or ""), "",
+                         user_id=user_id, template=nome_template,
+                         variaveis=valores)
+    try:
+        db.registrar_acao_admin("enviar_template", alvo=user_id, por="painel",
+                                detalhe=f"{nome_template} enviado={res.get('enviado')}")
+    except Exception:
+        log.warning("[painel] envio manual sem rastro no log", exc_info=True)
+    if not res.get("enviado"):
+        return False, res.get("motivo") or "não enviado"
+    return True, ""
+
+
 def _dados_do_painel() -> dict:
     """M2.3 — os números do painel, num lugar só e testável.
 
@@ -4025,7 +4102,27 @@ def _dados_do_painel() -> dict:
         # e não é cliente. Deixá-lo entrar inflaria justamente os dois
         # numeradores que o Kevin usa pra decidir se sai prospectar.
         "validacao": db.validacao(TRIAL_DAYS, excluir_telefones=fora),
+        # M2.9 — quem pediu o link e ainda não foi aprovado pelo dono. Fica
+        # no topo do painel: é a única fila em que dinheiro está parado
+        # esperando alguém clicar.
+        "aprovacoes": db.aguardando_aprovacao(),
+        # Os templates que o dono pode disparar na mão, pelo nome exato. A
+        # tela não inventa nomes: escolhe desta lista.
+        "templates": sorted(_templates_manuais()),
     }
+
+
+def _templates_manuais() -> list:
+    """Templates do catálogo que o painel pode oferecer pra envio manual.
+
+    Só os que `_enviar_template_manual` sabe preencher. Oferecer um que ele
+    não sabe preencher seria um botão que só falha depois de clicado.
+    """
+    import templates as _cat
+    sabe = {"primeiro_nome", "dias", "quantidade_itens", "descricao", "item",
+            "desde", "hora", "quando"}
+    return [n for n, t in _cat.CATALOGO.items()
+            if set(t.variaveis or []) <= sabe]
 
 
 def _linha_risco(env: dict) -> str:
@@ -5169,6 +5266,20 @@ td{padding:6px 3px;text-align:right;border-top:1px solid #1c2740}
 .tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;
  background:#1f2c47;color:#a9bcd8}
 .err{color:#ef4444;font-weight:700}
+/* CONTROLES (M2.9). Alvo de toque de 34px: o painel é usado no celular, com
+   uma mão, e botão que erra o dedo aqui aprova o plano errado. */
+.b{display:inline-block;min-height:34px;padding:7px 11px;margin:2px 4px 2px 0;
+ border:1px solid #2b3a5c;background:#1a2540;color:#dbe6f7;border-radius:9px;
+ font-size:12px;font-weight:600;cursor:pointer}
+.b:active{transform:scale(.97)}
+.bok{border-color:#1d6b3f;background:#14301f;color:#7ee2a8}
+.berr{border-color:#6b1d1d;background:#301414;color:#f0a3a3}
+.sel{flex:1;min-height:34px;background:#1a2540;color:#dbe6f7;font-size:12px;
+ border:1px solid #2b3a5c;border-radius:9px;padding:6px}
+.filtros{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:11px}
+.fl{min-height:30px;padding:5px 10px;border-radius:99px;font-size:11px;
+ border:1px solid #2b3a5c;background:transparent;color:#8296b3;cursor:pointer}
+.fl.on{background:#1f2c47;color:#e6edf7;border-color:#3b82f6}
 footer{color:#54627a;font-size:11px;text-align:center;margin-top:16px}
 </style></head><body>
 <h1>Resolve AI</h1>
@@ -5398,16 +5509,114 @@ async function carrega(){
    h+=card('Quem mais usa (7d)', '<table>'+g.top.map(t=>
      `<tr><td>${t.nome}</td><td>${t.n} msgs</td></tr>`).join('')+'</table>');
  }
- // base
- const us=(d.usuarios||[]).slice(0,20).map(u=>`<tr><td>${u.nome}</td>
-   <td><span class="tag">${u.status||'trial'}</span></td>
-   <td>${u.n_pendentes}/${u.n_itens}</td>
-   <td>${u.dias_trial_restantes}d</td></tr>`).join('');
- h+=card('Base',`<table><tr><th>Nome</th><th>Status</th><th>Pend/Total</th>
-   <th>Trial</th></tr>${us||'<tr><td class="muted">ninguém ainda</td></tr>'}</table>`);
+ // ESPERANDO APROVACAO — a unica fila com dinheiro parado.
+ // Vem antes da base porque exige acao HOJE: a pessoa pediu o link, o Kevin
+ // confere no Mercado Pago e diz mensal ou anual. O bot nao adivinha isso.
+ const ap=d.aprovacoes||[];
+ if(ap.length){
+   h+=card('💰 Pediram o link — conferir no Mercado Pago',
+     ap.map(p=>`<div style="padding:9px 0;border-bottom:1px solid #1f2c47">
+       <div style="display:flex;justify-content:space-between;
+         align-items:center;margin-bottom:7px">
+         <b>${p.nome}</b><span class="muted" style="font-size:11px">
+         pediu ${p.pediu_ha_dias===0?'hoje':'há '+p.pediu_ha_dias+'d'}</span></div>
+       <button class="b bok" onclick="acao(${p.id},'aprovar',{plano:'mensal'})"
+         >✓ Pagou mensal</button>
+       <button class="b bok" onclick="acao(${p.id},'aprovar',{plano:'anual'})"
+         >✓ Pagou anual</button>
+       <button class="b" onclick="cobrar(${p.id})">↻ Cobrar de novo</button>
+     </div>`).join(''));
+ }
+ // BASE COM CONTROLE. Filtro por status + os botoes de admin em cada linha.
+ const F=window.__filtro||'todos';
+ const cont={todos:(d.usuarios||[]).length};
+ (d.usuarios||[]).forEach(u=>{const k=u.status||'trial';
+   cont[k]=(cont[k]||0)+1});
+ const abas=['todos','trial','ativo','bloqueado','cancelado'].map(k=>
+   `<button class="fl ${F===k?'on':''}" onclick="filtro('${k}')">${k}
+    <span class="muted">${cont[k]||0}</span></button>`).join('');
+ const TPL=d.templates||[];
+ const us=(d.usuarios||[]).filter(u=>F==='todos'||(u.status||'trial')===F)
+  .map(u=>{
+   const a=u.assinatura||{};
+   // A LINHA DO DINHEIRO: so quem tem plano mostra ciclo. Trial mostra dias
+   // restantes; atrasado grita, porque e o que manda conferir o extrato.
+   let ciclo='';
+   if(a.plano){
+     ciclo=a.atrasado
+      ? `<span class="err">⚠ ${a.plano} venceu há ${a.dias_atraso}d
+         (${a.vence_em})</span>`
+      : `<span class="muted">${a.plano} · renova ${a.vence_em}
+         (${a.dias_para_vencer}d)</span>`;
+   } else {
+     // "trial · 0d" parecia defeito. Trial que acabou é uma informação
+     // diferente de trial que está acabando, e é a que pede ação.
+     const dt=u.dias_trial_restantes;
+     ciclo=(dt<=0)
+       ? `<span class="err">trial acabou — não recebe mais avisos</span>`
+       : `<span class="muted">trial · ${dt}d restantes</span>`;
+   }
+   const opts=TPL.map(t=>`<option value="${t}">${t.replace('resolveai_','')}</option>`).join('');
+   return `<div style="padding:11px 0;border-bottom:1px solid #1f2c47">
+     <div style="display:flex;justify-content:space-between;align-items:center">
+       <b>${u.nome}</b>
+       <span class="tag">${u.status||'trial'}</span></div>
+     <div style="font-size:11px;margin:4px 0 8px">${ciclo}
+       <span class="muted">· ${u.n_pendentes}/${u.n_itens} itens</span></div>
+     <div>
+       <button class="b bok" onclick="acao(${u.id},'aprovar',{plano:'mensal'})">mensal</button>
+       <button class="b bok" onclick="acao(${u.id},'aprovar',{plano:'anual'})">anual</button>
+       <button class="b" onclick="dias(${u.id})">+dias</button>
+       ${(u.status==='bloqueado')
+         ? `<button class="b" onclick="acao(${u.id},'liberar')">desbloquear</button>`
+         : `<button class="b berr" onclick="acao(${u.id},'bloquear')">bloquear</button>`}
+     </div>
+     <div style="margin-top:7px;display:flex;gap:6px">
+       <select id="t${u.id}" class="sel">${opts}</select>
+       <button class="b" onclick="mandar(${u.id})">enviar</button>
+     </div></div>`;
+  }).join('');
+ h+=card('Clientes',
+   `<div class="filtros">${abas}</div>`+
+   (us||'<div class="muted">ninguém com esse status</div>'));
  $('#app').innerHTML=h;
  $('#rodape').textContent=d.build;
 }
+// ---- CONTROLE (M2.9) ----------------------------------------------------
+// Toda ação passa pelo mesmo POST autenticado. `recarrega` logo depois pra
+// tela nunca mostrar um estado que o servidor já mudou.
+function filtro(k){ window.__filtro=k; carrega(); }
+async function acao(uid,tipo,extra){
+  const body=Object.assign({user_id:uid,acao:tipo},extra||{});
+  // CONFIRMAÇÃO NO QUE MEXE EM DINHEIRO OU CORTA ACESSO. O dedo escorrega no
+  // celular, e "aprovar anual" errado trava o ciclo da pessoa por 12 meses.
+  const grave={aprovar:'Confirmar '+(extra&&extra.plano||'')+' pra este cliente?',
+               bloquear:'Bloquear este cliente?'};
+  if(grave[tipo] && !confirm(grave[tipo])) return;
+  try{
+    const r=await fetch('/painel/acao?k='+encodeURIComponent(K),
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify(body)});
+    const j=await r.json();
+    if(!j.ok){ alert('Não deu: '+(j.erro||'tente de novo')); }
+  }catch(e){ alert('Sem conexão com o servidor.'); }
+  carrega();
+}
+function dias(uid){
+  const d=prompt('Quantos dias a mais de teste?','7');
+  if(!d) return;
+  const n=parseInt(d,10);
+  if(!n||n<1||n>365){ alert('Informe um número de 1 a 365.'); return; }
+  acao(uid,'estender',{dias:n});
+}
+function mandar(uid){
+  const s=document.getElementById('t'+uid);
+  if(!s||!s.value) return;
+  if(!confirm('Enviar "'+s.value.replace('resolveai_','')+'" pra esta pessoa?'))
+    return;
+  acao(uid,'enviar_template',{template:s.value});
+}
+function cobrar(uid){ acao(uid,'reenviar_link',{}); }
 carrega(); setInterval(carrega,20000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()});
 </script></body></html>"""
@@ -5540,6 +5749,56 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
             ok = False
             if acao == "estender":
                 ok = db.admin_extend_trial(uid, int(body.get("dias", 7)))
+            elif acao == "aprovar":
+                # O DONO CONFERIU NO MERCADO PAGO E CONFIRMOU (M2.9).
+                # Plano inválido não vira "ativo sem plano": isso deixaria a
+                # pessoa pagante sem ciclo, e ela nunca apareceria como
+                # vencida — um cliente que some da cobrança pra sempre.
+                try:
+                    ok = db.aprovar_pagamento(
+                        uid, str(body.get("plano") or ""),
+                        em=body.get("em") or None, por="painel")
+                except ValueError as e:
+                    return JSONResponse({"ok": False, "erro": str(e)})
+            elif acao == "reenviar_link":
+                # REENVIO DO LINK, na mão, quando o dono viu que não pagou.
+                #
+                # É texto livre: só sai DENTRO da janela de 24h. Não existe
+                # template aprovado pra "você pediu o link e não pagou", e
+                # inventar um seria linguagem promocional em template UTILITY
+                # — o caminho mais curto pra terceira restrição do número. Se
+                # a janela estiver fechada, a recusa aparece na tela com o
+                # motivo, e o Kevin manda do WhatsApp dele.
+                _u = db.get_user(uid)
+                if not _u:
+                    return JSONResponse({"ok": False, "erro": "sem usuário"})
+                _res = wasender.falar(
+                    re.sub(r"\D", "", _u["telefone"] or ""),
+                    _handle_commands(_u, _u["telefone"], "assinar") or "",
+                    user_id=uid)
+                if not _res.get("enviado"):
+                    return JSONResponse({
+                        "ok": False,
+                        "erro": ("fora da janela de 24h — peça pra pessoa "
+                                 "mandar qualquer mensagem, ou cobre pelo seu "
+                                 "WhatsApp")
+                        if _res.get("motivo") == "fora_da_janela_sem_template"
+                        else (_res.get("motivo") or "não enviado")})
+                db.registrar_acao_admin("reenviar_link", alvo=uid,
+                                        por="painel")
+                ok = True
+            elif acao == "enviar_template":
+                # ENVIO MANUAL DE TEMPLATE, pela porta única de sempre.
+                #
+                # O painel não ganha caminho de envio próprio: passa por
+                # `canal.falar`, que exige template aprovado fora da janela.
+                # Sem isso o painel viraria o buraco por onde texto livre sai
+                # fora da janela — exatamente o que rendeu duas restrições
+                # neste número.
+                ok, motivo = _enviar_template_manual(
+                    uid, str(body.get("template") or ""))
+                if not ok:
+                    return JSONResponse({"ok": False, "erro": motivo})
             elif acao == "bloquear":
                 ok = db.admin_set_status(uid, "bloqueado")
             elif acao == "ativar":

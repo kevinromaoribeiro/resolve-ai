@@ -131,8 +131,14 @@ def usuario():
     # entre os arquivos. Um teste que troca o dia pra provar a regra deixava
     # todos os seguintes medindo o dia errado — e o sintoma era o motor
     # proativo "nao disparar", que parece defeito de producao.
+    # `plano`/`pago_em` DE VOLTA A NADA (M2.9): a linha de `users` sobrevive
+    # entre os arquivos, e um teste que aprova pagamento deixava o proximo
+    # comecando como assinante ativo — inclusive os que medem "quem NAO e
+    # pagante". E o quinto campo com esse mesmo sintoma; o padrao aqui e:
+    # tudo que uma acao administrativa escreve, esta fixture zera.
     db.update_user_fields(uid, onboarding_step=None, status="trial",
                           trial_base=None, placa_final=None,
+                          plano=None, pago_em=None,
                           dia_resumo="Segunda-feira",
                           lgpd_aceite_em=tempo.agora().isoformat())
     # `data_criacao` DE VOLTA PRA AGORA. A linha de `users` sobrevive entre
