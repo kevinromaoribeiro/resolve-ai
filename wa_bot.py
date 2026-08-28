@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v24.6-m30-aviso-de-trial-2026-08-28"
+BUILD = "v24.7-m30-reset-em-botao-2026-08-28"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -5696,6 +5696,15 @@ async function carrega(){
  const optTplLote=TPL.map(t=>
    `<option value="${t.nome}">${t.rotulo}${t.automatico?' · já automático':''}</option>`
  ).join('');
+ // RESET DE TRIAL EM BOTÃO. O comando por WhatsApp exige a frase exata
+ // ("resetar trial de todos") e falhou calado em 28/08 quando a frase saiu
+ // diferente. Botão não erra a digitação.
+ h+=card('Devolver 14 dias pra todo mundo',
+  `<div class="muted" style="font-size:11px;margin-bottom:9px">
+     Reinicia o teste de todos os clientes a partir de hoje. Não toca em
+     item, lembrete nem histórico, e você fica de fora.</div>
+   <button class="b" style="width:100%" onclick="resetarTrials()">
+     Resetar trial de todos</button>`);
  h+=card('Mandar pra uma lista',
   `<div class="muted" style="font-size:11px;margin-bottom:9px">
      Os marcados como <b>já automático</b> o motor manda sozinho na hora
@@ -5785,6 +5794,20 @@ function mandar(uid){
   acao(uid,'enviar_template',{template:s.value});
 }
 function cobrar(uid){ acao(uid,'reenviar_link',{}); }
+async function resetarTrials(){
+  if(!confirm('Devolver 14 dias de teste pra TODOS os clientes, contados de '
+    +'hoje?')) return;
+  try{
+    const r=await fetch('/painel/acao?k='+encodeURIComponent(K),
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({acao:'resetar_trials',confirmo:true})});
+    const j=await r.json();
+    alert(j.ok ? (j.tocados+' pessoa(s) voltaram a ter 14 dias.'
+                  +(j.tocados?'':' (ninguém pra resetar — já foi feito hoje)'))
+               : ('Não deu: '+(j.erro||'tente de novo')));
+  }catch(e){ alert('Sem conexão com o servidor.'); }
+  carrega();
+}
 // ZERAR É IRREVERSÍVEL: digitar o nome, e não só confirmar. Um "OK" no
 // celular é um toque; digitar o nome é uma decisão.
 function zerar(uid){
@@ -6020,6 +6043,26 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
             return _negado(request)
         try:
             body = await request.json()
+            # AÇÕES QUE VALEM PRA BASE INTEIRA vêm antes do `user_id`, que
+            # elas não têm. Sem isto o handler estourava no `int(None)` e
+            # devolvia o erro do Python como se fosse resposta de negócio.
+            if body.get("acao") == "resetar_trials":
+                # RESET DE TRIAL SEM DEPENDER DE DIGITAÇÃO.
+                #
+                # O comando por WhatsApp (`resetar trial de todos`) exige a
+                # frase exata e falhou em produção em 28/08 — a mensagem não
+                # casou o padrão e nada aconteceu, em silêncio. Um botão não
+                # tem como errar a frase.
+                if not body.get("confirmo"):
+                    return JSONResponse({
+                        "ok": False,
+                        "erro": "confirmação obrigatória pra resetar todos"})
+                _dono = re.sub(r"\D", "", ADMIN_PHONE or "")
+                _alvos = [u["id"] for u in db.list_users()
+                          if re.sub(r"\D", "", u.get("telefone") or "")
+                          != _dono]
+                _tocados = db.resetar_trial(_alvos, por="painel")
+                return JSONResponse({"ok": True, "tocados": len(_tocados)})
             uid = int(body.get("user_id"))
             acao = body.get("acao")
             ok = False

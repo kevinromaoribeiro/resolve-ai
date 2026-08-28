@@ -206,3 +206,63 @@ def test_todo_kind_proativo_sai_ou_e_excecao_declarada():
                 or kind in _cat.KINDS_SEM_TEMPLATE), (
             "kind %r nao tem template nem esta em KINDS_SEM_TEMPLATE: fora "
             "da janela ele desaparece sem log" % kind)
+
+
+# ---------------------------------------------------------------------------
+# reset de trial pelo painel
+# ---------------------------------------------------------------------------
+
+def test_painel_reseta_todos_os_trials(base_limpa, monkeypatch):
+    """O comando por WhatsApp exige a frase exata e falhou em producao
+    (28/08). O painel precisa de um caminho que nao dependa de digitacao.
+    """
+    from fastapi.testclient import TestClient
+    import db as _db
+    a = _pessoa("Ana", "5511900000021")
+    b = _pessoa("Bruno", "5511900000022")
+    dono = _pessoa("Kevin", "5511945230459")
+    for uid in (a, b, dono):
+        with _db.get_conn() as c:
+            c.execute("UPDATE users SET trial_base=? WHERE id=?",
+                      ((tempo.agora() - _dt.timedelta(days=40)
+                        ).strftime("%Y-%m-%d %H:%M:%S"), uid))
+    monkeypatch.setattr(wa_bot, "PAINEL_TOKEN", "tok")
+    monkeypatch.setattr(wa_bot, "ADMIN_PHONE", "5511945230459")
+    c = TestClient(wa_bot.app)
+    r = c.post("/painel/acao?k=tok",
+               json={"acao": "resetar_trials", "confirmo": True})
+    j = r.json()
+    assert j.get("ok"), j
+    assert j["tocados"] == 2, j
+    assert db.trial_days_left(db.get_user(a)) == 14
+    assert db.trial_days_left(db.get_user(b)) == 14
+    # O DONO FICA DE FORA: ele nao e cliente, e resetar o trial dele mexe
+    # nos numeros que ele usa pra decidir.
+    assert db.trial_days_left(db.get_user(dono)) == 0, "resetou o dono"
+
+
+def test_reset_pelo_painel_exige_confirmacao(base_limpa, monkeypatch):
+    from fastapi.testclient import TestClient
+    uid = _pessoa("Ana", "5511900000023")
+    monkeypatch.setattr(wa_bot, "PAINEL_TOKEN", "tok")
+    c = TestClient(wa_bot.app)
+    r = c.post("/painel/acao?k=tok", json={"acao": "resetar_trials"})
+    assert not r.json().get("ok"), r.text
+
+
+def test_reset_pelo_painel_e_idempotente_no_dia(base_limpa, monkeypatch):
+    """Clicar duas vezes nao da 28 dias."""
+    from fastapi.testclient import TestClient
+    import db as _db
+    uid = _pessoa("Ana", "5511900000024")
+    with _db.get_conn() as c:
+        c.execute("UPDATE users SET trial_base=? WHERE id=?",
+                  ((tempo.agora() - _dt.timedelta(days=40)
+                    ).strftime("%Y-%m-%d %H:%M:%S"), uid))
+    monkeypatch.setattr(wa_bot, "PAINEL_TOKEN", "tok")
+    c = TestClient(wa_bot.app)
+    corpo = {"acao": "resetar_trials", "confirmo": True}
+    c.post("/painel/acao?k=tok", json=corpo)
+    r2 = c.post("/painel/acao?k=tok", json=corpo)
+    assert db.trial_days_left(db.get_user(uid)) == 14, "deu dias em dobro"
+    assert r2.json()["tocados"] == 0, r2.text
