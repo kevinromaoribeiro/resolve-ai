@@ -207,17 +207,37 @@ def enviar(number: str, texto: str, botoes: list) -> bool:
 # ---------------------------------------------------------------------------
 # 3. PONTO DE ENTRADA UNICO — e isto que o wa_bot chama
 # ---------------------------------------------------------------------------
-def enviar_resposta(number: str, texto: str, send_text_fallback) -> bool:
+def enviar_resposta(number: str, texto: str, send_text_fallback,
+                    botoes: Optional[list] = None) -> bool:
     """Manda com botao se couber; senao manda texto puro.
 
     NUNCA deixa de enviar. Se o interativo falhar por qualquer motivo, cai
     pro texto — porque mensagem que nao chega e o pior defeito possivel
     deste produto, e ja aconteceu demais neste projeto.
+
+    `botoes` EXPLICITO GANHA DA INFERENCIA (auditoria M3.5, P1-8).
+    Quem monta a resposta as vezes JA SABE quais sao os botoes — a proposta
+    de documento devolve Confirmar/Ajustar/Esquece, a oferta de remarcar
+    devolve Confirmar/Outra data/Nao precisa. Antes isso era ignorado e a
+    pergunta saia como texto puro: a pessoa tinha que DIGITAR "confirmar",
+    que e exatamente o que o pedido do dono ("BOTOES pra facilitar a vida")
+    existe pra evitar. E `escolher` nao salvaria — essas frases sao novas e
+    nenhuma regra casa com elas.
     """
     import canal
 
     if getattr(canal, "OFICIAL", False):
-        botoes = escolher(texto)
+        if botoes:
+            botoes = list(botoes)[:MAX_BOTOES]
+            if len(texto or "") > MAX_CORPO:
+                # Mesmo teto do caminho inferido: interativo com corpo
+                # gigante a Meta engole sem avisar, e a pessoa fica sem
+                # resposta nenhuma. Texto puro chega.
+                log.info("[botoes] texto com %d chars — acima do limite, "
+                         "sem botao", len(texto))
+                botoes = None
+        else:
+            botoes = escolher(texto)
         if botoes:
             if enviar(number, texto, botoes):
                 return True

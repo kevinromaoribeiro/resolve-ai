@@ -212,6 +212,19 @@ def init_db() -> None:
             conn.execute("ALTER TABLE items ADD COLUMN codigo_pagamento TEXT")
         if "codigo_tipo" not in item_cols:
             conn.execute("ALTER TABLE items ADD COLUMN codigo_tipo TEXT")
+        # M3.5 (auditoria P1-3): antecedência de aviso POR ITEM.
+        #
+        # A política global é avisar na véspera, e ela está certa pra conta de
+        # luz. Está errada pra CNH: um dia antes não dá tempo de marcar exame
+        # nem de ir ao Detran. A alternativa era mexer na política por
+        # categoria, mas a categoria da CNH é "Outros" — e dar 60 dias de
+        # antecedência a "Outros" faria o bot avisar de TUDO com dois meses de
+        # antecedência, que é o ruído que faz a pessoa silenciar o bot.
+        #
+        # CSV de inteiros ("60,30"). NULL = usa a política global, que é o
+        # caso de 99% dos itens.
+        if "avisar_dias" not in item_cols:
+            conn.execute("ALTER TABLE items ADD COLUMN avisar_dias TEXT")
         # v6.5: CHECK antigo de status não conhece 'vencido' -> rebuild
         sql_items = conn.execute(
             "SELECT sql FROM sqlite_master WHERE name='items'").fetchone()
@@ -605,6 +618,42 @@ def set_last_interaction_days_ago(user_id: int, days: int) -> None:
 # Itens
 # ---------------------------------------------------------------------------
 
+# Teto de antecedência aceito. Existe pelo mesmo motivo que a janela de
+# sanidade de data no `boleto`: valor absurdo aqui não dá erro, só faz o aviso
+# nunca sair (fica fora da janela de leitura) ou sair anos antes.
+AVISO_MAX_DIAS = 90
+
+
+def _avisar_dias_limpo(csv: Optional[str]) -> Optional[str]:
+    """Normaliza "60,30" -> "60,30". Lixo vira None (política padrão)."""
+    if not csv:
+        return None
+    dias = []
+    for parte in str(csv).split(","):
+        parte = parte.strip()
+        if not parte.isdigit():
+            continue
+        d = int(parte)
+        if 0 <= d <= AVISO_MAX_DIAS:
+            dias.append(d)
+    if not dias:
+        logging.getLogger("resolveai").warning(
+            "[db] avisar_dias ignorado: %r", csv)
+        return None
+    return ",".join(str(d) for d in sorted(set(dias), reverse=True))
+
+
+def dias_de_aviso(item: Optional[dict]) -> Optional[set]:
+    """Antecedência do item, ou None quando ele segue a política global."""
+    if not item:
+        return None
+    csv = item.get("avisar_dias") if hasattr(item, "get") else None
+    if not csv:
+        return None
+    dias = {int(x) for x in str(csv).split(",") if x.strip().isdigit()}
+    return dias or None
+
+
 def add_item(
     user_id: int,
     tipo: str,
@@ -624,6 +673,7 @@ def add_item(
     # no aviso de vencimento, que é o único momento em que ele serve.
     codigo_pagamento: Optional[str] = None,
     codigo_tipo: Optional[str] = None,      # 'boleto' | 'pix'
+    avisar_dias: Optional[str] = None,      # CSV: "60,30". None = padrão.
 ) -> int:
     if tipo not in VALID_ITEM_TYPES:
         raise ValueError(f"tipo inválido: {tipo!r}")
@@ -638,11 +688,13 @@ def add_item(
             """INSERT INTO items
                (user_id, tipo, categoria, descricao, valor_reais,
                 data_vencimento, hora_alvo, recorrencia, status,
-                link_afiliado, data_criacao, codigo_pagamento, codigo_tipo)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                link_afiliado, data_criacao, codigo_pagamento, codigo_tipo,
+                avisar_dias)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (user_id, tipo, categoria, descricao, valor_reais,
              data_vencimento, hora_alvo, recorrencia, status,
-             link_afiliado, _now_iso(), codigo_pagamento, codigo_tipo),
+             link_afiliado, _now_iso(), codigo_pagamento, codigo_tipo,
+             _avisar_dias_limpo(avisar_dias)),
         )
     touch_user(user_id)
     return int(cur.lastrowid)
@@ -1169,9 +1221,17 @@ def roll_items_batch(rolls: list[tuple]) -> None:
     if not rolls:
         return
     with get_conn() as conn:
+        # O CÓDIGO DE PAGAMENTO MORRE NA VIRADA (auditoria M3.5, P2).
+        #
+        # Cada boleto tem o seu: o de setembro não paga outubro. Mantendo a
+        # coluna, o aviso do mês seguinte sairia com o código do mês passado
+        # — a pessoa cola no banco e ou o banco recusa (e ela para de confiar
+        # na mensagem) ou, pior, ela paga de novo a conta que já pagou.
+        # Sem código, o aviso continua saindo; só não oferece o que não sabe.
         conn.executemany(
             "UPDATE items SET data_vencimento=?, hora_alvo=?, "
-            "status='pendente' WHERE id=?",
+            "status='pendente', codigo_pagamento=NULL, codigo_tipo=NULL "
+            "WHERE id=?",
             [(d, h, i) for (i, d, h) in rolls])
         conn.executemany(
             "DELETE FROM dispatches WHERE item_id=? AND kind IN "

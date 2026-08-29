@@ -111,7 +111,18 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
     for user in db.list_users():
         if not db.user_can_receive(user):
             continue  # trial expirado sem pagamento: silêncio (exceto winback)
-        due = db.items_due_within(user["id"], days=DUE_WINDOW_DAYS, ref=ref)
+        # A JANELA DE LEITURA COBRE A MAIOR ANTECEDÊNCIA POSSÍVEL.
+        #
+        # `DUE_WINDOW_DAYS` é o filtro de SQL e vale 1 em produção. Item com
+        # antecedência própria (CNH: 60 e 30 dias) simplesmente NÃO SERIA LIDO
+        # — nenhum erro, nenhum log, o aviso só não sairia. É a armadilha que
+        # o comentário do `definir_politica_de_aviso` descreve, e ela pega de
+        # novo aqui porque a antecedência agora também vem do item.
+        #
+        # Ler mais linhas não solta mais mensagem: quem não bate com `alerta`
+        # cai fora logo abaixo.
+        due = db.items_due_within(
+            user["id"], days=max(DUE_WINDOW_DAYS, db.AVISO_MAX_DIAS), ref=ref)
         for item in due:
             if "(lembrete de demonstração)" in (item.get("descricao") or ""):
                 continue  # o trial guiado entrega esse momento (d4)
@@ -121,8 +132,13 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
             if item.get("data_vencimento"):
                 y, m, d = map(int, item["data_vencimento"].split("-"))
                 days_left = (date(y, m, d) - ref).days
-                alerta = DUE_ALERT_DAYS_POR_CATEGORIA.get(
-                    item.get("categoria") or "", DUE_ALERT_DAYS)
+                # Antecedência do ITEM manda; depois a da categoria; depois
+                # a global. O item ganha porque é o único lugar que sabe que
+                # aquilo é uma CNH — a categoria dela é "Outros", e mexer na
+                # política de "Outros" mudaria o aviso de todo o resto.
+                alerta = (db.dias_de_aviso(item)
+                          or DUE_ALERT_DAYS_POR_CATEGORIA.get(
+                              item.get("categoria") or "", DUE_ALERT_DAYS))
                 if days_left not in alerta:
                     # REDE DE SEGURANCA DO DIA DO VENCIMENTO.
                     #

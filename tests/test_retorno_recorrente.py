@@ -309,3 +309,55 @@ def test_oferta_nao_atropela_conversa_em_andamento(usuario, horario_util,
     wa_bot.dispatch_proactive()
     assert wa_bot.PENDING[usuario["telefone"]]["tipo"] == "menu_qualquer", (
         "a oferta atropelou a conversa que estava em andamento")
+
+
+# ---------------------------------------------------------------------------
+# AUDITORIA M3.5 — P0-1 e P0-2
+# ---------------------------------------------------------------------------
+
+def test_no_maximo_uma_oferta_por_pessoa_por_ciclo(usuario, horario_util,
+                                                   monkeypatch):
+    """P0-1: cinco servicos concluidos viravam CINCO mensagens no mesmo ciclo.
+
+    Duas consequencias, e as duas graves: e o padrao de ritmo que ja rendeu
+    duas restricoes da Meta, e cada disparo sobrescrevia o contexto — a pessoa
+    recebia 5 perguntas, so a ultima respondia, e as outras 4 ja estavam
+    carimbadas (nunca mais voltam).
+    """
+    import wa_bot
+    for d in ("fazer as unhas", "sobrancelha", "dentista",
+              "cortar o cabelo", "massagem"):
+        _servico_concluido_ha_horas(usuario, desc=d)
+    db.log_message(None, usuario["telefone"], "in", "texto", "oi")
+    saiu = []
+    monkeypatch.setattr(
+        wa_bot.wasender, "falar",
+        lambda tel, txt, **k: saiu.append(txt) or
+        {"enviado": True, "via": "botoes", "motivo": ""})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    wa_bot.dispatch_proactive()
+    ofertas = [t for t in saiu if "Vi que você resolveu" in t]
+    assert len(ofertas) <= 1, "rajada de %d ofertas: %r" % (
+        len(ofertas), [o[:40] for o in ofertas])
+
+
+def test_baixa_antiga_nao_vira_pergunta(usuario):
+    """P0-2: a consulta so tinha teto (10h), nenhum piso.
+
+    No primeiro ciclo em producao isso enfileira o historico inteiro de cada
+    pessoa — e "vi que voce resolveu X, quer marcar o proximo?" sobre algo de
+    fevereiro e ruido puro.
+    """
+    iid = _servico_concluido_ha_horas(usuario, horas=24 * 200)
+    achados = recorrencia.pendentes_de_pergunta(ref=tempo.agora())
+    assert iid not in [a["id"] for a in achados], (
+        "baixa de 200 dias virou pergunta: %r" % achados)
+
+
+def test_a_janela_util_continua_valendo(usuario):
+    """A correcao do piso nao pode matar o caso que a feature existe pra
+    atender: baixa de ontem."""
+    iid = _servico_concluido_ha_horas(usuario, horas=20)
+    achados = recorrencia.pendentes_de_pergunta(ref=tempo.agora())
+    assert iid in [a["id"] for a in achados], achados

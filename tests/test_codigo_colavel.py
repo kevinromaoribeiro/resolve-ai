@@ -208,3 +208,65 @@ def test_comprovante_pago_nao_guarda_codigo(usuario, monkeypatch):
         cheio = db.get_item(it["id"])
         if cheio["status"] == "concluido":
             assert not cheio["codigo_pagamento"], cheio
+
+
+# ---------------------------------------------------------------------------
+# AUDITORIA M3.5 — P1-6 e P1-7: o codigo nao pode vazar
+# ---------------------------------------------------------------------------
+
+def test_codigo_nao_vai_pro_log_quando_o_envio_falha(usuario, horario_util,
+                                                     monkeypatch):
+    """P1-6: na falha de envio o log gravava os 200 primeiros chars da
+    mensagem — e a mensagem agora carrega o codigo. Regra do projeto: o
+    codigo NUNCA vai pra log."""
+    import datetime as _dt
+    import tempo
+    import wa_bot
+    db.add_item(user_id=usuario["id"], tipo="despesa", categoria="Contas",
+                descricao="luz", valor_reais=None,
+                data_vencimento=(tempo.hoje() + _dt.timedelta(days=1)
+                                 ).isoformat(), status="pendente",
+                codigo_pagamento="34191790010104351004791020150008291070026000",
+                codigo_tipo="boleto")
+    monkeypatch.setattr(wa_bot.wasender, "falar",
+                        lambda *a, **k: {"enviado": False, "via": None,
+                                         "motivo": "falha_no_envio"})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    wa_bot.dispatch_proactive()
+    with db.get_conn() as c:
+        linhas = [r["preview"] or "" for r in
+                  c.execute("SELECT preview FROM msg_log")]
+    for p in linhas:
+        assert "3419179" not in p, "codigo de pagamento no log: %r" % p
+
+
+def test_pix_sem_crc_nao_engole_o_ocr(usuario):
+    """P1-7: sem o CRC final, o fallback devolvia TODO o resto do texto como
+    'codigo' — CPF, nome e endereco iam pra coluna, pra mensagem e pro log."""
+    import boleto
+    ocr = ("00020126580014BR.GOV.BCB.PIX0136abc-def-ghi\n"
+           "Beneficiario: JOAO DA SILVA CPF 123.456.789-00\n"
+           "Endereco: Rua das Flores 100  Telefone 11 98888-7777")
+    c = boleto.codigo_de_pagamento(ocr)
+    if c is not None:
+        assert "123.456.789" not in c["colavel"], c
+        assert "JOAO" not in c["colavel"].upper(), c
+        assert len(c["colavel"]) < 512, len(c["colavel"])
+
+
+def test_pix_com_crc_continua_funcionando():
+    import boleto
+    c = boleto.codigo_de_pagamento("Pague: " + PIX_COPIA_COLA)
+    assert c and c["tipo"] == "pix"
+    assert c["colavel"].endswith("6304ABCD")
+
+
+def test_valor_na_mesma_linha_nao_esconde_o_codigo():
+    """P2 da auditoria: 'Valor 187.40 34191.79001...' devolvia None — o
+    ponto do valor entrava no conjunto e o codigo ficava com digito a mais."""
+    import boleto
+    c = boleto.codigo_de_pagamento(
+        "Valor do documento 187.40 " + LINHA_BANCO)
+    assert c, "codigo perdido por causa do valor na mesma linha"
+    assert c["colavel"] == "34191790010104351004791020150008291070026000"

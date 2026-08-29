@@ -35,6 +35,18 @@ import tempo
 # na cabeça — e não às 23h do mesmo dia.
 HORAS_DE_ESPERA = 10
 
+# ATÉ QUANDO A BAIXA AINDA VALE PERGUNTA (auditoria M3.5, P0-2).
+#
+# A consulta só tinha teto ("já passaram 10h?") e nenhum piso, então TODA
+# baixa histórica era candidata. No primeiro ciclo em produção isso enfileira
+# o histórico inteiro de cada pessoa — e "vi que você resolveu a unha, quer
+# marcar a próxima?" sobre algo de fevereiro é ruído puro, além de ser o
+# combustível da rajada do P0-1.
+#
+# 48h: a pergunta faz sentido no dia seguinte ao serviço, não uma semana
+# depois, quando a pessoa já marcou (ou já esqueceu).
+HORAS_DE_VALIDADE = 48
+
 # Serviço -> de quantos em quantos dias costuma repetir.
 #
 # Os intervalos vêm do uso real, não de teoria: unha a cada 3 semanas,
@@ -127,6 +139,8 @@ def pendentes_de_pergunta(ref: Optional[datetime] = None,
     agora = ref or tempo.agora()
     corte = (agora - timedelta(hours=HORAS_DE_ESPERA)
              ).strftime("%Y-%m-%d %H:%M:%S")
+    piso = (agora - timedelta(hours=HORAS_DE_VALIDADE)
+            ).strftime("%Y-%m-%d %H:%M:%S")
     with db.get_conn() as conn:
         linhas = conn.execute(
             """SELECT i.id, i.user_id, i.descricao, i.data_conclusao,
@@ -135,17 +149,34 @@ def pendentes_de_pergunta(ref: Optional[datetime] = None,
                 WHERE i.status = 'concluido'
                   AND i.data_conclusao IS NOT NULL
                   AND i.data_conclusao <= ?
+                  AND i.data_conclusao >= ?
                   AND NOT EXISTS (SELECT 1 FROM dispatches d
                                    WHERE d.item_id = i.id AND d.kind='retorno')
                 ORDER BY i.data_conclusao DESC LIMIT ?""",
-            (corte, limite)).fetchall()
+            (corte, piso, limite)).fetchall()
 
-    out = []
+    # UM POR PESSOA (auditoria M3.5, P0-1).
+    #
+    # Cinco serviços concluídos viravam cinco mensagens no mesmo ciclo. Duas
+    # consequências, as duas graves: é o padrão de ritmo que já rendeu duas
+    # restrições da Meta, e cada disparo sobrescrevia o contexto da resposta —
+    # a pessoa recebia 5 perguntas, só a última funcionava, e as outras 4 já
+    # estavam carimbadas no dedup (nunca mais voltariam).
+    #
+    # O corte é AQUI e não no laço de envio de propósito: cortar lá deixaria
+    # os disparos descartados passarem pelo `log_dispatch` e queimaria os
+    # itens. Aqui eles simplesmente não são gerados, e voltam no próximo
+    # ciclo — a lista está ordenada pela baixa mais recente, que é a que a
+    # pessoa lembra.
+    out, vistos = [], set()
     for r in linhas:
+        if r["user_id"] in vistos:
+            continue
         sug = sugestao(r["descricao"], hoje=agora.date())
         if not sug:
             continue
         d = dict(r)
         d["sugestao"] = sug
         out.append(d)
+        vistos.add(r["user_id"])
     return out

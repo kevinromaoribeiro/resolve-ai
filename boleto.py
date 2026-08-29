@@ -664,7 +664,18 @@ def codigo_de_pagamento(texto: Optional[str]) -> Optional[dict]:
             m = re.search(r"6304[0-9A-Fa-f]{4}", trecho)
             if m:
                 return {"tipo": "pix", "colavel": trecho[:m.end()]}
-            return {"tipo": "pix", "colavel": trecho}
+            # SEM O CRC, NÃO DEVOLVE NADA (auditoria M3.5, P1-7).
+            #
+            # O fallback antigo devolvia TODO o resto do texto como se fosse
+            # o código. Num OCR real isso arrastava nome, CPF, endereço e
+            # telefone do beneficiário pra dentro da coluna, pra mensagem que
+            # a pessoa recebe e — pelo caminho de falha — pro log.
+            #
+            # PIX sem CRC também não seria aceito pelo banco: devolver algo
+            # aqui só criaria a expectativa de colar e a frustração de ver
+            # recusado. None é a resposta honesta.
+            log.info("[boleto] PIX sem CRC (6304xxxx) — ignorado")
+            return None
 
     # --- boleto: sequência longa de dígitos, ponto e espaço ---
     #
@@ -673,14 +684,31 @@ def codigo_de_pagamento(texto: Optional[str]) -> Optional[dict]:
     candidatos = []
     for linha in bruto.splitlines():
         candidatos.extend(_SO_DIGITOS_RE.findall(linha))
+    validos = set(_TAMANHOS_BOLETO) | {44}   # 44 = código de barras puro
     for achado in candidatos:
         digitos = _limpar(achado)
-        if len(digitos) in _TAMANHOS_BOLETO:
+        if len(digitos) in validos:
             return {"tipo": "boleto", "colavel": digitos}
-        # o código de BARRAS tem 44; a linha digitável derivada dele tem 47/48.
-        # Aceitamos 44 porque alguns OCR leem a barra, não a linha.
-        if len(digitos) == 44:
-            return {"tipo": "boleto", "colavel": digitos}
+        # PREFIXO GRUDADO NA MESMA LINHA (auditoria M3.5, P2).
+        #
+        # A quebra de linha já era tratada, mas o valor na MESMA linha não:
+        # "Valor do documento 187.40 34191.79001…" virava 49 dígitos e era
+        # descartado por tamanho — o código estava ali e o bot dizia que não
+        # achou.
+        #
+        # DESCARTA POR BLOCO, NUNCA POR CONTAGEM. A primeira tentativa foi
+        # cortar os N últimos dígitos, e ela está errada: 44, 47 e 48 são
+        # todos comprimentos válidos, então "cortar o maior que couber"
+        # devolve um código de 48 dígitos que ninguém conferiu — cola no
+        # banco, é recusado, e a pessoa perde a confiança na mensagem. Aqui
+        # os blocos do OCR são jogados fora inteiros, da esquerda pra
+        # direita, até o que sobra ter exatamente um tamanho válido. Se
+        # nenhum corte de bloco fecha, não há código: `None`.
+        blocos = achado.split()
+        for i in range(1, len(blocos)):
+            resto = _limpar("".join(blocos[i:]))
+            if len(resto) in validos:
+                return {"tipo": "boleto", "colavel": resto}
     return None
 
 

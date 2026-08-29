@@ -53,7 +53,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v25.2-m35-codigo-documento-retorno-2026-08-29"
+BUILD = "v25.3-m35-auditoria-corrigida-2026-08-29"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -727,6 +727,51 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 f"{'Eu vinha te chamando de ' + anterior.split()[0] + ' — foi mal. ' if anterior and anterior.split()[0].lower() != novo.split()[0].lower() else ''}"
                 f"Anotado pra sempre. ✅")
 
+    # --- a pessoa está DIZENDO a data que o bot pediu -----------------------
+    #
+    # Auditoria M3.5 (P1-4): estes dois estados eram becos sem saída. O bot
+    # gravava "ajustar_retorno"/"ajustar_documento" no PENDING, pedia a data —
+    # e ninguém lia a resposta. A pessoa respondia direitinho e não acontecia
+    # nada; pior, o resgate de pendência transformava a oferta num lembrete
+    # sem data que ela nunca pediu.
+    #
+    # Entra ANTES dos blocos de confirmação porque é o estado mais específico:
+    # aqui já houve pergunta e a próxima mensagem é a resposta dela.
+    _pend_aj = PENDING.get(phone) or {}
+    if (_pend_aj.get("tipo") in ("ajustar_retorno", "ajustar_documento")
+            and _proposta_viva(_pend_aj)):
+        _quando = _data_do_texto(text)
+        if _quando:
+            PENDING.pop(phone, None)
+            if _pend_aj["tipo"] == "ajustar_retorno":
+                _desc = _pend_aj.get("descricao") or "seu compromisso"
+                _cat = ai_engine.classify_category(_desc)
+                _avisos = None
+            else:
+                _doc = _pend_aj.get("doc") or {}
+                _desc = _doc.get("descricao") or "documento"
+                _cat = _CATEGORIA_DE_DOC.get(_doc.get("tipo"), "Outros")
+                _avisos = ",".join(
+                    str(d) for d in documento.avisos(_doc.get("tipo")))
+            try:
+                db.add_item(user_id=user["id"], tipo="lembrete",
+                            categoria=_cat, descricao=_desc[:120],
+                            valor_reais=None, data_vencimento=_quando,
+                            status="pendente", avisar_dias=_avisos or None)
+            except Exception:
+                logging.getLogger("resolveai").warning(
+                    "[ajuste] falha ao guardar", exc_info=True)
+                return ("Não consegui guardar agora. 😕 Tenta de novo daqui "
+                        "a pouco.")
+            return (f"Anotado! ✅ *{_desc}* — "
+                    f"{_quando[8:10]}/{_quando[5:7]}/{_quando[0:4]}.\n\n"
+                    f"Te aviso antes. Pode esquecer que eu lembro.")
+        # NÃO ENTENDI A DATA: solta a pendência e deixa a mensagem seguir pro
+        # motor normal, que sabe ler frase solta. Insistir aqui prenderia a
+        # pessoa num loop de "me diz a data" — e ela pode ter mudado de
+        # assunto no meio do caminho, que é direito dela.
+        PENDING.pop(phone, None)
+
     # --- resposta à oferta de remarcar: Confirmar / Outra data / Não precisa
     #
     # O bot ofereceu guardar o próximo serviço (unha, dentista) horas depois
@@ -800,20 +845,39 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                               "quando": tempo.agora()}
             return ("Só falta a data. 📅\n\n"
                     "Me diz quando vence que eu guardo.")
+        # A DATA GRAVADA É A QUE IMPORTA, NÃO A QUE ESTÁ IMPRESSA (P1-3).
+        #
+        # A âncora da nota fiscal e da receita é a EMISSÃO, que é sempre
+        # passado. Gravando ela em `data_vencimento`, o item nascia vencido e
+        # o ciclo seguinte cobrava a pessoa por uma nota que ela tinha
+        # acabado de mandar. `documento.vencimento` faz a conversão (emissão
+        # + garantia de 1 ano, por exemplo) e devolve a validade intacta pros
+        # tipos em que ela já é a data certa.
+        _venc = documento.vencimento(_doc)
+        if not _venc:
+            PENDING[phone] = {"tipo": "ajustar_documento", "doc": _doc,
+                              "quando": tempo.agora()}
+            return ("Só falta a data. 📅\n\nMe diz quando vence que eu guardo.")
         try:
             db.add_item(user_id=user["id"], tipo="lembrete",
                         categoria=_CATEGORIA_DE_DOC.get(_doc.get("tipo"),
                                                         "Outros"),
                         descricao=(_doc.get("descricao") or "documento")[:120],
                         valor_reais=None,
-                        data_vencimento=_doc["data"],
-                        status="pendente")
+                        data_vencimento=_venc,
+                        status="pendente",
+                        # A antecedência viaja com o item: a promessa dizia
+                        # "60 e 30 dias antes" e o motor só sabia avisar na
+                        # véspera. Agora ela é verdade.
+                        avisar_dias=",".join(
+                            str(d) for d in documento.avisos(_doc.get("tipo"))
+                        ) or None)
         except Exception:
             logging.getLogger("resolveai").warning(
                 "[documento] falha ao guardar", exc_info=True)
             return ("Não consegui guardar agora. 😕 Manda de novo daqui a "
                     "pouco que eu tento outra vez.")
-        _d = _doc["data"]
+        _d = _venc
         return (f"Guardado! ✅ *{_doc.get('descricao')}* — "
                 f"{_d[8:10]}/{_d[5:7]}/{_d[0:4]}.\n\n"
                 f"Eu te aviso antes. Pode esquecer que eu lembro.")
@@ -1815,6 +1879,118 @@ def _data_iso_ou_none(valor):
     return v if _DATA_ISO_RE.match(v) else None
 
 
+# ---------------------------------------------------------------------------
+# DATA ESCRITA À MÃO, LIDA EM PYTHON
+# ---------------------------------------------------------------------------
+# Usada só depois que o bot PERGUNTOU a data ("me diz quando vence"). Nesse
+# ponto a conversa tem uma pergunta e uma resposta, e mandar a frase pro LLM
+# só pra virar "2027-03-12" é gastar chamada e aceitar variação onde não pode
+# haver — regra 2: se dá pra decidir em Python, decide em Python.
+#
+# Ela é DELIBERADAMENTE curta. Só entende o que gente escreve respondendo
+# "quando?", e devolve None em tudo o mais — e `None` aqui não perde nada: a
+# mensagem segue pro motor normal, que é quem sabe interpretar frase solta.
+_DATA_BR_LIVRE_RE = re.compile(r"\b(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?\b")
+_DAQUI_RE = re.compile(
+    r"daqui\s+(?:a\s+)?(?:(\d{1,3})|um|uma|1)\s*(dias?|semanas?|m[êe]s(?:es)?|anos?)",
+    re.I)
+_DIA_SOLTO_RE = re.compile(r"\bdia\s+(\d{1,2})\b", re.I)
+
+
+def _data_do_texto(texto: str, base=None):
+    """Frase -> 'YYYY-MM-DD'. None quando não dá pra ter certeza."""
+    t = (texto or "").strip().lower()
+    if not t:
+        return None
+    hoje = base or tempo.hoje()
+
+    if re.search(r"\bdepois\s+de\s+amanh", t):
+        return (hoje + timedelta(days=2)).isoformat()
+    if re.search(r"\bamanh[ãa]\b", t):
+        return (hoje + timedelta(days=1)).isoformat()
+    if re.search(r"\bhoje\b", t):
+        return hoje.isoformat()
+    if re.search(r"\bsemana\s+que\s+vem\b", t):
+        return (hoje + timedelta(days=7)).isoformat()
+    if re.search(r"\b(m[êe]s\s+que\s+vem|pr[óo]ximo\s+m[êe]s)\b", t):
+        return _somar_meses(hoje, 1).isoformat()
+    if re.search(r"\bano\s+que\s+vem\b", t):
+        return _somar_meses(hoje, 12).isoformat()
+
+    m = _DAQUI_RE.search(t)
+    if m:
+        n = int(m.group(1)) if m.group(1) else 1
+        unidade = m.group(2)
+        if unidade.startswith("dia"):
+            return (hoje + timedelta(days=n)).isoformat()
+        if unidade.startswith("semana"):
+            return (hoje + timedelta(days=7 * n)).isoformat()
+        if unidade.startswith("ano"):
+            return _somar_meses(hoje, 12 * n).isoformat()
+        return _somar_meses(hoje, n).isoformat()
+
+    m = _DATA_BR_LIVRE_RE.search(t)
+    if m:
+        d, mes = int(m.group(1)), int(m.group(2))
+        ano = int(m.group(3)) if m.group(3) else hoje.year
+        if ano < 100:
+            ano += 2000
+        if not (1 <= mes <= 12 and 1 <= d <= 31):
+            return None
+        try:
+            alvo = date(ano, mes, d)
+        except ValueError:
+            return None
+        # SEM ANO, A DATA É SEMPRE PRA FRENTE. "vence 12/03" dito em agosto
+        # é março do ano que vem — gravar 12/03 deste ano faria o item nascer
+        # vencido e o bot cobrar na hora, que é justamente o defeito que esta
+        # rodada está consertando.
+        if not m.group(3) and alvo < hoje:
+            try:
+                alvo = date(ano + 1, mes, d)
+            except ValueError:
+                return None
+        return alvo.isoformat()
+
+    m = _DIA_SOLTO_RE.search(t)
+    if m:
+        d = int(m.group(1))
+        if not 1 <= d <= 31:
+            return None
+        for salto in (0, 1, 2):
+            base_mes = _somar_meses(hoje.replace(day=1), salto)
+            try:
+                alvo = date(base_mes.year, base_mes.month, d)
+            except ValueError:
+                continue
+            if alvo >= hoje:
+                return alvo.isoformat()
+    return None
+
+
+def _somar_meses(d, meses: int):
+    ano = d.year + (d.month - 1 + meses) // 12
+    mes = (d.month - 1 + meses) % 12 + 1
+    dia = min(d.day, [31, 29 if ano % 4 == 0 and (ano % 100 or not ano % 400)
+                      else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mes - 1])
+    return date(ano, mes, dia)
+
+
+# ESTADOS DE CONVERSA — nunca viram item sozinhos (auditoria M3.5, P1-5).
+#
+# `_resgatar_pendencia` salva como lembrete qualquer pendência que tenha
+# `descricao`, e está certo: aquilo é um item que a pessoa mandou e que ficou
+# preso esperando confirmação. Só que as pendências novas (M3.5) NÃO são
+# itens — são o bot esperando uma resposta a uma PERGUNTA DELE. Resgatar a
+# oferta de remarcar a unha criaria um lembrete de unha sem data que ninguém
+# pediu, e "o bot inventa item" é exatamente o que custou a confiança em
+# 14/08. Aqui a pendência é descartada; a pergunta some, e nada é criado.
+_PENDENCIAS_DE_CONVERSA = frozenset({
+    "confirmar_retorno", "ajustar_retorno",
+    "confirmar_documento", "ajustar_documento",
+})
+
+
 def _resgatar_pendencia(user: dict, phone: str) -> str:
     """Tira a decisao pendente do caminho sem perder o que havia nela.
 
@@ -1828,6 +2004,8 @@ def _resgatar_pendencia(user: dict, phone: str) -> str:
     PENDING_ERROS.pop(phone, None)
     PENDING_EM.pop(phone, None)
     if not isinstance(pend, dict):
+        return ""
+    if pend.get("tipo") in _PENDENCIAS_DE_CONVERSA:
         return ""
     desc = (pend.get("descricao") or "").strip()
     if not desc:
@@ -4537,7 +4715,10 @@ PODERES = [
     {"grupo": "Entra dado", "titulo": "Foto de documento que vence",
      "desc": "Nota fiscal, CNH, receita, carteirinha de vacina: o bot "
              "reconhece, mostra o que entendeu e você toca em Confirmar, "
-             "Ajustar ou Esquece. Nunca guarda por conta própria."},
+             "Ajustar ou Esquece. Nunca guarda por conta própria. Cada tipo "
+             "tem a antecedência que faz sentido: CNH avisa 60 e 30 dias "
+             "antes, nota fiscal 30 dias antes de a garantia de 1 ano "
+             "acabar."},
     {"grupo": "Entra dado", "titulo": "Placa do carro",
      "desc": "Com o final da placa, calcula IPVA e licenciamento de SP — "
              "inclusive o pulo de fim de semana e feriado."},
@@ -5158,10 +5339,18 @@ def dispatch_proactive() -> int:
                           res.get("motivo"))
                 if _chave not in FALHA_JA_LOGADA:
                     FALHA_JA_LOGADA.add(_chave)
+                    # O CÓDIGO DE PAGAMENTO NÃO VAI PRO LOG (auditoria M3.5,
+                    # P1-6). A mensagem de vencimento passou a carregar a
+                    # linha digitável, e os 200 primeiros chars alcançavam
+                    # parte dela. `sem_codigo_de_pagamento` já existe pra
+                    # isso; aqui ela volta a valer no caminho de falha, que é
+                    # justamente onde o guardrail costuma ser esquecido.
+                    _preview = boleto.sem_codigo_de_pagamento(
+                        (d.get("message") or "").split("\n\nCódigo")[0]
+                        .split("\n\nPIX copia")[0])
                     db.log_message(d.get("user_id"), number, "out_falhou",
                                    d.get("kind", "outro"),
-                                   f"[{res.get('motivo')}] "
-                                   f"{d['message'][:200]}")
+                                   f"[{res.get('motivo')}] {_preview[:200]}")
             except Exception:
                 log.warning("[cron] falha ao registrar a nao-entrega",
                             exc_info=True)
@@ -5542,8 +5731,13 @@ try:
         if reply:
             # Botao de resposta rapida quando o texto pedir. Cai pra texto
             # puro sozinho se o interativo falhar — ver botoes.py.
+            # `reply["botoes"]` quando quem montou a resposta ja sabe quais
+            # sao (proposta de documento, oferta de remarcar). Sem passar
+            # isto, a pergunta saia como texto puro e a pessoa tinha que
+            # digitar "confirmar" — auditoria M3.5, P1-8.
             ok = botoes.enviar_resposta(reply["number"], reply["text"],
-                                        send_whatsapp)
+                                        send_whatsapp,
+                                        botoes=reply.get("botoes"))
             if not ok:
                 # Antes o retorno era ignorado: o painel registrava "enviada"
                 # mesmo quando a API recusava, escondendo falhas de credencial
