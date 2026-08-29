@@ -411,6 +411,14 @@ KINDS_SEM_TEMPLATE = {
     # marketing. Ver o comentário no lugar onde o template morava. Dentro da
     # janela de 24h ele sai normalmente, como texto livre.
     "gastos",
+    # M4.2 — convite do mini-podcast. Nao tem template e nao vai ter:
+    # pedir pra alguem ouvir um audio e o motivo que a Meta classifica
+    # como marketing, e marketing neste numero e o que ja rendeu duas
+    # restricoes. Dentro da janela ele sai como texto livre com botao;
+    # fora dela nao sai naquela semana — e isso e aceitavel, porque o
+    # podcast e um extra, nao o que a pessoa contratou.
+    "podcast",
+    "podcast-dia",
 } | {
     # nudges do trial guiado: são a coreografia dos primeiros dias, com texto
     # próprio em cada etapa (amostra, primeiro item, oferta do kit...).

@@ -139,6 +139,13 @@ def usuario():
     db.update_user_fields(uid, onboarding_step=None, status="trial",
                           trial_base=None, placa_final=None,
                           plano=None, pago_em=None,
+                          # M4.2 — o mesmo motivo dos cinco campos acima: a
+                          # linha de `users` sobrevive entre os arquivos, e um
+                          # teste que assina o podcast deixava o proximo
+                          # medindo a assinatura do anterior.
+                          podcast_nicho=None, podcast_dia=None,
+                          podcast_ultimo=None, podcast_convite_em=None,
+                          podcast_dia_perguntado=None,
                           dia_resumo="Segunda-feira",
                           lgpd_aceite_em=tempo.agora().isoformat())
     # `data_criacao` DE VOLTA PRA AGORA. A linha de `users` sobrevive entre

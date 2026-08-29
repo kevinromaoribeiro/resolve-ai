@@ -616,3 +616,92 @@ def qualidade_numero() -> dict:
         }
     except Exception as e:
         return {"ok": False, "erro": repr(e)}
+
+
+# ---------------------------------------------------------------------------
+# AUDIO (M4.2 — mini-podcast)
+# ---------------------------------------------------------------------------
+# Mandar audio na Cloud API sao DOIS passos: sobe o arquivo em /media, pega o
+# id, e manda a mensagem apontando pro id. Nao ha atalho com bytes inline.
+#
+# COMO NOTA DE VOZ, NAO COMO ARQUIVO. `type: audio` com OGG/Opus chega
+# tocavel com um toque; qualquer outro formato vira card de download, e
+# ninguem baixa arquivo de bot. O formato certo e responsabilidade do `voz`;
+# aqui a gente so nao estraga.
+#
+# Tudo isto vale SO DENTRO DA JANELA DE 24H, como texto livre — audio nao e
+# excecao a janela, e nao existe template de audio aprovado neste numero.
+
+MAX_AUDIO_BYTES = 16 * 1024 * 1024      # teto da Meta pra audio
+
+
+def upload_media(dados: bytes, mime: str = "audio/ogg",
+                 nome: str = "audio.ogg") -> Optional[str]:
+    """Sobe o arquivo e devolve o media_id. None quando nao deu.
+
+    Separado do envio de proposito: o upload e o passo caro (sobe o arquivo
+    inteiro) e o que mais falha, e misturar os dois esconderia qual dos dois
+    quebrou no log.
+    """
+    import httpx
+
+    if not configurado():
+        log.error("[audio] META_TOKEN/META_PHONE_NUMBER_ID ausentes")
+        return None
+    if not dados:
+        return None
+    if len(dados) > MAX_AUDIO_BYTES:
+        log.warning("[audio] arquivo de %d bytes acima do teto da Meta",
+                    len(dados))
+        return None
+    try:
+        r = httpx.post(
+            f"{GRAPH}/{PHONE_NUMBER_ID}/media",
+            headers={k: v for k, v in _HEADERS.items()
+                     if k.lower() != "content-type"},
+            data={"messaging_product": "whatsapp", "type": mime},
+            files={"file": (nome, dados, mime)},
+            timeout=120)
+        if r.status_code == 200:
+            mid = (r.json() or {}).get("id")
+            if mid:
+                return mid
+            log.warning("[audio] upload 200 sem id: %s", r.text[:200])
+            return None
+        log.warning("[audio] upload recusado (%s): %s",
+                    r.status_code, r.text[:200])
+        return None
+    except Exception as e:
+        log.warning("[audio] upload estourou: %r", e)
+        return None
+
+
+def send_audio(number: str, dados: bytes, mime: str = "audio/ogg") -> bool:
+    """Manda o audio como nota de voz. True so com message id confirmado."""
+    import httpx
+
+    to = _so_digitos(number)
+    if not to or not dados:
+        return False
+    media_id = upload_media(dados, mime=mime)
+    if not media_id:
+        return False
+    try:
+        r = httpx.post(
+            f"{GRAPH}/{PHONE_NUMBER_ID}/messages", headers=_HEADERS,
+            json={"messaging_product": "whatsapp",
+                  "recipient_type": "individual", "to": to,
+                  "type": "audio", "audio": {"id": media_id}},
+            timeout=60)
+        if r.status_code == 200:
+            msgs = (r.json() or {}).get("messages") or []
+            if msgs and msgs[0].get("id"):
+                return True
+            log.warning("[audio] envio 200 sem id: %s", r.text[:200])
+            return False
+        log.warning("[audio] envio recusado (%s): %s",
+                    r.status_code, r.text[:200])
+        return False
+    except Exception as e:
+        log.warning("[audio] envio estourou: %r", e)
+        return False

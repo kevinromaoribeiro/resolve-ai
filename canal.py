@@ -57,6 +57,9 @@ send_text = _mod.send_text
 # `falar` cai pra texto puro: melhor a mensagem chegar sem botao do que a
 # pessoa nao receber o lembrete por causa de um enfeite.
 send_buttons = getattr(_mod, "send_buttons", None)
+# Audio so existe no canal oficial. No reserva fica None, e `falar_audio`
+# recusa — em vez de estourar AttributeError no meio de um ciclo.
+send_audio = getattr(_mod, "send_audio", None)
 to_evolution_shape = _mod.to_evolution_shape
 baixar_midia = _mod.baixar_midia
 instance_state = _mod.instance_state
@@ -161,6 +164,38 @@ def falar(telefone: str, texto: str, *, user_id=None, template=None,
     ok = send_template(telefone, template, variaveis, idioma)
     return {"enviado": bool(ok), "via": "template" if ok else None,
             "motivo": "" if ok else "template_recusado"}
+
+
+def falar_audio(telefone: str, dados: bytes, *, user_id=None,
+                mime: str = "audio/ogg") -> dict:
+    """Manda AUDIO respeitando a janela de 24h. Mesma porta, mesma regra.
+
+    {"enviado": bool, "via": "audio"|None, "motivo": str}
+
+    POR QUE PASSA POR AQUI e nao chama `meta_cloud.send_audio` direto: a
+    janela de 24h e a regra que protege o numero, e ela vale pra QUALQUER
+    coisa que sai — texto, botao ou audio. Um caminho novo que chame o envio
+    por fora e exatamente como a gente reabre um buraco ja fechado.
+
+    E NAO EXISTE TEMPLATE DE AUDIO. Fora da janela isto simplesmente nao sai,
+    e esta certo: o convite do podcast e feito dentro da conversa, e quem nao
+    respondeu nao recebe audio nenhum.
+    """
+    import db
+
+    if not dados:
+        return {"enviado": False, "via": None, "motivo": "audio_vazio"}
+    if not send_audio:
+        return {"enviado": False, "via": None, "motivo": "canal_sem_audio"}
+    if not db.dentro_da_janela(user_id, telefone):
+        return {"enviado": False, "via": None, "motivo": "fora_da_janela"}
+    try:
+        ok = send_audio(telefone, dados, mime)
+    except Exception as e:
+        log.warning("[canal] audio estourou: %r", e)
+        return {"enviado": False, "via": None, "motivo": "falha_no_envio"}
+    return {"enviado": bool(ok), "via": "audio" if ok else None,
+            "motivo": "" if ok else "falha_no_envio"}
 
 
 def suporta_botoes() -> bool:

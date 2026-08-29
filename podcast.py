@@ -56,37 +56,56 @@ import tempo
 # destes lugares, e o roteiro diz quais foram.
 #
 # O Kevin decidiu estes cinco em 29/08/2026; os outros nove ficam pro Motor 4.
+# Cada fonte e (nome, pagina, feed RSS). O FEED FOI CONFERIDO CONTRA A REDE
+# em 29/08/2026, um por um — feed adivinhado que nao existe vira episodio que
+# nunca sai, em silencio, e ninguem descobre.
+#
+# Quatro nomes da primeira versao cairam por nao terem RSS que responde:
+# Lance!, The Enemy, Elle Brasil e E-Commerce Brasil. Entraram no lugar
+# Gazeta Esportiva, Critical Hits, Steal the Look e Consumidor Moderno — do
+# mesmo nicho e com feed vivo. `noticias.verificar()` reconfere quando o
+# Kevin quiser, porque site troca de endereco.
 NICHOS = {
     "futebol": {
         "rotulo": "Futebol",
         "emoji": "⚽",
         "fontes": (
-            ("ge.globo", "https://ge.globo.com/futebol/"),
-            ("ESPN Brasil", "https://www.espn.com.br/futebol/"),
-            ("Lance!", "https://www.lance.com.br/"),
+            ("ge.globo", "https://ge.globo.com/futebol/",
+             "https://ge.globo.com/rss/ge/futebol/"),
+            ("ESPN Brasil", "https://www.espn.com.br/futebol/",
+             "https://www.espn.com.br/rss/futebol"),
+            ("Gazeta Esportiva", "https://www.gazetaesportiva.com/",
+             "https://www.gazetaesportiva.com/feed/"),
         ),
         "assuntos": ("resultados da rodada", "contratações",
-                     "tabela e classificação", "lesões que mudam escalação"),
+                     "tabela e classificação",
+                     "lesões que mudam escalação"),
     },
     "games": {
         "rotulo": "Games",
         "emoji": "🎮",
         "fontes": (
-            ("IGN Brasil", "https://br.ign.com/"),
-            ("The Enemy", "https://www.theenemy.com.br/"),
-            ("Adrenaline", "https://www.adrenaline.com.br/games/"),
+            ("IGN Brasil", "https://br.ign.com/", "https://br.ign.com/feed.xml"),
+            ("Adrenaline", "https://www.adrenaline.com.br/games/",
+             "https://www.adrenaline.com.br/feed/"),
+            ("Critical Hits", "https://criticalhits.com.br/",
+             "https://criticalhits.com.br/feed/"),
         ),
-        "assuntos": ("lançamentos da semana", "promoções que valem a pena",
+        "assuntos": ("lançamentos da semana",
+                     "promoções que valem a pena",
                      "atualizações grandes", "o que saiu de graça"),
     },
     "ia": {
         "rotulo": "Inteligência artificial",
         "emoji": "🤖",
         "fontes": (
-            ("Canaltech IA", "https://canaltech.com.br/inteligencia-artificial/"),
+            ("Canaltech IA", "https://canaltech.com.br/inteligencia-artificial/",
+             "https://canaltech.com.br/rss/"),
             ("Olhar Digital",
-             "https://olhardigital.com.br/tag/inteligencia-artificial/"),
-            ("MIT Technology Review Brasil", "https://mittechreview.com.br/"),
+             "https://olhardigital.com.br/tag/inteligencia-artificial/",
+             "https://olhardigital.com.br/feed/"),
+            ("MIT Technology Review Brasil", "https://mittechreview.com.br/",
+             "https://mittechreview.com.br/feed/"),
         ),
         "assuntos": ("ferramenta nova que dá pra usar hoje",
                      "o que mudou nos modelos", "impacto no trabalho",
@@ -96,22 +115,29 @@ NICHOS = {
         "rotulo": "Moda",
         "emoji": "👗",
         "fontes": (
-            ("Vogue Brasil", "https://vogue.globo.com/moda/"),
-            ("Elle Brasil", "https://elle.com.br/moda"),
-            ("FFW", "https://ffw.uol.com.br/"),
+            ("Vogue Brasil", "https://vogue.globo.com/moda/",
+             "https://pox.globo.com/rss/vogue/"),
+            ("FFW", "https://ffw.uol.com.br/", "https://ffw.uol.com.br/rss/"),
+            ("Steal the Look", "https://stealthelook.com.br/",
+             "https://stealthelook.com.br/feed/"),
         ),
-        "assuntos": ("tendência da estação", "o que saiu nas passarelas",
+        "assuntos": ("tendência da estação",
+                     "o que saiu nas passarelas",
                      "peça-chave do mês", "quem está usando o quê"),
     },
     "varejo online": {
         "rotulo": "Varejo online",
         "emoji": "🛍️",
         "fontes": (
-            ("E-Commerce Brasil", "https://www.ecommercebrasil.com.br/"),
-            ("Mercado&Consumo", "https://mercadoeconsumo.com.br/"),
-            ("NeoFeed varejo", "https://neofeed.com.br/varejo/"),
+            ("Mercado&Consumo", "https://mercadoeconsumo.com.br/",
+             "https://mercadoeconsumo.com.br/feed/"),
+            ("NeoFeed varejo", "https://neofeed.com.br/varejo/",
+             "https://neofeed.com.br/feed/"),
+            ("Consumidor Moderno", "https://consumidormoderno.com.br/",
+             "https://consumidormoderno.com.br/feed/"),
         ),
-        "assuntos": ("data de promoção chegando", "mudança de frete e prazo",
+        "assuntos": ("data de promoção chegando",
+                     "mudança de frete e prazo",
                      "o que subiu e o que caiu de preço",
                      "novidade das grandes lojas"),
     },
@@ -243,32 +269,7 @@ def montar_roteiro(nicho: Optional[str], itens: Optional[list],
     if not k or not itens:
         return None
     d = NICHOS[k]
-    # A FONTE PODE CHEGAR COMO NOME OU COMO URL (auditoria M4.0). Um scraper
-    # devolve "ge.globo.com" ou a URL inteira, não o rótulo bonito — e casar
-    # só por nome exato transformava isso em episódio vazio, em silêncio.
-    permitidas = set()
-    for _nome_f, _url_f in d["fontes"]:
-        permitidas.add(_nome_f.lower())
-        permitidas.add(_dominio(_url_f))
-
-    bons = []
-    for it in itens:
-        if not isinstance(it, dict):
-            continue
-        titulo = (it.get("titulo") or "").strip()
-        fonte = (it.get("fonte") or "").strip()
-        if not titulo or not fonte:
-            continue
-        # FONTE FORA DA LISTA NÃO ENTRA. A lista existe pra que a pessoa possa
-        # conferir; aceitar qualquer fonte devolveria o problema que ela
-        # resolve.
-        if fonte.lower() not in permitidas and _dominio(fonte) not in permitidas:
-            continue
-        bons.append({"titulo": titulo,
-                     "resumo": (it.get("resumo") or "").strip(),
-                     "fonte": fonte})
-        if len(bons) >= BLOCOS:
-            break
+    bons = _validos(k, itens)[:BLOCOS]
     if not bons:
         return None
 
@@ -294,6 +295,38 @@ def montar_roteiro(nicho: Optional[str], itens: Optional[list],
             unico["resumo"] = ""
             roteiro = _montar(d, [unico], nome)
     return roteiro
+
+
+def _validos(k: str, itens: list) -> list:
+    """Só o que tem título E fonte da lista. Usado pelo roteiro e pela locução.
+
+    A FONTE PODE CHEGAR COMO NOME OU COMO URL (auditoria M4.0): um scraper
+    devolve "ge.globo.com" ou a URL inteira, não o rótulo bonito — e casar só
+    por nome exato transformava isso em episódio vazio, em silêncio.
+
+    Fonte de fora não entra: a lista existe pra que a pessoa possa conferir, e
+    aceitar qualquer fonte devolveria o problema que ela resolve.
+    """
+    d = NICHOS[k]
+    permitidas = set()
+    for _f in d["fontes"]:
+        permitidas.add(_f[0].lower())
+        permitidas.add(_dominio(_f[1]))
+
+    bons = []
+    for it in itens or []:
+        if not isinstance(it, dict):
+            continue
+        titulo = (it.get("titulo") or "").strip()
+        fonte = (it.get("fonte") or "").strip()
+        if not titulo or not fonte:
+            continue
+        if fonte.lower() not in permitidas and _dominio(fonte) not in permitidas:
+            continue
+        bons.append({"titulo": titulo,
+                     "resumo": (it.get("resumo") or "").strip(),
+                     "fonte": fonte})
+    return bons
 
 
 def _montar(d: dict, bons: list, nome: str) -> str:
@@ -430,3 +463,129 @@ def pode_enviar(ultimo_envio_iso: Optional[str],
     if ultimo.tzinfo is not None:
         ultimo = ultimo.replace(tzinfo=None)
     return (ref - ultimo) >= timedelta(days=DIAS_ENTRE_EPISODIOS)
+
+
+# ---------------------------------------------------------------------------
+# A LOCUÇÃO: o LLM reescreve pra soar falado, e NÃO acrescenta fato nenhum
+# ---------------------------------------------------------------------------
+# O roteiro determinístico acima lê o `description` do RSS em voz alta — e
+# isso soa como jornal lido por robô, porque é texto ESCRITO. Locução é outra
+# coisa: frase curta, sujeito antes do verbo, número arredondado.
+#
+# A DIVISÃO É A DE SEMPRE (regra 2): o LLM faz LÍNGUA, o Python faz FATO. Ele
+# recebe só o que veio dos feeds e é proibido de acrescentar; o que ele
+# devolve passa por uma conferência em Python antes de virar áudio. Se a
+# conferência reprovar, cai no roteiro determinístico — que é feio mas é
+# verdadeiro. Áudio com voz de locutor afirmando o que ninguém verificou é o
+# jeito mais rápido de perder a confiança de alguém.
+
+_PROMPT_LOCUCAO = """Você escreve o roteiro de um mini-podcast de 3 minutos \
+em português do Brasil, sobre {rotulo}.
+
+MATÉRIA-PRIMA (é tudo o que você sabe; não existe mais nada):
+{materia}
+
+REGRAS, nesta ordem de importância:
+1. NÃO INVENTE. Não acrescente placar, número, nome, data ou consequência que \
+não esteja na matéria-prima acima. Se um item está vago, mantenha vago.
+2. NÃO CITE fonte nenhuma além destas: {fontes}.
+3. {blocos} blocos, na ordem dada. Cada bloco: uma frase que diz o que \
+aconteceu e uma que diz por que importa.
+4. Entre {minimo} e {alvo} palavras no total. Isso é o que cabe em 3 minutos.
+5. Português falado: frases curtas, sem "outrossim", sem "vale ressaltar", \
+sem manchete lida. Você está conversando, não lendo.
+6. Abra cumprimentando {nome} e feche dizendo de quais fontes veio.
+
+Devolva SOMENTE o texto do roteiro, sem título, sem marcação, sem aspas."""
+
+
+def _prompt_de_locucao(nicho: str, itens: list, nome: str = "") -> str:
+    d = NICHOS[nicho]
+    linhas = []
+    for i, it in enumerate(itens, 1):
+        linhas.append("%d. [%s] %s" % (i, it["fonte"], it["titulo"]))
+        if it.get("resumo"):
+            linhas.append("   %s" % it["resumo"][:400])
+    return _PROMPT_LOCUCAO.format(
+        rotulo=d["rotulo"],
+        materia="\n".join(linhas),
+        fontes=", ".join(f[0] for f in d["fontes"]),
+        blocos=min(BLOCOS, len(itens)),
+        minimo=int(PALAVRAS_ALVO * 0.75),
+        alvo=PALAVRAS_ALVO,
+        nome=(nome or "").split()[0] if nome else "a pessoa",
+    )
+
+
+# Fonte inventada é o sintoma mais fácil de detectar de roteiro alucinado, e o
+# mais caro: a pessoa vai conferir onde não existe.
+_VEICULO_RE = re.compile(
+    r"\b(globo|uol|folha|estad[ãa]o|g1|terra|r7|band|sbt|record|cnn|bbc|"
+    r"reuters|bloomberg|forbes|exame|veja|isto[ée]|metropoles|"
+    r"the\s+\w+|new\s+york\s+times)\b", re.I)
+
+
+def conferir_locucao(texto: Optional[str], nicho: Optional[str]) -> Optional[str]:
+    """O roteiro do LLM passa? Devolve o motivo da recusa, ou None se passa.
+
+    Conferência em PYTHON, sobre o texto pronto — não confiança no prompt.
+    "Não invente" é instrução, e instrução o modelo às vezes ignora; isto é
+    verificação, e verificação não depende de boa vontade.
+    """
+    k = _chave(nicho)
+    if not k:
+        return "nicho desconhecido"
+    if not texto or not texto.strip():
+        return "roteiro vazio"
+    n = _conta_palavras(texto)
+    if n > PALAVRAS_TETO:
+        return "passou de %d palavras (%d)" % (PALAVRAS_TETO, n)
+    if n < 60:
+        return "curto demais (%d palavras)" % n
+
+    permitidas = {f[0].lower() for f in NICHOS[k]["fontes"]}
+    permitidas |= {_dominio(f[1]) for f in NICHOS[k]["fontes"]}
+    for achado in _VEICULO_RE.findall(texto):
+        alvo = achado.lower().strip()
+        if not any(alvo in p for p in permitidas):
+            return "citou fonte de fora da lista: %r" % achado
+    return None
+
+
+def locucao(nicho: Optional[str], itens: Optional[list], nome: str = "",
+            chamar=None) -> Optional[str]:
+    """Roteiro falado. Cai no determinístico se o LLM falhar ou reprovar.
+
+    `chamar(prompt) -> str` é injetável: nenhum teste desta base chama modelo
+    pago, e a conferência tem que ser testável com resposta ruim de propósito.
+    """
+    k = _chave(nicho)
+    if not k or not itens:
+        return None
+    seguro = montar_roteiro(k, itens, nome)
+    if not seguro:
+        return None            # sem notícia válida não há episódio, e ponto
+
+    usados = _validos(k, itens)[:BLOCOS]
+    try:
+        bruto = (chamar or _chamar_llm)(_prompt_de_locucao(k, usados, nome))
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[podcast] locucao falhou; vai o roteiro simples", exc_info=True)
+        return seguro
+    motivo = conferir_locucao(bruto, k)
+    if motivo:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[podcast] roteiro do LLM recusado (%s); vai o simples", motivo)
+        return seguro
+    return bruto.strip()
+
+
+def _chamar_llm(prompt: str) -> str:
+    from litellm import completion
+    import ai_engine
+    resp = completion(model=ai_engine.LLM_MODEL, max_tokens=900,
+                      messages=[{"role": "user", "content": prompt}])
+    return resp.choices[0].message.content or ""

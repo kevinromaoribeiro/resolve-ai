@@ -87,7 +87,7 @@ QUIET_START, QUIET_END = 21, 8   # silêncio 21h–8h (exceto alarme com hora)
 # envelheceria em silêncio, que é o defeito que ela existe pra evitar.
 KINDS_PROATIVOS = {
     "vencimento", "1-click-buy", "anti-churn", "trial-ending", "arquivado",
-    "vencido", "hora", "resumo", "winback", "gastos", "retorno",
+    "vencido", "hora", "resumo", "winback", "gastos", "retorno", "podcast", "podcast-dia",
 } | {f"trial_d{n}" for n in range(1, 13)}
 
 
@@ -1084,6 +1084,11 @@ def run_proactive_engine(
         resumo = check_weekly_summary(ref=now)
         gastos = check_gastos_semanais(ref=now)
         retorno = check_retorno(ref=now)
+        # MINI-PODCAST (M4.2). So o CONVITE sai daqui; o audio nunca e
+        # proativo — ele vai como resposta ao toque no botao, dentro da
+        # conversa que a pessoa acabou de abrir.
+        podcast_conv = check_podcast(ref=now)
+        podcast_dia = check_podcast_dia(ref=now)
         try:
             import trial_guiado
             guided = trial_guiado.run_trial_nudges()
@@ -1101,9 +1106,11 @@ def run_proactive_engine(
         "trial_dispatches": trial,
         "guided_dispatches": guided,
         "retorno_dispatches": retorno,
+        "podcast_dispatches": podcast_conv,
+        "podcast_dia_dispatches": podcast_dia,
         "total": (len(alarms) + len(resumo) + len(overdue) + len(due)
                   + len(churn) + len(trial) + len(guided) + len(gastos)
-                  + len(retorno)),
+                  + len(retorno) + len(podcast_conv) + len(podcast_dia)),
     }
 
 
@@ -1112,3 +1119,91 @@ def simulate_next_day() -> dict:
     tomorrow = tempo.hoje() + timedelta(days=1)
     tomorrow_dt = tempo.agora() + timedelta(days=1)
     return run_proactive_engine(ref_date=tomorrow, ref_datetime=tomorrow_dt)
+
+
+def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
+    """Checagem: quem recebe o CONVITE do mini-podcast hoje.
+
+    So o convite sai daqui — o audio nunca e proativo. A pessoa toca em
+    "Quero ouvir" e o audio vai como resposta, dentro da conversa que ela
+    acabou de abrir. Audio de 3 min chegando sozinho e a mensagem mais
+    intrusiva que existe no WhatsApp, e este numero ja foi restringido duas
+    vezes.
+
+    Dois grupos entram:
+      1. quem escolheu nicho na landing e passou das 6h do cadastro (uma vez);
+      2. quem ja ouviu, escolheu dia da semana, e faz 7 dias do ultimo.
+
+    O `kind` e "podcast" e ele esta em `KINDS_SEM_TEMPLATE`: fora da janela
+    de 24h o convite nao sai, e esta certo. Nao ha template de podcast e nao
+    vai haver — seria marketing, e marketing neste numero e o que a regua da
+    Meta pune.
+    """
+    import podcast as _pod
+    import voz as _voz
+
+    agora = ref or tempo.agora()
+    # SEM VOZ CONFIGURADA, NAO CONVIDA. Perguntar "quer ouvir?" e nao ter
+    # como gerar o audio e prometer o que nao da pra entregar — e a pessoa
+    # toca no botao e nao recebe nada.
+    if not _voz.disponivel():
+        return []
+
+    dispatches: list[dict] = []
+    vistos: set = set()
+
+    def _junta(u, primeiro: bool):
+        if u["id"] in vistos:
+            return
+        if not db.user_can_receive(u):
+            return
+        if not _pod.pode_enviar(u.get("podcast_ultimo"), agora=agora):
+            return
+        convite = _pod.convite(u.get("podcast_nicho"), nome=u.get("nome") or "")
+        if not convite:
+            return
+        vistos.add(u["id"])
+        dispatches.append({
+            "user_id": u["id"],
+            "user_nome": u["nome"],
+            "telefone": u["telefone"],
+            "item_id": None,
+            "kind": "podcast",
+            "message": convite["texto"],
+            "botoes": convite["botoes"],
+            "nicho": convite["nicho"],
+            "primeiro": primeiro,
+            "quando": _fmt_br(agora.date().isoformat()),
+        })
+
+    for u in db.podcast_a_convidar(ref=agora,
+                                   horas=_pod.HORAS_ATE_O_CONVITE):
+        _junta(u, True)
+
+    # DIA DA SEMANA EM PORTUGUES, do jeito que a pessoa escolheu no botao.
+    dia = ("Segunda", "Terça", "Quarta", "Quinta", "Sexta",
+           "Sábado", "Domingo")[agora.weekday()]
+    for u in db.podcast_assinantes(dia=dia):
+        _junta(u, False)
+    return dispatches
+
+
+def check_podcast_dia(ref: Optional[datetime] = None) -> list[dict]:
+    """A pergunta do dia da semana, 10 min depois do primeiro episodio."""
+    import podcast as _pod
+
+    agora = ref or tempo.agora()
+    saida: list[dict] = []
+    for u in db.podcast_a_perguntar_o_dia(
+            ref=agora, minutos=_pod.MINUTOS_ATE_PERGUNTAR_O_DIA):
+        if not db.user_can_receive(u):
+            continue
+        p = _pod.pergunta_do_dia(nome=u.get("nome") or "")
+        saida.append({
+            "user_id": u["id"], "user_nome": u["nome"],
+            "telefone": u["telefone"], "item_id": None,
+            "kind": "podcast-dia", "message": p["texto"],
+            "botoes": p["botoes"],
+            "quando": _fmt_br(agora.date().isoformat()),
+        })
+    return saida

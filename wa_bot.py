@@ -41,6 +41,7 @@ import ai_engine
 import boleto  # M2.1: le conta de foto/PDF. Le e lembra — nunca paga.
 import calendario  # M2.2: datas que o bot sabe sozinho (IPVA, feriados)
 import documento  # M3.5: imagem que NAO e boleto — propoe e a pessoa confirma
+import podcast  # M4.2: mini-podcast semanal, um nicho por pessoa
 import scheduler
 import canal as wasender  # camada de canal: Meta oficial OU WasenderAPI (ver canal.py)
 import meta_cloud  # handshake e assinatura do webhook da Meta
@@ -726,6 +727,57 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         return (f"Pronto, agora é *{novo.split()[0]}*. "
                 f"{'Eu vinha te chamando de ' + anterior.split()[0] + ' — foi mal. ' if anterior and anterior.split()[0].lower() != novo.split()[0].lower() else ''}"
                 f"Anotado pra sempre. ✅")
+
+    # --- o nicho que a pessoa escolheu na landing -------------------------
+    #
+    # NÃO CONSOME A MENSAGEM: ela também está se apresentando, e o resto do
+    # fluxo precisa continuar normalmente. Isto aqui só guarda a escolha de
+    # lado, uma vez.
+    if not user.get("podcast_nicho"):
+        _m_nicho = _NICHO_DA_LANDING_RE.search(text or "")
+        if _m_nicho:
+            _n = podcast.nicho_valido(_m_nicho.group(1).strip())
+            if _n:
+                db.update_user_fields(user["id"], podcast_nicho=_n)
+                user["podcast_nicho"] = _n
+                import logging as _lg
+                _lg.getLogger("resolveai").info(
+                    "[podcast] nicho %r guardado pra user %s", _n, user["id"])
+
+    # --- MINI-PODCAST: as tres respostas do convite -----------------------
+    #
+    # O audio SO sai daqui, como resposta a um toque. Nunca proativo: audio de
+    # 3 min chegando sozinho e a mensagem mais intrusiva que existe no
+    # WhatsApp, e este numero ja foi restringido duas vezes.
+    if _PODCAST_NAO_QUERO_RE.match(text):
+        db.update_user_fields(user["id"], podcast_nicho=None,
+                              podcast_dia=None)
+        return ("Beleza, cancelei o mini podcast. 👍\n\n"
+                "Seus lembretes continuam normais — isso aqui era só um "
+                "extra. Se mudar de ideia, é só me dizer o assunto.")
+
+    if _PODCAST_DEPOIS_RE.match(text):
+        # Nao mexe em `podcast_ultimo`: ela nao ouviu nada. O convite volta
+        # no ciclo semanal, sem insistencia hoje.
+        return ("Tranquilo! 👍 Deixo pra próxima semana.\n\n"
+                "Se quiser antes, é só me dizer *quero ouvir*.")
+
+    if _PODCAST_QUERO_RE.match(text):
+        return _mandar_podcast(user, phone)
+
+    # A resposta do dia da semana: so vale com a pergunta pendente, senao
+    # "segunda" numa frase qualquer viraria assinatura de audio.
+    if (user.get("podcast_nicho") and not user.get("podcast_dia")
+            and user.get("podcast_dia_perguntado")):
+        _dia = _DIA_DA_SEMANA_RE.match(text)
+        if _dia:
+            _nome_dia = _dia.group(1).capitalize()
+            db.update_user_fields(user["id"], podcast_dia=_nome_dia)
+            return (f"Fechado! 🎧 Toda *{_nome_dia.lower()}* eu te mando "
+                    f"o resumo de "
+                    f"*{podcast.rotulo(user.get('podcast_nicho')).lower()}*.\n\n"
+                    f"Pra parar quando quiser, é só dizer *não quero mais o "
+                    f"podcast*.")
 
     # --- "Copiar código": reenvia o código sozinho -------------------------
     #
@@ -1556,6 +1608,46 @@ _COMECAR_RE = re.compile(
 # Títulos curtos (a Meta corta em 20 chars) e, acima de tudo, títulos que
 # `entende_comando` reconhece. A ordem importa: a ação mais provável primeiro,
 # porque no celular o primeiro botão é o que o polegar alcança.
+# O NICHO VEM NA PRIMEIRA MENSAGEM, escolhido na landing. Ela monta
+# "...(e o resumo semanal de Futebol)" e o link do WhatsApp já abre com esse
+# texto — a pessoa só aperta enviar.
+#
+# Capturar aqui (e não perguntar depois) é o que faz a escolha dela valer:
+# quem clicou no nicho já decidiu, e perguntar de novo no chat é o bot
+# mostrando que não prestou atenção.
+_NICHO_DA_LANDING_RE = re.compile(
+    r"resumo\s+semanal\s+de\s+([^)\n.]{3,40})", re.I)
+
+# ---------------------------------------------------------------------------
+# MINI-PODCAST — as frases que o botão devolve (M4.2)
+# ---------------------------------------------------------------------------
+# O clique num botão do WhatsApp chega como TEXTO (`button_reply.title`),
+# então quem atende é a mesma regra que atende quem digita. Por isso cada uma
+# aceita também o jeito que a pessoa escreveria sem o botão.
+#
+# Ancoradas na frase inteira de propósito: "quero ouvir a música que você
+# mandou" não pode virar um episódio de podcast.
+_PODCAST_QUERO_RE = re.compile(
+    r"^\s*(quero\s+ouvir|manda\s+o\s+(mini\s+)?podcast|"
+    r"quero\s+o\s+(mini\s+)?podcast|pode\s+mandar\s+o\s+[áa]udio)"
+    r"\s*[.!?]?\s*$", re.I)
+
+_PODCAST_DEPOIS_RE = re.compile(
+    r"^\s*(agora\s+n[ãa]o|mais\s+tarde|depois|hoje\s+n[ãa]o)"
+    r"\s*[.!?]?\s*$", re.I)
+
+# A saída tem que ser fácil de achar: sem ela, a única saída da pessoa é
+# bloquear o número — e bloqueio conta contra a qualidade na Meta.
+_PODCAST_NAO_QUERO_RE = re.compile(
+    r"^\s*(n[ãa]o\s+quero\s+mais(\s+o\s+podcast)?|"
+    r"cancela(r)?\s+o\s+(mini\s+)?podcast|"
+    r"para(r)?\s+(o\s+)?podcast|sem\s+podcast)\s*[.!?]?\s*$", re.I)
+
+_DIA_DA_SEMANA_RE = re.compile(
+    r"^\s*(segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo)"
+    r"(\s*-?\s*feira)?\s*[.!?]?\s*$", re.I)
+
+
 # O botão que reenvia o código sozinho. Título curto de propósito: a Meta
 # corta em 20 caracteres, e botão cortado no meio parece defeito.
 BOTAO_COPIAR = "Copiar código"
@@ -1606,6 +1698,13 @@ def _botoes_do_disparo(d: dict):
     mesmo erro que em 14/08 deu baixa no item errado. Nesses, só "Ver tudo".
     """
     kind = (d or {}).get("kind") or ""
+    # BOTOES QUE VIAJAM NO PROPRIO DISPARO ganham do mapa por kind. O convite
+    # do podcast tem botao proprio (o nicho muda o texto, nao os botoes), e
+    # duplicar a lista aqui e no `podcast.py` e como as duas versoes
+    # divergem — foi exatamente assim que a promessa de D-60 descolou do
+    # motor no M3.5.
+    if (d or {}).get("botoes"):
+        return list(d["botoes"])[:3]
     botoes = BOTOES_POR_KIND.get(kind)
     if not botoes:
         return None
@@ -2328,6 +2427,68 @@ _PENDENCIAS_DE_CONVERSA = frozenset({
     "confirmar_retorno", "ajustar_retorno",
     "confirmar_documento", "ajustar_documento",
 })
+
+
+def _mandar_podcast(user: dict, phone: str) -> str:
+    """Gera e manda o episódio. Devolve o texto que fecha a conversa.
+
+    A ORDEM IMPORTA e cada passo pode falhar honestamente:
+      1. busca a notícia nos feeds  -> sem notícia, não há episódio
+      2. escreve o roteiro          -> LLM reprovado cai no determinístico
+      3. sintetiza a voz            -> sem áudio, não manda nada
+      4. manda pelo `canal`         -> respeita a janela de 24h como tudo
+
+    Em NENHUM ponto o bot inventa conteúdo pra ter o que mandar. "Esta semana
+    não teve novidade no seu assunto" é uma resposta honesta; um episódio
+    fabricado pra cumprir agenda é como se perde a confiança de alguém de uma
+    vez só.
+    """
+    import noticias
+    import voz
+
+    nicho = user.get("podcast_nicho")
+    if not podcast.nicho_valido(nicho):
+        return ("Você ainda não escolheu um assunto pro mini podcast. 🎧\n\n"
+                "Pode ser futebol, games, inteligência artificial, moda ou "
+                "varejo online — é só me dizer qual.")
+
+    try:
+        itens = noticias.buscar(nicho)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[podcast] falha ao buscar noticia", exc_info=True)
+        itens = []
+
+    roteiro = podcast.locucao(nicho, itens, nome=user.get("nome") or "")
+    if not roteiro:
+        return (f"Essa semana não achei novidade que valesse 3 minutos em "
+                f"*{podcast.rotulo(nicho).lower()}*. 🤷\n\n"
+                f"Semana que vem eu tento de novo — prefiro não te mandar "
+                f"áudio só pra cumprir tabela.")
+
+    audio = voz.sintetizar(roteiro)
+    if not audio:
+        return ("Não consegui gerar o áudio agora. 😕 Tenta de novo daqui a "
+                "pouco que eu mando.")
+
+    res = wasender.falar_audio(phone, audio, user_id=user["id"])
+    if not res.get("enviado"):
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[podcast] audio nao saiu p/ user %s: %s",
+            user["id"], res.get("motivo"))
+        return ("Preparei seu episódio mas não consegui te mandar agora. 😕 "
+                "Responde *quero ouvir* que eu tento de novo.")
+
+    db.podcast_marcar_envio(user["id"])
+    # O convite fica carimbado junto: quem ouviu não precisa ser convidado
+    # de novo pelo caminho de "primeira vez".
+    if not user.get("podcast_convite_em"):
+        db.podcast_marcar_convite(user["id"])
+    return (f"Pronto! 🎧 Seu resumo de "
+            f"*{podcast.rotulo(nicho).lower()}* está aí em cima.\n\n"
+            f"_Fontes: {', '.join(f[0] for f in podcast.fontes(nicho))}._")
 
 
 def _resgatar_pendencia(user: dict, phone: str) -> str:
@@ -5103,13 +5264,16 @@ PODERES = [
      "desc": "Horas depois de você dar baixa em unha, dentista ou "
              "sobrancelha, pergunta se já guarda o próximo — com a data "
              "calculada. Conta de luz não ganha essa pergunta."},
-    {"grupo": "Sai aviso", "titulo": "Mini podcast semanal (estrutura pronta)",
+    {"grupo": "Sai aviso", "titulo": "Mini podcast semanal",
      "desc": "Áudio de 3 minutos, um nicho por pessoa, no máximo 1x por "
-             "semana. Cinco nichos: futebol, games, IA, moda e varejo "
-             "online — cada um com 3 fontes fixas, citadas no fim do áudio. "
+             "semana. Cinco nichos — futebol, games, IA, moda e varejo "
+             "online — cada um com 3 fontes de RSS conferidas, citadas no "
+             "fim do áudio. A notícia vem do feed, nunca da cabeça do "
+             "modelo; se ele citar fonte de fora, o roteiro é recusado. "
              "O bot NUNCA manda sozinho: pergunta \"quer ouvir?\" com botão, "
-             "e 10 min depois pergunta que dia você prefere. Falta só a "
-             "geração de voz, que depende do seu teste."},
+             "manda só no toque, e 10 min depois pergunta que dia você "
+             "prefere. Sem novidade na semana, ele diz isso em vez de "
+             "inventar episódio. Custa ~US$ 0,03 por áudio."},
     {"grupo": "Sai aviso", "titulo": "Arquivamento com aviso",
      "desc": "Item parado 15 dias sai da lista, mas só DEPOIS que o aviso "
              "comprovadamente saiu. Nunca some calado."},
@@ -5816,6 +5980,21 @@ try:
                 logging.getLogger("resolveai").warning(
                     "[health] nao consegui ler os templates", exc_info=True)
                 body["templates"] = "nao consegui ler"
+            # MINI-PODCAST: sem provedor de voz a feature nem e oferecida, e
+            # sem isso aqui so daria pra descobrir isso pelo silencio.
+            try:
+                import voz as _voz
+                body["podcast"] = {
+                    "voz": _voz.provedor_configurado() or "SEM PROVEDOR",
+                    "formato": _voz.MIME,
+                    "custo_mes_usd_por_1000":
+                        round(_voz.custo_mensal_estimado_usd(1000), 2),
+                }
+            except Exception:
+                import logging
+                logging.getLogger("resolveai").warning(
+                    "[health] nao consegui ler o estado da voz", exc_info=True)
+                body["podcast"] = "nao consegui ler"
         if wa in ("close", "closed", "disconnected", "removed"):
             from fastapi.responses import JSONResponse
             return JSONResponse(status_code=500, content=body)

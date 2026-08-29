@@ -34,9 +34,12 @@ def test_cada_nicho_tem_tres_fontes_verificaveis(nicho):
     pra nada — o motivo de citar e justamente deixar conferir."""
     fs = podcast.NICHOS[nicho]["fontes"]
     assert len(fs) == 3, (nicho, fs)
-    for nome, url in fs:
+    for nome, url, rss in fs:
         assert nome.strip(), nicho
         assert url.startswith("https://"), (nicho, url)
+        # O FEED E OBRIGATORIO. Sem ele a fonte e decorativa: o bot cita no
+        # audio uma coisa que nunca leu.
+        assert rss.startswith("https://"), (nicho, nome, rss)
 
 
 def test_nicho_aceita_como_a_pessoa_escreve():
@@ -285,19 +288,22 @@ def test_todas_as_urls_tem_dominio_coerente_com_o_nome():
     """Fonte cujo dominio nao bate com o nome e fonte que ninguem confere."""
     esperado = {
         "ge.globo": "ge.globo.com", "ESPN Brasil": "espn.com.br",
-        "Lance!": "lance.com.br", "IGN Brasil": "br.ign.com",
-        "The Enemy": "theenemy.com.br", "Adrenaline": "adrenaline.com.br",
+        "Gazeta Esportiva": "gazetaesportiva.com",
+        "IGN Brasil": "br.ign.com",
+        "Critical Hits": "criticalhits.com.br",
+        "Adrenaline": "adrenaline.com.br",
         "Canaltech IA": "canaltech.com.br", "Olhar Digital": "olhardigital.com.br",
         "MIT Technology Review Brasil": "mittechreview.com.br",
-        "Vogue Brasil": "vogue.globo.com", "Elle Brasil": "elle.com.br",
+        "Vogue Brasil": "vogue.globo.com",
+        "Steal the Look": "stealthelook.com.br",
         "FFW": "ffw.uol.com.br",
-        "E-Commerce Brasil": "ecommercebrasil.com.br",
+        "Consumidor Moderno": "consumidormoderno.com.br",
         "Mercado&Consumo": "mercadoeconsumo.com.br",
         "NeoFeed varejo": "neofeed.com.br",
     }
     vistos = 0
     for dados in podcast.NICHOS.values():
-        for nome, url in dados["fontes"]:
+        for nome, url, _rss in dados["fontes"]:
             assert nome in esperado, "fonte nova sem dominio conferido: %s" % nome
             assert podcast._dominio(url) == esperado[nome], (nome, url)
             vistos += 1

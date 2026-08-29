@@ -232,6 +232,15 @@ def init_db() -> None:
         # caso de 99% dos itens.
         if "avisar_dias" not in item_cols:
             conn.execute("ALTER TABLE items ADD COLUMN avisar_dias TEXT")
+        # M4.2 — mini-podcast. Tudo em `users` porque e preferencia da
+        # PESSOA, nao de um item: o nicho que ela escolheu na landing, o dia
+        # da semana que ela pediz, e quando saiu o ultimo episodio (que e o
+        # que segura o teto de 1x por semana).
+        _ucols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+        for _c in ("podcast_nicho", "podcast_dia", "podcast_ultimo",
+                   "podcast_convite_em", "podcast_dia_perguntado"):
+            if _c not in _ucols:
+                conn.execute("ALTER TABLE users ADD COLUMN %s TEXT" % _c)
         # v6.5: CHECK antigo de status não conhece 'vencido' -> rebuild
         sql_items = conn.execute(
             "SELECT sql FROM sqlite_master WHERE name='items'").fetchone()
@@ -383,7 +392,12 @@ def update_user_fields(user_id: int, **fields) -> None:
                "onboarding_step", "trial_nudges_sent", "lgpd_aceite_em",
                "trial_base", "placa_final",
                # M2.9 — assinatura aprovada na mão pelo dono.
-               "plano", "pago_em"}
+               "plano", "pago_em",
+               # M4.2 — mini-podcast: o nicho escolhido, o dia da semana que
+               # a pessoa pediu, quando saiu o último episódio e quando o
+               # convite foi feito.
+               "podcast_nicho", "podcast_dia", "podcast_ultimo",
+               "podcast_convite_em", "podcast_dia_perguntado"}
     cols = {k: v for k, v in fields.items() if k in allowed}
     # DESCARTE SILENCIOSO ERA UMA ARMADILHA. Coluna nova no banco e esquecida
     # aqui vira UPDATE que não acontece, sem erro e sem log: o chamador acha
@@ -2717,3 +2731,99 @@ def apagar_item(item_id: int, user_id: int) -> bool:
             return cur.rowcount > 0
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# MINI-PODCAST (M4.2)
+# ---------------------------------------------------------------------------
+
+def podcast_a_convidar(ref=None, horas: int = 6, limite: int = 20) -> list[dict]:
+    """Quem escolheu nicho, ja passou das N horas do cadastro e nunca ouviu.
+
+    O CONVITE E UMA VEZ SO. `podcast_convite_em` carimba quem ja recebeu, e
+    quem disse "agora nao" nao volta a ser convidado por este caminho — ele
+    entra no ciclo semanal normal. Insistir com quem nao respondeu e como se
+    perde alguem que so estava ocupado.
+    """
+    agora = ref or tempo.agora()
+    corte = (agora - timedelta(hours=horas)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        linhas = conn.execute(
+            """SELECT * FROM users
+                WHERE podcast_nicho IS NOT NULL
+                  AND TRIM(podcast_nicho) <> ''
+                  AND podcast_convite_em IS NULL
+                  AND data_criacao <= ?
+                ORDER BY data_criacao ASC LIMIT ?""",
+            (corte, limite)).fetchall()
+    return [dict(r) for r in linhas]
+
+
+def podcast_assinantes(dia: Optional[str] = None,
+                       limite: int = 200) -> list[dict]:
+    """Quem ja ouviu pelo menos um e escolheu dia. Filtra pelo dia quando dado.
+
+    Quem NAO escolheu dia nao entra: ela ouviu uma vez e nao pediu recorrencia,
+    e transformar silencio em assinatura semanal de audio e o tipo de coisa
+    que faz a pessoa bloquear o numero.
+    """
+    sql = ["SELECT * FROM users WHERE podcast_nicho IS NOT NULL",
+           "AND TRIM(podcast_nicho) <> ''",
+           "AND podcast_dia IS NOT NULL AND TRIM(podcast_dia) <> ''"]
+    args: list = []
+    if dia:
+        sql.append("AND LOWER(podcast_dia) = LOWER(?)")
+        args.append(dia)
+    sql.append("ORDER BY id ASC LIMIT ?")
+    args.append(limite)
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(" ".join(sql), args).fetchall()]
+
+
+def podcast_marcar_envio(user_id: int, quando=None) -> None:
+    """Carimba o episodio que saiu. E o que segura o teto de 1x por semana."""
+    q = (quando or tempo.agora()).strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET podcast_ultimo=? WHERE id=?",
+                     (q, int(user_id)))
+
+
+def podcast_marcar_convite(user_id: int, quando=None) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET podcast_convite_em=? WHERE id=?",
+            ((quando or tempo.agora()).strftime("%Y-%m-%d %H:%M:%S"),
+             int(user_id)))
+
+
+def podcast_a_perguntar_o_dia(ref=None, minutos: int = 10,
+                              limite: int = 20) -> list[dict]:
+    """Quem ouviu o primeiro episodio ha N minutos e ainda nao escolheu dia.
+
+    A pergunta vem DEPOIS do audio, nao junto: perguntar antes de a pessoa
+    ouvir e pedir compromisso sobre algo que ela ainda nao sabe se gosta.
+
+    Uma vez so — `podcast_dia_perguntado` carimba. Quem nao respondeu nao e
+    cobrado de novo: ela ouviu, nao quis assinar, e insistir e o caminho pro
+    bloqueio.
+    """
+    agora = ref or tempo.agora()
+    corte = (agora - timedelta(minutes=minutos)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        linhas = conn.execute(
+            """SELECT * FROM users
+                WHERE podcast_ultimo IS NOT NULL
+                  AND podcast_ultimo <= ?
+                  AND (podcast_dia IS NULL OR TRIM(podcast_dia) = '')
+                  AND podcast_dia_perguntado IS NULL
+                ORDER BY podcast_ultimo ASC LIMIT ?""",
+            (corte, limite)).fetchall()
+    return [dict(r) for r in linhas]
+
+
+def podcast_marcar_pergunta_do_dia(user_id: int, quando=None) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET podcast_dia_perguntado=? WHERE id=?",
+            ((quando or tempo.agora()).strftime("%Y-%m-%d %H:%M:%S"),
+             int(user_id)))
