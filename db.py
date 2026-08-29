@@ -202,6 +202,16 @@ def init_db() -> None:
         # data ninguém sabe. O painel conta essas à parte em vez de inventar.
         if "data_conclusao" not in item_cols:
             conn.execute("ALTER TABLE items ADD COLUMN data_conclusao TEXT")
+        # M3.5: o código de pagamento em coluna própria.
+        #
+        # Ele NUNCA vai pra descrição — `boleto.sem_codigo_de_pagamento`
+        # existe porque isso já aconteceu e o código ficou visível na lista.
+        # Aqui ele fica guardado e sai só no aviso de vencimento, que é
+        # quando a pessoa precisa dele pra colar no app do banco.
+        if "codigo_pagamento" not in item_cols:
+            conn.execute("ALTER TABLE items ADD COLUMN codigo_pagamento TEXT")
+        if "codigo_tipo" not in item_cols:
+            conn.execute("ALTER TABLE items ADD COLUMN codigo_tipo TEXT")
         # v6.5: CHECK antigo de status não conhece 'vencido' -> rebuild
         sql_items = conn.execute(
             "SELECT sql FROM sqlite_master WHERE name='items'").fetchone()
@@ -606,6 +616,14 @@ def add_item(
     link_afiliado: Optional[str] = None,
     hora_alvo: Optional[str] = None,        # 'HH:MM' ou None
     recorrencia: Optional[str] = None,      # 'diaria'|'mensal:20'|'semanal:2'|'horas:8'
+    # M3.5 — o código de pagamento mora AQUI, nunca na descrição.
+    #
+    # `boleto.sem_codigo_de_pagamento` existe justamente porque o código já
+    # vazou pra descrição uma vez e ficou visível na lista da pessoa. Coluna
+    # própria mantém aquela proteção de pé e ainda permite devolver o código
+    # no aviso de vencimento, que é o único momento em que ele serve.
+    codigo_pagamento: Optional[str] = None,
+    codigo_tipo: Optional[str] = None,      # 'boleto' | 'pix'
 ) -> int:
     if tipo not in VALID_ITEM_TYPES:
         raise ValueError(f"tipo inválido: {tipo!r}")
@@ -613,19 +631,29 @@ def add_item(
         raise ValueError(f"status inválido: {status!r}")
     if categoria not in VALID_CATEGORIES:
         categoria = "Outros"
+    if codigo_tipo and codigo_tipo not in ("boleto", "pix"):
+        raise ValueError(f"codigo_tipo inválido: {codigo_tipo!r}")
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO items
                (user_id, tipo, categoria, descricao, valor_reais,
                 data_vencimento, hora_alvo, recorrencia, status,
-                link_afiliado, data_criacao)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                link_afiliado, data_criacao, codigo_pagamento, codigo_tipo)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (user_id, tipo, categoria, descricao, valor_reais,
              data_vencimento, hora_alvo, recorrencia, status,
-             link_afiliado, _now_iso()),
+             link_afiliado, _now_iso(), codigo_pagamento, codigo_tipo),
         )
     touch_user(user_id)
     return int(cur.lastrowid)
+
+
+def get_item(item_id: int) -> Optional[dict]:
+    """Um item pelo id. None se não existe."""
+    with get_conn() as conn:
+        r = conn.execute("SELECT * FROM items WHERE id=?",
+                         (item_id,)).fetchone()
+    return dict(r) if r else None
 
 
 def list_items(

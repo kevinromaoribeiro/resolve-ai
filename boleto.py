@@ -602,3 +602,104 @@ def texto_de_pdf(dados: bytes) -> Optional[str]:
         log.warning("[boleto] falha ao ler PDF", exc_info=True)
         return None
     return texto if (texto or "").strip() else None
+
+
+# ---------------------------------------------------------------------------
+# O CÓDIGO DE PAGAMENTO, PRONTO PRA COLAR (M3.5)
+# ---------------------------------------------------------------------------
+# Pedido do Kevin em 29/08/2026: na hora de pagar, devolver o código do jeito
+# que o app do banco aceita — sem espaço, sem ponto — e dizendo se é código de
+# barras ou PIX.
+#
+# ISTO INVERTE UMA DECISÃO ANTERIOR, e de propósito. `sem_codigo_de_pagamento`
+# (acima) existe porque o OCR inteiro virava descrição do item e o código
+# ficava salvo na lista da pessoa. O motivo continua válido: o código NÃO pode
+# morar na descrição nem em log. Ele passa a morar em coluna própria e só sai
+# no aviso de vencimento, que é o único momento em que serve pra alguma coisa.
+#
+# Por que separar boleto de PIX: colar código de barras no campo de PIX
+# simplesmente não funciona, e a pessoa conclui que o bot errou. O rótulo é
+# metade da utilidade.
+
+# Boleto bancário tem 47 dígitos na linha digitável; concessionária, 48.
+_TAMANHOS_BOLETO = (47, 48)
+
+# PIX copia-e-cola (BR Code / EMV) sempre abre com o payload format "0002"
+# seguido da versão "01", e carrega o domínio do BCB.
+_PIX_INICIO = "000201"
+_PIX_MARCA = "BR.GOV.BCB.PIX"
+
+# SEM QUEBRA DE LINHA no conjunto, de propósito: a linha digitável vive numa
+# linha só, e aceitar quebra fazia o número da linha anterior colar nela. No
+# OCR real, o valor "R$ 187,40" seguido da linha digitável virava um código de
+# 46 dígitos (o "40" do valor mais os 44 da linha) e era descartado por
+# tamanho — o código certo estava ali e o bot dizia que não achou.
+_SO_DIGITOS_RE = re.compile(r"[\d.\t ]{40,}")
+
+
+def _limpar(bruto: str) -> str:
+    return re.sub(r"\D", "", bruto or "")
+
+
+def codigo_de_pagamento(texto: Optional[str]) -> Optional[dict]:
+    """Acha o código de pagamento num texto de OCR. None se não houver.
+
+    Devolve {"tipo": "boleto"|"pix", "colavel": str}.
+
+    Conservador de propósito: só reconhece o que tem tamanho de código de
+    pagamento de verdade. CPF, telefone e valor têm dígito demais pra chutar —
+    e um código errado no aviso é pior que aviso sem código, porque a pessoa
+    cola, o banco recusa e ela para de confiar na mensagem.
+    """
+    if not texto:
+        return None
+    bruto = str(texto)
+
+    # --- PIX primeiro: o payload é alfanumérico e não colide com boleto ---
+    if _PIX_MARCA in bruto.upper():
+        i = bruto.upper().find(_PIX_INICIO)
+        if i >= 0:
+            # o BR Code vai até o CRC final (4 chars depois de "6304")
+            trecho = re.sub(r"\s+", "", bruto[i:])
+            m = re.search(r"6304[0-9A-Fa-f]{4}", trecho)
+            if m:
+                return {"tipo": "pix", "colavel": trecho[:m.end()]}
+            return {"tipo": "pix", "colavel": trecho}
+
+    # --- boleto: sequência longa de dígitos, ponto e espaço ---
+    #
+    # LINHA A LINHA: a linha digitável nunca se parte, e varrer o texto
+    # inteiro de uma vez faz o número da linha anterior colar nela.
+    candidatos = []
+    for linha in bruto.splitlines():
+        candidatos.extend(_SO_DIGITOS_RE.findall(linha))
+    for achado in candidatos:
+        digitos = _limpar(achado)
+        if len(digitos) in _TAMANHOS_BOLETO:
+            return {"tipo": "boleto", "colavel": digitos}
+        # o código de BARRAS tem 44; a linha digitável derivada dele tem 47/48.
+        # Aceitamos 44 porque alguns OCR leem a barra, não a linha.
+        if len(digitos) == 44:
+            return {"tipo": "boleto", "colavel": digitos}
+    return None
+
+
+def bloco_para_pagar(codigo: Optional[dict]) -> str:
+    """O pedaço da mensagem que carrega o código. "" quando não há código.
+
+    O código sai SOZINHO numa linha: no WhatsApp, o toque-e-copia seleciona o
+    parágrafo, e código grudado em texto vem com palavra junto — o banco
+    recusa e a pessoa não entende por quê.
+    """
+    if not codigo:
+        return ""
+    colavel = (codigo.get("colavel") or "").strip()
+    if not colavel:
+        return ""
+    if codigo.get("tipo") == "pix":
+        return ("\n\nPIX copia e cola:\n"
+                + colavel
+                + "\n_(copia e cola no PIX do seu banco)_")
+    return ("\n\nCódigo de barras:\n"
+            + colavel
+            + "\n_(cola no campo de código de barras do seu banco)_")

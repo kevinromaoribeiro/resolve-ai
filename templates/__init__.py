@@ -403,6 +403,10 @@ KINDS_SEM_TEMPLATE = {
     # link de afiliado. Template com link comercial é MARKETING na Meta, e
     # abrir essa porta é abrir o número inteiro pra recusa por categoria.
     "1-click-buy",
+    # oferta de marcar o proximo servico (unha, dentista): e conveniencia,
+    # nao compromisso com data. Quem esfriou nao precisa receber isso fora da
+    # janela, e a Meta classificaria como marketing.
+    "retorno",
     # resumo semanal de gastos: agregado, e a Meta classifica agregado como
     # marketing. Ver o comentário no lugar onde o template morava. Dentro da
     # janela de 24h ele sai normalmente, como texto livre.

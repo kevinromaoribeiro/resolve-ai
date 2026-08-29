@@ -87,7 +87,7 @@ QUIET_START, QUIET_END = 21, 8   # silêncio 21h–8h (exceto alarme com hora)
 # envelheceria em silêncio, que é o defeito que ela existe pra evitar.
 KINDS_PROATIVOS = {
     "vencimento", "1-click-buy", "anti-churn", "trial-ending", "arquivado",
-    "vencido", "hora", "resumo", "winback", "gastos",
+    "vencido", "hora", "resumo", "winback", "gastos", "retorno",
 } | {f"trial_d{n}" for n in range(1, 13)}
 
 
@@ -172,11 +172,21 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
                 valor = (f" de *R$ {item['valor_reais']:.2f}*".replace(".", ",")
                          if item.get("valor_reais") else "")
                 if is_conta:
+                    # O CÓDIGO DE PAGAMENTO SAI AQUI (M3.5) — e só aqui.
+                    #
+                    # É o único momento em que ele serve: a pessoa está
+                    # abrindo o app do banco. Guardado desde a foto do boleto,
+                    # em coluna própria, sem nunca passar pela descrição.
+                    import boleto as _bol
+                    _cod = ({"tipo": item.get("codigo_tipo"),
+                             "colavel": item.get("codigo_pagamento")}
+                            if item.get("codigo_pagamento") else None)
                     msg = (
                         f"💡 {first_name}, passando pra lembrar: "
                         f"*{item['descricao']}*{valor} vence em *{venc}*.\n\n"
                         f"Quando pagar, é só me dizer *paguei* que eu dou "
                         f"baixa. Se quiser adiar o aviso, responda *adiar*."
+                        + _bol.bloco_para_pagar(_cod)
                     )
                 else:
                     msg = (
@@ -946,6 +956,42 @@ def rodar_purga_se_for_o_dia(now: Optional[datetime] = None) -> Optional[dict]:
         return None
 
 
+def check_retorno(ref: Optional[datetime] = None) -> list[dict]:
+    """Depois da baixa de um serviço que repete, oferece marcar o próximo.
+
+    Quem decide o que repete é `recorrencia.sugestao` — unha, sobrancelha,
+    dentista sim; conta de luz não. E a espera de ~10h existe pra pergunta
+    não chegar com a pessoa ainda saindo do salão.
+
+    SEM TEMPLATE de propósito (`KINDS_SEM_TEMPLATE`): é uma pergunta de
+    conveniência, não um compromisso com data. Quem esfriou não precisa
+    receber isso fora da janela — e a Meta classificaria como marketing.
+    """
+    import recorrencia
+
+    agora = ref or tempo.agora()
+    dispatches: list[dict] = []
+    for linha in recorrencia.pendentes_de_pergunta(ref=agora):
+        u = db.get_user(linha["user_id"])
+        if not u or not db.user_can_receive(u):
+            continue
+        p = recorrencia.pergunta(linha["sugestao"], linha["descricao"])
+        if not p:
+            continue
+        dispatches.append({
+            "user_id": linha["user_id"],
+            "user_nome": linha.get("user_nome"),
+            "telefone": linha["telefone"],
+            "item_id": linha["id"],
+            "kind": "retorno",
+            "message": p["texto"],
+            "botoes": p["botoes"],
+            "sugestao": linha["sugestao"],
+            "descricao": linha["descricao"],
+        })
+    return dispatches
+
+
 def run_proactive_engine(
     ref_date: Optional[date] = None,
     ref_datetime: Optional[datetime] = None,
@@ -960,14 +1006,15 @@ def run_proactive_engine(
     rodar_purga_se_for_o_dia(now)         # M1.6 (seco por padrao)
     alarms = check_time_alarms(ref=now)
     if _in_quiet_hours(now):
-        due, churn, trial, guided, overdue, resumo, gastos = (
-            [], [], [], [], [], [], [])
+        due, churn, trial, guided, overdue, resumo, gastos, retorno = (
+            [], [], [], [], [], [], [], [])
     else:
         overdue = check_overdue(ref=ref_date) + check_winback()
         due = check_due_items(ref=ref_date)
         churn = check_churn(ref=ref_datetime)
         resumo = check_weekly_summary(ref=now)
         gastos = check_gastos_semanais(ref=now)
+        retorno = check_retorno(ref=now)
         try:
             import trial_guiado
             guided = trial_guiado.run_trial_nudges()
@@ -984,8 +1031,10 @@ def run_proactive_engine(
         "churn_dispatches": churn,
         "trial_dispatches": trial,
         "guided_dispatches": guided,
+        "retorno_dispatches": retorno,
         "total": (len(alarms) + len(resumo) + len(overdue) + len(due)
-                  + len(churn) + len(trial) + len(guided) + len(gastos)),
+                  + len(churn) + len(trial) + len(guided) + len(gastos)
+                  + len(retorno)),
     }
 
 

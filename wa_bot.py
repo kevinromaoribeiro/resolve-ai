@@ -40,6 +40,7 @@ import textos
 import ai_engine
 import boleto  # M2.1: le conta de foto/PDF. Le e lembra — nunca paga.
 import calendario  # M2.2: datas que o bot sabe sozinho (IPVA, feriados)
+import documento  # M3.5: imagem que NAO e boleto — propoe e a pessoa confirma
 import scheduler
 import canal as wasender  # camada de canal: Meta oficial OU WasenderAPI (ver canal.py)
 import meta_cloud  # handshake e assinatura do webhook da Meta
@@ -52,7 +53,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v25.1-m34-landing-e-poderes-2026-08-28"
+BUILD = "v25.2-m35-codigo-documento-retorno-2026-08-29"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -726,6 +727,95 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 f"{'Eu vinha te chamando de ' + anterior.split()[0] + ' — foi mal. ' if anterior and anterior.split()[0].lower() != novo.split()[0].lower() else ''}"
                 f"Anotado pra sempre. ✅")
 
+    # --- resposta à oferta de remarcar: Confirmar / Outra data / Não precisa
+    #
+    # O bot ofereceu guardar o próximo serviço (unha, dentista) horas depois
+    # da baixa. Aqui ele honra a resposta. Só entra com oferta pendente:
+    # "confirmar" solto não pode virar item do nada.
+    _pend_ret = PENDING.get(phone) or {}
+    if (_pend_ret.get("tipo") == "confirmar_retorno"
+            and _CONFIRMA_DOC_RE.match(text)):
+        _sug = _pend_ret.get("sugestao") or {}
+        _desc = _pend_ret.get("descricao") or "seu compromisso"
+        _low = text.strip().lower()
+        PENDING.pop(phone, None)
+
+        if _low.startswith(("não precisa", "nao precisa", "esquec",
+                            "descart", "deixa")):
+            return "Tranquilo! 👍 Se quiser marcar depois, é só me dizer."
+
+        if _low.startswith(("outra data", "ajust", "corrig")):
+            PENDING[phone] = {"tipo": "ajustar_retorno", "descricao": _desc,
+                              "quando": tempo.agora()}
+            return (f"Beleza! Me diz a data que você prefere pra *{_desc}* — "
+                    f"pode ser _\"dia 12/10\"_ ou _\"daqui um mês\"_.")
+
+        _prox = _sug.get("proxima")
+        if not _prox:
+            return "Me diz a data que eu guardo. 📅"
+        try:
+            db.add_item(user_id=user["id"], tipo="lembrete",
+                        categoria=ai_engine.classify_category(_desc),
+                        descricao=_desc[:120], valor_reais=None,
+                        data_vencimento=_prox, status="pendente")
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[retorno] falha ao guardar", exc_info=True)
+            return "Não consegui guardar agora. 😕 Tenta de novo daqui a pouco."
+        return (f"Guardado! ✅ *{_desc}* pra {_prox[8:10]}/{_prox[5:7]}.\n\n"
+                f"Te aviso antes. Pode esquecer que eu lembro.")
+
+    # --- resposta à foto de documento: Confirmar / Ajustar / Esquece -------
+    #
+    # O bot propôs o que entendeu de uma imagem que não é boleto. Aqui ele
+    # honra a resposta. Só entra se HOUVER proposta pendente pra este
+    # telefone: "confirmar" solto, sem contexto, não pode virar item do nada.
+    _pend_doc = PENDING.get(phone) or {}
+    if (_pend_doc.get("tipo") == "confirmar_documento"
+            and _CONFIRMA_DOC_RE.match(text)):
+        _doc = _pend_doc.get("doc") or {}
+        _low = text.strip().lower()
+        PENDING.pop(phone, None)
+
+        if _low.startswith(("esquec", "descart", "deixa")):
+            return ("Beleza, não guardei nada. 👍\n\n"
+                    "Se mudar de ideia, é só mandar a foto de novo.")
+
+        if _low.startswith(("ajust", "corrig")):
+            # NÃO tenta adivinhar a correção. Devolve a bola pra pessoa, que é
+            # quem tem o documento na mão — chutar de novo depois de ela dizer
+            # que está errado é o jeito mais rápido de perder a confiança.
+            PENDING[phone] = {"tipo": "ajustar_documento", "doc": _doc,
+                              "quando": tempo.agora()}
+            return (f"Beleza! Me diz do seu jeito o que é e quando vence.\n\n"
+                    f"Tipo: _\"garantia da geladeira até 15/08/2027\"_ ou "
+                    f"_\"CNH vence 12/03/2027\"_.")
+
+        # --- Confirmar ---
+        if not _doc.get("data"):
+            PENDING[phone] = {"tipo": "ajustar_documento", "doc": _doc,
+                              "quando": tempo.agora()}
+            return ("Só falta a data. 📅\n\n"
+                    "Me diz quando vence que eu guardo.")
+        try:
+            db.add_item(user_id=user["id"], tipo="lembrete",
+                        categoria=_CATEGORIA_DE_DOC.get(_doc.get("tipo"),
+                                                        "Outros"),
+                        descricao=(_doc.get("descricao") or "documento")[:120],
+                        valor_reais=None,
+                        data_vencimento=_doc["data"],
+                        status="pendente")
+        except Exception:
+            logging.getLogger("resolveai").warning(
+                "[documento] falha ao guardar", exc_info=True)
+            return ("Não consegui guardar agora. 😕 Manda de novo daqui a "
+                    "pouco que eu tento outra vez.")
+        _d = _doc["data"]
+        return (f"Guardado! ✅ *{_doc.get('descricao')}* — "
+                f"{_d[8:10]}/{_d[5:7]}/{_d[0:4]}.\n\n"
+                f"Eu te aviso antes. Pode esquecer que eu lembro.")
+
     # --- "Quero começar": o botão do template de reativação (M3.2) ---------
     #
     # A pessoa clicou depois de semanas sem falar com o bot. A resposta tem
@@ -1235,9 +1325,37 @@ def entende_comando(texto: str) -> bool:
         _BAIXA_RE.match(t)
         or _ADIAR_RE.match(t)
         or _COMECAR_RE.match(t)
+        or _CONFIRMA_DOC_RE.match(t)
         or baixo in LISTA_COMANDOS
         or baixo in COMANDOS_ASSINATURA
         or baixo in _COMANDOS_DO_BOT)
+
+
+# OS TRÊS BOTÕES DA FOTO DE DOCUMENTO (M3.5).
+#
+# "Confirmar" / "Ajustar" / "Esquece" aparecem quando o bot lê uma imagem que
+# não é boleto e PROPÕE o que entendeu. Sem tratamento aqui, o clique cairia
+# no LLM e podia virar "não entendi" — logo depois de a pessoa ter feito
+# exatamente o que o bot pediu.
+# Em que categoria cada documento entra. "Outros" e o fallback honesto:
+# categoria errada polui o resumo de gastos e a leitura do painel.
+# So categorias que EXISTEM em db.VALID_CATEGORIES. `add_item` faz fallback
+# silencioso pra "Outros" quando a categoria e invalida — e fallback silencioso
+# e como um item de saude acaba contado como "outros" no resumo sem ninguem
+# perceber. Ha teste cobrando que todas aqui sejam validas.
+_CATEGORIA_DE_DOC = {
+    "nota_fiscal": "Casa",
+    "documento": "Outros",
+    "receita": "Saúde",
+    "vacina": "Pet",
+}
+
+_CONFIRMA_DOC_RE = re.compile(
+    r"^\s*(confirmar|confirmo|confirma|isso mesmo|"
+    r"ajustar|ajusta|corrigir|corrige|outra data|"
+    r"esquece|esquecer|descarta|descartar|deixa pra la|"
+    r"n[ãa]o precisa|nao precisa)\s*[.!]?\s*$",
+    re.IGNORECASE)
 
 
 # "QUERO COMECAR" — o botão do template de reativação (M3.2).
@@ -2836,6 +2954,16 @@ def _registrar_documento_financeiro(user: dict, phone: str, texto_lido: str,
                 f"Se mudou alguma coisa, me diz o que é que eu ajusto.")
 
     try:
+        # GUARDA O CÓDIGO DE PAGAMENTO (M3.5), em coluna própria.
+        #
+        # `desc` continua vindo de `boleto.descricao_de`, que não carrega
+        # código nenhum — a proteção antiga segue de pé. O código fica no
+        # banco e volta pra pessoa só no aviso de vencimento, formatado pra
+        # colar no app do banco.
+        #
+        # Só em conta que ainda vai ser paga: comprovante já pago não precisa
+        # de código, e guardá-lo seria carregar dado sensível à toa.
+        _cod = None if concluido else boleto.codigo_de_pagamento(texto_lido)
         db.add_item(
             user_id=user["id"],
             tipo="despesa",
@@ -2843,7 +2971,9 @@ def _registrar_documento_financeiro(user: dict, phone: str, texto_lido: str,
             descricao=desc,
             valor_reais=dados["valor_reais"],
             data_vencimento=dados["data_vencimento"],
-            status="concluido" if concluido else "pendente")
+            status="concluido" if concluido else "pendente",
+            codigo_pagamento=(_cod or {}).get("colavel"),
+            codigo_tipo=(_cod or {}).get("tipo"))
     except Exception:
         import logging
         logging.getLogger("resolveai").warning(
@@ -3492,6 +3622,20 @@ def handle_incoming(payload: dict) -> Optional[dict]:
             user, phone, ocr, legenda=content)
         if _resp_boleto:
             return {"number": phone, "text": _resp_boleto}
+
+        # M3.5 — NÃO É BOLETO, MAS PODE SER DOCUMENTO QUE VENCE.
+        #
+        # Nota fiscal, CNH, receita, carteirinha de vacina: o bot reconhece,
+        # PROPÕE o que entendeu e deixa a pessoa confirmar. Diferente do
+        # boleto (que tem âncora dura de valor e código), aqui é
+        # interpretação — e item errado na lista é pior que item nenhum.
+        _prop = documento.pergunta_de_confirmacao(documento.reconhecer(ocr))
+        if _prop:
+            PENDING[phone] = {"tipo": "confirmar_documento",
+                              "doc": _prop["doc"],
+                              "quando": tempo.agora()}
+            return {"number": phone, "text": _prop["texto"],
+                    "botoes": _prop["botoes"]}
 
         instruction = content
         # Mesmo quando o extrator recusa (boleto sem data legível, foto
@@ -4360,6 +4504,14 @@ PODERES = [
     {"grupo": "Entra dado", "titulo": "Foto de boleto e PDF de conta",
      "desc": "Lê código de barras, valor e vencimento. O caso que mais "
              "impressiona na primeira vez."},
+    {"grupo": "Entra dado", "titulo": "Código de barras e PIX guardados",
+     "desc": "Do boleto, o bot guarda o código e devolve na hora de pagar — "
+             "sem espaço e sem ponto, pronto pra colar no app do banco, "
+             "dizendo se é código de barras ou PIX."},
+    {"grupo": "Entra dado", "titulo": "Foto de documento que vence",
+     "desc": "Nota fiscal, CNH, receita, carteirinha de vacina: o bot "
+             "reconhece, mostra o que entendeu e você toca em Confirmar, "
+             "Ajustar ou Esquece. Nunca guarda por conta própria."},
     {"grupo": "Entra dado", "titulo": "Placa do carro",
      "desc": "Com o final da placa, calcula IPVA e licenciamento de SP — "
              "inclusive o pulo de fim de semana e feriado."},
@@ -4394,6 +4546,10 @@ PODERES = [
     {"grupo": "Sai aviso", "titulo": "Pede desculpa e reativa quem esfriou",
      "desc": "Explica a falha, diz que os dias estão valendo e ensina a usar "
              "com exemplo concreto."},
+    {"grupo": "Sai aviso", "titulo": "Oferece marcar o próximo serviço",
+     "desc": "Horas depois de você dar baixa em unha, dentista ou "
+             "sobrancelha, pergunta se já guarda o próximo — com a data "
+             "calculada. Conta de luz não ganha essa pergunta."},
     {"grupo": "Sai aviso", "titulo": "Arquivamento com aviso",
      "desc": "Item parado 15 dias sai da lista, mas só DEPOIS que o aviso "
              "comprovadamente saiu. Nunca some calado."},
