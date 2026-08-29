@@ -1075,8 +1075,20 @@ def run_proactive_engine(
     rodar_purga_se_for_o_dia(now)         # M1.6 (seco por padrao)
     alarms = check_time_alarms(ref=now)
     if _in_quiet_hours(now):
+        # TODA CHECAGEM PRECISA DE VALOR NOS DOIS RAMOS (auditoria M4.2).
+        #
+        # `podcast_conv`/`podcast_dia` nasceram so no `else`, e das 21h
+        # as 8h o `return` la embaixo estourava UnboundLocalError —
+        # derrubando o CICLO INTEIRO, inclusive o alarme de hora
+        # marcada, que e justamente o unico que fura o silencio. Onze
+        # horas por dia, todo dia, e o `_loop_proativo` so logava
+        # "ciclo falhou" e dormia 60s: quem marcou "remedio 22h" nunca
+        # ouviria o bot.
+        #
+        # Checagem nova entra NESTA tupla no mesmo commit em que nasce.
         due, churn, trial, guided, overdue, resumo, gastos, retorno = (
             [], [], [], [], [], [], [], [])
+        podcast_conv, podcast_dia = [], []
     else:
         overdue = check_overdue(ref=ref_date) + check_winback()
         due = check_due_items(ref=ref_date)

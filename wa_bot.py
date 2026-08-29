@@ -756,7 +756,10 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 "Seus lembretes continuam normais — isso aqui era só um "
                 "extra. Se mudar de ideia, é só me dizer o assunto.")
 
-    if _PODCAST_DEPOIS_RE.match(text):
+    # SO PRA QUEM TEM PODCAST (auditoria M4.2, P2-6). "depois" e "mais
+    # tarde" sao palavras de qualquer conversa; sem esta guarda, quem nunca
+    # ouviu falar do recurso recebia resposta sobre podcast.
+    if user.get("podcast_nicho") and _PODCAST_DEPOIS_RE.match(text):
         # Nao mexe em `podcast_ultimo`: ela nao ouviu nada. O convite volta
         # no ciclo semanal, sem insistencia hoje.
         return ("Tranquilo! 👍 Deixo pra próxima semana.\n\n"
@@ -2447,6 +2450,17 @@ def _mandar_podcast(user: dict, phone: str) -> str:
     import voz
 
     nicho = user.get("podcast_nicho")
+    # O TETO DE 1X POR SEMANA VALE AQUI TAMBEM (auditoria M4.2, P1-4).
+    #
+    # `pode_enviar` so era consultado no `check_podcast`, entao dez toques em
+    # "quero ouvir" viravam dez audios e dez chamadas pagas de TTS. Dez notas
+    # de voz em segundos e exatamente o padrao que a Meta pune — e este
+    # numero ja foi restringido duas vezes.
+    if (podcast.nicho_valido(nicho)
+            and not podcast.pode_enviar(user.get("podcast_ultimo"))):
+        return ("Você já ouviu o episódio desta semana. 🎧\n\n"
+                "O próximo sai daqui a alguns dias — mando um toque quando "
+                "estiver pronto.")
     if not podcast.nicho_valido(nicho):
         return ("Você ainda não escolheu um assunto pro mini podcast. 🎧\n\n"
                 "Pode ser futebol, games, inteligência artificial, moda ou "
@@ -5801,6 +5815,22 @@ def dispatch_proactive() -> int:
         # nao viu.
         if ok and d.get("tem_codigo") and d.get("item_id"):
             ULTIMO_COBRADO[number] = d["item_id"]
+
+        # OS CARIMBOS DO PODCAST SAO GRAVADOS PELO ENVIO (auditoria
+        # M4.2). Eles existiam no `db.py` e ninguem chamava: sem eles o
+        # convite e a pergunta do dia voltavam A CADA CICLO — de minuto
+        # em minuto — ate estourar o teto diario da pessoa. E o teto e
+        # COMPARTILHADO com o aviso de vencimento: seis convites de
+        # podcast comiam a cota e o aviso do IPTU nao saia. O extra
+        # roubando o lugar do que a pessoa pagou pra ter.
+        #
+        # Aqui e o lugar certo pelo mesmo motivo do `log_dispatch`:
+        # marcado por QUEM ENVIA, nunca por quem gera. Convite que nao
+        # saiu nao pode ficar carimbado.
+        if ok and d.get("kind") == "podcast" and d.get("user_id"):
+            db.podcast_marcar_convite(d["user_id"])
+        if ok and d.get("kind") == "podcast-dia" and d.get("user_id"):
+            db.podcast_marcar_pergunta_do_dia(d["user_id"])
         # A OFERTA DE REMARCAR PRECISA DEIXAR CONTEXTO PRA RESPOSTA.
         #
         # Sem isto a feature nao funcionava de ponta a ponta: a pergunta saia,

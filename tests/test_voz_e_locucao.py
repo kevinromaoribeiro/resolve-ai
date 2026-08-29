@@ -193,3 +193,43 @@ def test_a_conta_do_custo_fecha():
     # cresce linear: o dobro de gente, o dobro de custo
     assert abs(voz.custo_mensal_estimado_usd(200)
                - 2 * voz.custo_mensal_estimado_usd(100)) < 0.01
+
+
+def test_numero_inventado_e_recusado():
+    """P1-5 da auditoria M4.2: a conferencia pegava o modelo CITANDO a Folha,
+    mas nao ele AFIRMANDO "venceu por 7 a 0" sem citar ninguem — que e a
+    alucinacao que importa, porque a pessoa nao tem como desconfiar.
+
+    Placar, valor e ano sao o que o modelo mais inventa e sao verificaveis de
+    graca: todo numero do roteiro tem que aparecer na materia-prima.
+    """
+    mat = "Palmeiras vence o Flamengo por 2 a 1 no dia 05/09."
+    base = "Oi! Resumo de futebol. " + "palavra " * 120
+    assert podcast.conferir_locucao(
+        base + " Ganhou por 2 a 1.", "futebol", materia=mat) is None
+    for inventado in (" Ganhou por 7 a 0.", " Custou 300 milhoes.",
+                      " Contrato ate 2030."):
+        motivo = podcast.conferir_locucao(base + inventado, "futebol",
+                                          materia=mat)
+        assert motivo and "nao veio das fontes" in motivo, (inventado, motivo)
+
+
+def test_zero_a_esquerda_nao_reprova_o_roteiro():
+    """A fonte escreve "05/09" e a locucao diz "dia 5". Recusar por causa do
+    zero seria a conferencia brigando com a reescrita que ela permite."""
+    mat = "Jogo marcado para 05/09."
+    base = "Oi! Resumo de futebol. " + "palavra " * 120
+    assert podcast.conferir_locucao(base + " É no dia 5.", "futebol",
+                                    materia=mat) is None
+
+
+def test_numero_inventado_cai_no_deterministico():
+    """Reprovar nao perde o episodio: vai o roteiro simples, que e feio e
+    verdadeiro."""
+    itens = [{"titulo": "Palmeiras vence por 2 a 1", "resumo": "No Allianz.",
+              "fonte": "ge.globo"}]
+    mentira = ("Oi! Resumo de futebol. " + "palavra " * 120 +
+               " O Palmeiras goleou por 7 a 0.")
+    r = podcast.locucao("futebol", itens, chamar=lambda p: mentira)
+    assert r and "7 a 0" not in r, r
+    assert "Palmeiras vence por 2 a 1" in r, r

@@ -154,11 +154,28 @@ def parse_feed(xml_bruto: str, fonte: str,
     return itens
 
 
+# Teto de download. Feed de RSS honesto tem centenas de KB; 5 MB e folga de
+# uma ordem de grandeza. Sem teto, um feed de 43 MB fazia o parse subir a
+# 125 MB de memoria — no MESMO container que atende o webhook, ou seja, a
+# conversa da pessoa competindo com o download de um site de terceiro.
+MAX_FEED_BYTES = 5 * 1024 * 1024
+
+
 def _baixar(url: str) -> str:
     import httpx
-    r = httpx.get(url, headers=UA, timeout=TIMEOUT_S, follow_redirects=True)
-    r.raise_for_status()
-    return r.text
+    with httpx.stream("GET", url, headers=UA, timeout=TIMEOUT_S,
+                      follow_redirects=True) as r:
+        r.raise_for_status()
+        pedacos, total = [], 0
+        for pedaco in r.iter_bytes():
+            total += len(pedaco)
+            if total > MAX_FEED_BYTES:
+                log.warning("[noticias] %s passou de %d bytes — cortado",
+                            url, MAX_FEED_BYTES)
+                break
+            pedacos.append(pedaco)
+    bruto = b"".join(pedacos)
+    return bruto.decode(r.encoding or "utf-8", errors="replace")
 
 
 def buscar(nicho: Optional[str], agora: Optional[datetime] = None,

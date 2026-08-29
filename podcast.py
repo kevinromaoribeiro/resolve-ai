@@ -334,8 +334,11 @@ def _montar(d: dict, bons: list, nome: str) -> str:
     primeiro = (nome or "").split()[0] if nome else ""
     saudacao = f"Oi, {primeiro}!" if primeiro else "Oi!"
     partes = [
-        f"{saudacao} Seu resumo de {d['rotulo'].lower()} da semana, "
-        f"em três minutos.",
+        # SEM PROMETER MINUTAGEM (auditoria M4.2, P2-8): o roteiro
+        # deterministico sai entre 40s e 2 min, e um audio que se anuncia
+        # como "três minutos" e entrega quarenta segundos e o produto
+        # errando pra menos na primeira frase.
+        f"{saudacao} Seu resumo de {d['rotulo'].lower()} da semana.",
         "",
     ]
     for i, it in enumerate(bons, 1):
@@ -525,7 +528,8 @@ _VEICULO_RE = re.compile(
     r"the\s+\w+|new\s+york\s+times)\b", re.I)
 
 
-def conferir_locucao(texto: Optional[str], nicho: Optional[str]) -> Optional[str]:
+def conferir_locucao(texto: Optional[str], nicho: Optional[str],
+                     materia: Optional[str] = None) -> Optional[str]:
     """O roteiro do LLM passa? Devolve o motivo da recusa, ou None se passa.
 
     Conferência em PYTHON, sobre o texto pronto — não confiança no prompt.
@@ -549,7 +553,51 @@ def conferir_locucao(texto: Optional[str], nicho: Optional[str]) -> Optional[str
         alvo = achado.lower().strip()
         if not any(alvo in p for p in permitidas):
             return "citou fonte de fora da lista: %r" % achado
+
+    # NUMERO QUE NAO ESTAVA NA MATERIA-PRIMA (auditoria M4.2, P1-5).
+    #
+    # O teste de fonte pega o modelo citando a Folha; NAO pegava ele
+    # afirmando "venceu por 7 a 0 e contratou o Messi por 300 milhoes" sem
+    # citar ninguem — que e a alucinacao que realmente importa, porque a
+    # pessoa nao tem como desconfiar.
+    #
+    # Placar, valor e idade sao o que o modelo mais inventa, e sao a parte
+    # verificavel de graca: todo numero do roteiro tem que aparecer no que
+    # veio dos feeds. Numero por extenso ("dois a um") escapa desta rede —
+    # e por isso ela e uma camada, nao a unica.
+    if materia is not None:
+        # COMPARA VALOR, NAO TEXTO: "05" na fonte e "5" na locucao sao o
+        # mesmo numero, e reprovar por causa do zero a esquerda seria a
+        # conferencia brigando com a reescrita que ela existe pra permitir.
+        fonte_num = {int(x) for x in
+                     _NUMERO_RE.findall(_so_digitos_e_espaco(materia))}
+        # SEM ISENCAO POR TAMANHO. A primeira versao liberava tudo ate 31
+        # "porque e dia do mes" — e placar inventado ("venceu por 7 a 0"),
+        # que era o caso do auditor, passava por essa porta. Numero pequeno e
+        # justamente o que o modelo mais inventa.
+        #
+        # Reprovar aqui NAO perde o episodio: cai no roteiro deterministico,
+        # que e feio e verdadeiro. Errar pro lado do texto simples e barato;
+        # errar pro lado do placar inventado, nao.
+        for n_ in _NUMERO_RE.findall(_so_digitos_e_espaco(texto)):
+            if int(n_) not in fonte_num:
+                return "numero %r nao veio das fontes" % n_
     return None
+
+
+_NUMERO_RE = re.compile(r"\d+")
+
+
+def _so_digitos_e_espaco(t: str) -> str:
+    """Tira pontuacao de milhar/decimal pra comparar numero com numero.
+
+    "R$ 1.200,50" e "1200" tem que casar: o roteiro reescreve o formato, e
+    recusar por causa do ponto seria a conferencia brigando com a locucao.
+    """
+    t = re.sub(r"(?<=\d)[.,](?=\d)", "", t or "")
+    # "05" na fonte e "5" na locucao sao o mesmo numero: recusar por causa do
+    # zero a esquerda seria a conferencia brigando com a reescrita.
+    return re.sub(r"0+(\d)", r"", t)
 
 
 def locucao(nicho: Optional[str], itens: Optional[list], nome: str = "",
@@ -574,13 +622,20 @@ def locucao(nicho: Optional[str], itens: Optional[list], nome: str = "",
         logging.getLogger("resolveai").warning(
             "[podcast] locucao falhou; vai o roteiro simples", exc_info=True)
         return seguro
-    motivo = conferir_locucao(bruto, k)
+    motivo = conferir_locucao(bruto, k, materia=_materia_bruta(usados))
     if motivo:
         import logging
         logging.getLogger("resolveai").warning(
             "[podcast] roteiro do LLM recusado (%s); vai o simples", motivo)
         return seguro
     return bruto.strip()
+
+
+def _materia_bruta(itens: list) -> str:
+    """Tudo o que veio dos feeds, junto. E o teto do que o roteiro
+    pode afirmar."""
+    return " ".join("%s %s" % (i.get("titulo") or "", i.get("resumo") or "")
+                    for i in (itens or []))
 
 
 def _chamar_llm(prompt: str) -> str:

@@ -218,3 +218,37 @@ def test_verificar_diz_qual_feed_morreu():
     ruins = [x for x in r if not x["ok"]]
     assert any("ESPN" in x["fonte"] for x in ruins), ruins
     assert all(x["erro"] for x in ruins), "feed ruim sem motivo no relatorio"
+
+
+def test_feed_gigante_e_cortado():
+    """P2-9 da auditoria M4.2: `.text` sem teto fazia um feed de 43 MB subir
+    a 125 MB de memoria — no MESMO container que atende o webhook, ou seja, a
+    conversa da pessoa competindo com o download de um site de terceiro.
+    """
+    import httpx
+
+    class _FalsoStream:
+        encoding = "utf-8"
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self):
+            # 20 MB em pedacos de 1 MB
+            for _ in range(20):
+                yield b"x" * (1024 * 1024)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    original = httpx.stream
+    httpx.stream = lambda *a, **k: _FalsoStream()
+    try:
+        bruto = noticias._baixar("https://exemplo.invalido/feed")
+    finally:
+        httpx.stream = original
+    assert len(bruto) <= noticias.MAX_FEED_BYTES + 1024 * 1024, len(bruto)

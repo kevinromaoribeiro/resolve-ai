@@ -340,3 +340,130 @@ def test_o_convite_nao_tem_template_e_isso_e_deliberado():
     assert "podcast-dia" in T.KINDS_SEM_TEMPLATE
     assert "podcast" not in T.KIND_TEMPLATE
     assert "podcast" in scheduler.KINDS_PROATIVOS
+
+
+# ---------------------------------------------------------------------------
+# 7. O TESTE QUE FALTAVA: dois ciclos seguidos
+# ---------------------------------------------------------------------------
+# A auditoria M4.2 achou tres P0 e os tres passavam por baixo de 75 testes
+# pelo mesmo motivo: NENHUM rodava o cron duas vezes. Um ciclo so nao ve
+# repeticao, e repeticao era o defeito.
+
+def _cron_pronto(monkeypatch, usuario=None):
+    """Deixa o cron pronto pra rodar de verdade.
+
+    A JANELA DE 24H PRECISA ESTAR ABERTA: "podcast" esta em
+    `KINDS_SEM_TEMPLATE`, entao a poda do `dispatch_proactive` corta o
+    convite de quem nao falou com o bot — e isso esta CERTO. Sem esta linha
+    o teste mediria a poda, nao a repeticao.
+    """
+    import wa_bot as w
+    if usuario is not None:
+        db.log_message(None, usuario["telefone"], "in", "texto", "oi")
+    saiu: list = []
+
+    def _falar(tel, texto, **kw):
+        saiu.append(texto)
+        return {"enviado": True, "via": "botoes", "motivo": ""}
+
+    monkeypatch.setattr(w.wasender, "falar", _falar)
+    monkeypatch.setattr(w, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(w, "ENVIO_INTERVALO_MAX", 0.0)
+    return saiu
+
+
+def test_o_convite_nao_se_repete_no_ciclo_seguinte(usuario, horario_util,
+                                                   com_voz, monkeypatch,
+                                                   limpo):
+    """Sem carimbo, o convite voltava de MINUTO EM MINUTO ate estourar o
+    teto diario — e o teto e compartilhado com o aviso de vencimento."""
+    _com_nicho(usuario)
+    saiu = _cron_pronto(monkeypatch, usuario)
+
+    wa_bot.dispatch_proactive()
+    primeiro = len([t for t in saiu if "podcast" in t.lower()])
+    assert primeiro == 1, "o convite nem saiu"
+
+    wa_bot.dispatch_proactive()
+    wa_bot.dispatch_proactive()
+    total = len([t for t in saiu if "podcast" in t.lower()])
+    assert total == 1, ("o convite se repetiu a cada ciclo: %d vezes" % total)
+    assert db.get_user(usuario["id"])["podcast_convite_em"], (
+        "o envio nao carimbou nada — nada segura a repeticao")
+
+
+def test_o_convite_nao_come_a_vaga_do_aviso_de_conta(usuario, horario_util,
+                                                     com_voz, monkeypatch,
+                                                     limpo):
+    """O extra nao pode roubar o lugar do que a pessoa pagou pra ter.
+
+    Provado pelo auditor: seis convites de podcast comiam o teto diario e o
+    aviso do IPTU nao saia.
+    """
+    _com_nicho(usuario)
+    db.add_item(user_id=usuario["id"], tipo="despesa", categoria="Contas",
+                descricao="IPTU", valor_reais=900.0,
+                data_vencimento=(tempo.hoje() + _dt.timedelta(days=1)
+                                 ).isoformat(), status="pendente")
+    saiu = _cron_pronto(monkeypatch, usuario)
+    for _ in range(8):
+        wa_bot.dispatch_proactive()
+    textos = " ".join(saiu)
+    assert "IPTU" in textos, (
+        "o aviso da conta nao saiu — o podcast comeu a cota do dia")
+
+
+def test_a_pergunta_do_dia_nao_se_repete_e_pode_ser_respondida(
+        usuario, horario_util, monkeypatch, limpo):
+    """A pessoa responde o botao que o BOT ofereceu.
+
+    Sem o carimbo, o handler nao reconhecia a resposta e ela virava um
+    lembrete fantasma chamado "Sexta" na lista dela.
+    """
+    _com_nicho(usuario)
+    db.podcast_marcar_envio(
+        usuario["id"], quando=tempo.agora() - _dt.timedelta(minutes=11))
+    saiu = _cron_pronto(monkeypatch, usuario)
+
+    wa_bot.dispatch_proactive()
+    assert db.get_user(usuario["id"])["podcast_dia_perguntado"], (
+        "perguntou e nao carimbou — a pergunta voltaria a cada ciclo")
+
+    wa_bot.dispatch_proactive()
+    quantas = len([t for t in saiu if "que dia" in t.lower()])
+    assert quantas == 1, ("perguntou %d vezes" % quantas)
+
+    antes = len(db.list_items(usuario["id"]))
+    r = responder("Sexta")
+    assert db.get_user(usuario["id"])["podcast_dia"] == "Sexta", r
+    assert len(db.list_items(usuario["id"])) == antes, (
+        "a resposta do botao virou item fantasma na lista")
+
+
+def test_dez_toques_nao_viram_dez_audios(usuario, com_voz, com_noticia,
+                                         monkeypatch):
+    """Dez notas de voz em segundos e o padrao que a Meta pune — e este
+    numero ja foi restringido duas vezes."""
+    db.update_user_fields(usuario["id"], podcast_nicho="futebol")
+    enviados = []
+    monkeypatch.setattr(
+        wa_bot.wasender, "falar_audio",
+        lambda tel, dados, **kw: enviados.append(dados) or
+        {"enviado": True, "via": "audio", "motivo": ""}, raising=False)
+    for _ in range(10):
+        responder("Quero ouvir")
+    assert len(enviados) == 1, ("mandou %d audios" % len(enviados))
+
+
+def test_o_ciclo_nao_morre_na_madrugada(usuario, monkeypatch):
+    """O P0 mais caro da auditoria M4.2: `podcast_conv` so existia no ramo
+    de fora do silencio, e das 21h as 8h o ciclo INTEIRO estourava —
+    inclusive o alarme de hora marcada, que e o unico que fura o silencio.
+    """
+    import scheduler as sched
+    for hora in (21, 23, 3, 7):
+        agora = _dt.datetime(2026, 8, 18, hora, 0, 0)
+        monkeypatch.setattr(tempo, "agora", lambda a=agora: a)
+        monkeypatch.setattr(tempo, "hoje", lambda a=agora: a.date())
+        r = sched.run_proactive_engine()
+        assert isinstance(r, dict) and "total" in r, (hora, r)
