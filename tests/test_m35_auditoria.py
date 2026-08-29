@@ -83,7 +83,9 @@ def test_promessa_nunca_promete_mais_do_que_o_motor_faz():
     for tipo in ("nota_fiscal", "documento", "receita", "vacina"):
         frase = documento.promessa(tipo)
         for dia in documento.avisos(tipo):
-            assert str(dia) in frase, (
+            # D-1 e dito em portugues ("na vespera"), nao como numero.
+            marca = "véspera" if dia == 1 else str(dia)
+            assert marca in frase, (
                 "%s avisa em D-%d e a promessa nao diz: %r"
                 % (tipo, dia, frase))
 
@@ -149,29 +151,103 @@ def test_ajustar_documento_escuta_a_resposta(usuario, monkeypatch):
         "o ajuste perdeu a antecedencia que a proposta prometia")
 
 
-def test_ajuste_com_data_relativa(usuario, monkeypatch):
-    """"daqui a 3 meses" e resposta de gente. O parser e de proposito curto,
-    mas o que ele entende tem que estar certo."""
+def test_ajuste_com_data_relativa(usuario, monkeypatch, horario_util):
+    """"daqui a 3 meses" e resposta de gente.
+
+    A data esperada e ESCRITA A MAO. A primeira versao calculava o esperado
+    com `wa_bot._somar_meses`, a propria funcao sob teste — tautologia que
+    ficaria verde mesmo com a aritmetica errada (auditoria M3.6, item J).
+    Relogio congelado em terca, 18/08/2026.
+    """
     _foto(monkeypatch, CNH)
     responder("Ajustar")
     r = responder("daqui a 3 meses")
-    esperado = wa_bot._somar_meses(tempo.hoje(), 3).isoformat()
     itens = db.list_items(usuario["id"], status="pendente")
-    assert itens and itens[0]["data_vencimento"] == esperado, (r, itens)
+    assert itens and itens[0]["data_vencimento"] == "2026-11-18", (r, itens)
 
 
 def test_ajuste_que_o_python_nao_entende_nao_prende_a_conversa(
         usuario, monkeypatch):
     """Se a frase nao e data, a mensagem SEGUE pro motor normal.
 
-    Insistir prenderia a pessoa num "me diz a data" sem saida — e ela tem o
-    direito de mudar de assunto no meio.
+    A primeira versao so olhava `PENDING` e ficava VERDE com o wa_bot
+    inteiro revertido — o codigo velho tambem esvaziava o PENDING, por outro
+    caminho (auditoria M3.6, item J: placebo provado). Agora ela mede as
+    duas coisas que importam: nenhum item fantasma nasceu, e o motor normal
+    recebeu a frase.
     """
     _foto(monkeypatch, CNH)
     responder("Ajustar")
-    responder("na verdade deixa pra la, quanto eu gastei esse mes?")
+
+    chegou = {}
+
+    def _viu(*a, **k):
+        chegou["sim"] = True
+        return None            # motor mudo: o wa_bot trata None sozinho
+
+    monkeypatch.setattr(wa_bot.motor_v8, "route", _viu, raising=False)
+    responder("quanto eu gastei esse mes?")
+
     assert wa_bot.PENDING.get(TELEFONE) is None, (
         "a conversa ficou presa esperando uma data que nao vem")
+    assert chegou.get("sim"), "a mensagem nao chegou ao motor normal"
+    # O motor normal pode registrar o que quiser com a frase — o que NAO pode
+    # e a frase virar o documento que estava pendente de ajuste.
+    assert not [i for i in db.list_items(usuario["id"])
+                if "cnh" in (i["descricao"] or "").lower()], (
+        "a frase de outro assunto virou o documento pendente")
+
+
+def test_pergunta_de_ajuste_nao_sequestra_outro_assunto(usuario, monkeypatch):
+    """P1-3 da auditoria M3.6, o achado mais caro deste bloco.
+
+    Medido pelo auditor: com o ajuste pendente, "paguei a luz dia 20" virava
+    a data do documento — e a baixa da luz nunca acontecia. A pessoa dizia
+    que pagou e o bot guardava outra coisa.
+    """
+    _foto(monkeypatch, CNH)
+    responder("Ajustar")
+    antes = len(db.list_items(usuario["id"], status="pendente"))
+    responder("paguei a luz dia 20")
+    depois = db.list_items(usuario["id"], status="pendente")
+    assert len(depois) == antes, (
+        "a frase de outro assunto virou item de documento: %r" % depois)
+    assert wa_bot.PENDING.get(TELEFONE) is None
+
+
+def test_recusa_no_ajuste_nao_vira_data(usuario, monkeypatch):
+    """"hoje nao precisa" e uma recusa. Ela virava um item pra HOJE."""
+    _foto(monkeypatch, CNH)
+    responder("Ajustar")
+    r = responder("hoje não precisa")
+    assert "não guardei" in r.lower(), r
+    assert not db.list_items(usuario["id"], status="pendente")
+
+
+def test_ajuste_guarda_o_que_a_pessoa_disse_que_e(usuario, monkeypatch):
+    """O bot pede "o que e e quando vence" e usava so a data (P1-2).
+
+    Quem toca em Ajustar esta dizendo que a leitura do OCR esta errada —
+    manter a descricao dele e ignorar a correcao inteira.
+    """
+    _foto(monkeypatch, CNH)
+    responder("Ajustar")
+    responder("nao e minha CNH, e o passaporte da minha filha, vence "
+              "15/06/2028")
+    itens = db.list_items(usuario["id"], status="pendente")
+    assert itens, "nada guardado"
+    assert "passaporte" in itens[0]["descricao"].lower(), itens[0]
+    assert itens[0]["data_vencimento"] == "2028-06-15", itens[0]
+
+
+def test_ajuste_guarda_a_hora_quando_ela_e_dita(usuario, monkeypatch):
+    """"dia 15 as 14h" guardava o dia e perdia o horario."""
+    wa_bot.PENDING[TELEFONE] = {
+        "tipo": "ajustar_retorno", "descricao": "dentista",
+        "quando": tempo.agora()}
+    responder("dentista dia 15 as 14h")
+    itens = db.list_items(usuario["id"], status="pendente")
+    assert itens and itens[0]["hora_alvo"] == "14:00", itens
 
 
 def test_data_sem_ano_e_sempre_pra_frente():
@@ -280,6 +356,74 @@ def test_botao_explicito_chega_no_envio(monkeypatch):
     assert vistos.get("botoes") == ["Confirmar", "Ajustar", "Esquece"], vistos
 
 
+def test_botao_de_string_monta_o_payload_de_verdade(monkeypatch):
+    """P0-1 da auditoria M3.6 — o defeito mais grave desta rodada inteira.
+
+    Existem DUAS convencoes de botao nesta base: tupla (titulo, payload) no
+    `botoes.py` e string no `meta_cloud`/`BOTOES_POR_KIND`. Quando o envio
+    passou a aceitar botoes explicitos, os das features novas chegaram como
+    STRING e o `for i, (titulo, _payload)` estourou ValueError — fora do try
+    do httpx e fora do try do webhook. A pessoa mandava a foto do documento
+    e NAO RECEBIA NADA; e como o msg_id ja estava carimbado, o reenvio da
+    Meta caia no dedup e a mensagem dela sumia pra sempre.
+
+    O teste anterior dublava justamente o `botoes.enviar` — ficava verde com
+    a feature 100% morta em producao. Este chama a funcao REAL e dubla so a
+    rede, que e onde o dublê pertence.
+    """
+    import meta_cloud
+    monkeypatch.setattr(meta_cloud, "configurado", lambda: True)
+    monkeypatch.setattr(meta_cloud, "PHONE_NUMBER_ID", "123", raising=False)
+    monkeypatch.setattr(meta_cloud, "_HEADERS", {}, raising=False)
+    enviados = {}
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"messages": [{"id": "wamid.TESTE"}]}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        enviados["corpo"] = json
+        return _Resp()
+
+    import httpx
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+    # string (convencao nova) e tupla (convencao antiga): as duas tem que
+    # virar o mesmo payload.
+    for lista in (["Confirmar", "Ajustar", "Esquece"],
+                  [("Confirmar", "c"), ("Ajustar", "a"), ("Esquece", "e")]):
+        enviados.clear()
+        assert botoes.enviar("5511999999999", "Isso parece uma *CNH*.",
+                             lista), "recusou %r" % (lista,)
+        titulos = [b["reply"]["title"] for b in
+                   enviados["corpo"]["interactive"]["action"]["buttons"]]
+        assert titulos == ["Confirmar", "Ajustar", "Esquece"], titulos
+
+
+def test_interativo_quebrado_nunca_engole_a_mensagem(monkeypatch):
+    """O docstring do `enviar_resposta` promete "NUNCA deixa de enviar".
+
+    Era mentira: qualquer excecao dentro do `enviar` subia, e a chamada esta
+    FORA do try que protege o webhook. Uma linha de formatacao de botao
+    virava silencio total.
+    """
+    import canal
+    monkeypatch.setattr(canal, "OFICIAL", True, raising=False)
+
+    def _explode(*a, **k):
+        raise RuntimeError("formato de botao mudou")
+
+    monkeypatch.setattr(botoes, "enviar", _explode)
+    caiu = {}
+    ok = botoes.enviar_resposta("5511999999999", "Isso parece uma *CNH*.",
+                                lambda n, t: caiu.setdefault("texto", True),
+                                botoes=["Confirmar"])
+    assert ok and caiu.get("texto"), "a pessoa ficaria sem resposta nenhuma"
+
+
 def test_botao_explicito_cai_pra_texto_quando_o_corpo_e_gigante(monkeypatch):
     """Interativo com corpo acima do limite a Meta engole SEM AVISAR — a
     pessoa fica sem resposta nenhuma. Texto puro chega."""
@@ -321,6 +465,150 @@ def test_codigo_de_pagamento_morre_na_virada(usuario):
     assert not item["codigo_pagamento"], (
         "o codigo do mes passado ficou no item do mes que vem")
     assert not item["codigo_tipo"], item
+
+
+# ---------------------------------------------------------------------------
+# AUDITORIA M3.6 — o que a correcao do M3.5 quebrou
+# ---------------------------------------------------------------------------
+
+def test_data_que_nao_existe_no_calendario_nao_entra_no_banco():
+    """P0-2: "31/09" passa em `1<=dia<=31` e nao existe.
+
+    O item entrava, e dai em diante `date(y, m, d)` estourava DENTRO do motor
+    proativo — derrubando o ciclo de TODO MUNDO, todo dia, ate alguem apagar
+    a linha na mao. E CNH e vacina eram justamente os tipos que escapavam da
+    validacao, porque o prazo deles e zero.
+    """
+    doc = documento.reconhecer("CNH\nValidade 31/09/2026")
+    assert doc is not None
+    assert doc["data"] is None, (
+        "aceitou 31 de setembro: %r" % doc["data"])
+    assert documento.vencimento(doc) is None
+
+
+def test_uma_data_podre_no_banco_nao_derruba_o_ciclo(usuario, horario_util):
+    """A segunda camada da mesma defesa.
+
+    O `check_overdue` foi blindado contra isso na v23.4 e o `check_due_items`
+    ficou de fora — a janela era de 1 dia e o problema quase nunca chegava
+    la. Com a janela em 90 dias ele chega. Item ruim e pulado; o resto do
+    ciclo tem que sair.
+    """
+    hoje = tempo.hoje()
+    bom = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                      categoria="Outros", descricao="dentista",
+                      data_vencimento=(hoje + _dt.timedelta(days=1)
+                                       ).isoformat(), status="pendente")
+    assert bom
+    ruim = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                       categoria="Outros", descricao="CNH",
+                       data_vencimento=(hoje + _dt.timedelta(days=30)
+                                        ).isoformat(), status="pendente")
+    with db.get_conn() as c:      # so o SQL crava data invalida
+        c.execute("UPDATE items SET data_vencimento='2026-09-31' WHERE id=?",
+                  (ruim,))
+
+    saidas = scheduler.check_due_items(ref=hoje)
+    descricoes = " ".join(d.get("message", "") for d in saidas)
+    assert "dentista" in descricoes, (
+        "uma linha ruim calou o ciclo inteiro: %r" % saidas)
+
+
+def test_avisar_dias_soma_com_a_vespera_em_vez_de_apagar(usuario,
+                                                         horario_util):
+    """P1-1: com `or`, "60,30" APAGAVA o D-1.
+
+    A CNH era avisada 60 e 30 dias antes e ficava MUDA na vespera — e a nota
+    fiscal, que so tem D-30, perdia a vespera de vez. A vespera e a rede de
+    baixo de todo item com data; nada que a gente some pode tirar ela.
+    """
+    hoje = tempo.hoje()
+    db.add_item(user_id=usuario["id"], tipo="lembrete", categoria="Outros",
+                descricao="CNH",
+                data_vencimento=(hoje + _dt.timedelta(days=1)).isoformat(),
+                status="pendente", avisar_dias="60,30")
+    saidas = scheduler.check_due_items(ref=hoje)
+    assert any("CNH" in d.get("message", "") for d in saidas), (
+        "a antecedencia propria apagou o aviso de vespera: %r" % saidas)
+
+
+def test_promessa_nao_promete_antecedencia_que_nao_cabe():
+    """A CNH que vence em 20 dias nao tem como receber o aviso de D-60.
+
+    A confirmacao prometia os dois assim mesmo. A pessoa ouviria UMA
+    mensagem, no dia, e concluiria — com razao — que o bot fala o que nao
+    cumpre.
+    """
+    doc = documento.reconhecer("CNH\nValidade 18/09/2026")
+    p = documento.pergunta_de_confirmacao(doc, hoje=_dt.date(2026, 8, 29))
+    assert "60" not in p["texto"], p["texto"]
+    assert "véspera" in p["texto"], p["texto"]
+
+
+def test_nota_de_servico_nao_ganha_garantia_de_produto():
+    """P1-5: conserto de vazamento e nota fiscal de verdade, com DANFE.
+
+    Garantia de 1 ano nao existe ali. Antes do M3.6 esses itens nasciam
+    vencidos (mortos); depois viraram itens REAIS que iam disparar daqui a
+    onze meses, com o bot afirmando um fato que nao e verdade.
+    """
+    assert documento.reconhecer(
+        "NOTA FISCAL ELETRONICA DANFE\nServicos prestados\n"
+        "Conserto de vazamento na pia\nData de emissao 12/03/2026") is None
+
+
+def test_cupom_de_mercado_nao_vira_documento_que_vence():
+    """Toda ida ao supermercado viraria um lembrete de garantia."""
+    assert documento.reconhecer(
+        "CUPOM FISCAL\nSUPERMERCADO BOM PRECO LTDA\n"
+        "CNPJ 12.345.678/0001-90\nData 29/08/2026") is None
+
+
+def test_receita_nao_perde_o_nome_do_remedio():
+    """P2-1: "USO CONTINUO" e marca do tipo E aparece na linha do remedio.
+
+    Descartar a linha inteira tirava o unico dado que a pessoa procura na
+    lista. A linha so cai fora quando a marca E a linha.
+    """
+    doc = documento.reconhecer(
+        "RECEITUARIO\nCRM 12345\nLosartana 50mg - uso continuo\n"
+        "Tomar 1 comprimido ao dia\nData 01/08/2026")
+    assert "losartana" in doc["descricao"].lower(), doc["descricao"]
+    # e sem estragar o que o OCR leu certo: `.title()` fazia "50mg" -> "50Mg"
+    assert "50mg" in doc["descricao"], doc["descricao"]
+
+
+def test_avisar_dias_invalido_nao_derruba_o_add_item(usuario):
+    """P2-2: o ramo de erro chamava `logging` sem importar.
+
+    Codigo novo que nunca tinha rodado — e ele derrubava o `add_item`
+    inteiro, ou seja, a pessoa perderia o item.
+    """
+    for lixo in ("-5", "abc", "999", "", "90,91", "0"):
+        iid = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                          categoria="Outros", descricao="teste %s" % lixo,
+                          status="pendente", avisar_dias=lixo)
+        assert iid, lixo
+
+
+def test_dias_de_aviso_le_sqlite_row(usuario):
+    """P2-3: `sqlite3.Row` nao tem `.get`, e o item perdia 60/30 CALADO."""
+    iid = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                      categoria="Outros", descricao="CNH",
+                      data_vencimento="2027-03-12", status="pendente",
+                      avisar_dias="60,30")
+    with db.get_conn() as c:
+        row = c.execute("SELECT * FROM items WHERE id=?", (iid,)).fetchone()
+    assert db.dias_de_aviso(row) == {60, 30}, db.dias_de_aviso(row)
+
+
+def test_pix_truncado_nao_apaga_o_boleto_da_mesma_foto():
+    """P2-6: o `return None` do PIX cortava a busca de boleto logo abaixo."""
+    ocr = ("PIX COPIA E COLA\n"
+           "00020126580014BR.GOV.BCB.PIX0136abc\n"
+           "34191.79001 01043.510047 91020.150008 2 91070026000")
+    achado = boleto.codigo_de_pagamento(ocr)
+    assert achado and achado["tipo"] == "boleto", achado
 
 
 def test_valor_com_ponto_nao_esconde_o_codigo():

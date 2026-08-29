@@ -90,7 +90,14 @@ CREATE TABLE IF NOT EXISTS items (
                 status          TEXT NOT NULL DEFAULT 'pendente'
                                 CHECK (status IN ('pendente','concluido','aglutinado','vencido')),
                 link_afiliado   TEXT,
-                data_criacao    TEXT NOT NULL
+                data_criacao    TEXT NOT NULL,
+                -- Colunas que nasceram como ALTER TABLE e agora moram aqui
+                -- também: banco novo tem que sair pronto, e o rebuild da
+                -- v6.5 recria a tabela A PARTIR DESTE DDL.
+                data_conclusao    TEXT,
+                codigo_pagamento  TEXT,
+                codigo_tipo       TEXT,
+                avisar_dias       TEXT
             );
 """
 
@@ -233,9 +240,20 @@ def init_db() -> None:
                 ALTER TABLE items RENAME TO items_old;
             """)
             conn.executescript(_ITEMS_DDL)
-            cols = ("id,user_id,tipo,categoria,descricao,valor_reais,"
-                    "data_vencimento,hora_alvo,recorrencia,status,"
-                    "link_afiliado,data_criacao")
+            # A LISTA DE COLUNAS É DESCOBERTA, NÃO ESCRITA À MÃO.
+            #
+            # Ela era um literal com 12 nomes, e envelhecia a cada coluna
+            # nova: `data_conclusao`, `codigo_pagamento`, `codigo_tipo` e
+            # `avisar_dias` já estavam de fora. Se este rebuild disparasse
+            # num banco antigo, essas quatro colunas — e os dados nelas —
+            # sumiam em silêncio. Cruzar as colunas das duas tabelas não
+            # envelhece nunca. (Nota lateral da auditoria M3.6.)
+            novas = {r["name"] for r in
+                     conn.execute("PRAGMA table_info(items)")}
+            velhas = [r["name"] for r in
+                      conn.execute("PRAGMA table_info(items_old)")
+                      if r["name"] in novas]
+            cols = ",".join(velhas)
             conn.execute(f"INSERT INTO items ({cols}) "
                          f"SELECT {cols} FROM items_old")
             conn.execute("DROP TABLE items_old")
@@ -625,29 +643,51 @@ AVISO_MAX_DIAS = 90
 
 
 def _avisar_dias_limpo(csv: Optional[str]) -> Optional[str]:
-    """Normaliza "60,30" -> "60,30". Lixo vira None (política padrão)."""
+    """Normaliza "60,30" -> "60,30". Lixo vira None (política padrão).
+
+    `import logging` LOCAL, como nos outros 8 sites deste arquivo: o `db.py`
+    não importa logging no topo, e a primeira versão desta função chamava
+    `logging.getLogger` sem importar. O ramo de erro estourava NameError e
+    derrubava o `add_item` inteiro — auditoria M3.6, P2-2. Era código novo
+    que nunca tinha rodado.
+    """
+    import logging
     if not csv:
         return None
-    dias = []
+    dias, descartados = [], []
     for parte in str(csv).split(","):
         parte = parte.strip()
-        if not parte.isdigit():
+        # `0` fora: D-0 fura o guard de `criado_hoje` da rede de segurança e
+        # vira eco do que a pessoa acabou de dizer.
+        if not parte.isdigit() or not (1 <= int(parte) <= AVISO_MAX_DIAS):
+            descartados.append(parte)
             continue
-        d = int(parte)
-        if 0 <= d <= AVISO_MAX_DIAS:
-            dias.append(d)
-    if not dias:
+        dias.append(int(parte))
+    if descartados:
+        # DESCARTE PARCIAL TAMBÉM APARECE NO LOG (M3.6, P2-4). Antes o aviso
+        # só saía quando TUDO era lixo — "90,91" virava "90" calado, e a
+        # antecedência que alguém escreveu sumia sem deixar rastro.
         logging.getLogger("resolveai").warning(
-            "[db] avisar_dias ignorado: %r", csv)
+            "[db] avisar_dias: descartei %r de %r", descartados, csv)
+    if not dias:
         return None
     return ",".join(str(d) for d in sorted(set(dias), reverse=True))
 
 
-def dias_de_aviso(item: Optional[dict]) -> Optional[set]:
-    """Antecedência do item, ou None quando ele segue a política global."""
+def dias_de_aviso(item) -> Optional[set]:
+    """Antecedência do item, ou None quando ele segue a política global.
+
+    Aceita dict E `sqlite3.Row` (M3.6, P2-3): a Row não tem `.get`, e o
+    `hasattr(item, "get")` da primeira versão devolvia None CALADO — o item
+    perdia os 60/30 sem erro nenhum, que é o modo de falha mais caro de
+    achar. Hoje `items_due_within` devolve dict, mas nada garante isso.
+    """
     if not item:
         return None
-    csv = item.get("avisar_dias") if hasattr(item, "get") else None
+    try:
+        csv = item["avisar_dias"]
+    except (KeyError, IndexError, TypeError):
+        return None
     if not csv:
         return None
     dias = {int(x) for x in str(csv).split(",") if x.strip().isdigit()}

@@ -22,6 +22,7 @@ LLM não decide o que é o documento, e não inventa data que o OCR não trouxe.
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -34,8 +35,13 @@ from typing import Optional
 # Falso positivo aqui não é neutro: vira pergunta errada, e pergunta errada
 # ensina a pessoa a ignorar as perguntas.
 _TIPOS = (
+    # CUPOM FISCAL SAIU (auditoria M3.6, P1-5). Ele é o papel do mercado, da
+    # farmácia, do posto — compra sem garantia, várias por semana. Com ele na
+    # lista, cada ida ao supermercado virava um lembrete de "garantia" pra
+    # daqui a 11 meses. A conta de compra do dia a dia já tem caminho: é
+    # despesa, não documento que vence.
     ("nota_fiscal",
-     (r"\bDANFE\b", r"NOTA\s+FISCAL", r"\bNFC-?e\b", r"CUPOM\s+FISCAL"),
+     (r"\bDANFE\b", r"NOTA\s+FISCAL", r"\bNFC-?e\b"),
      "nota fiscal"),
     ("documento",
      (r"CARTEIRA\s+NACIONAL\s+DE\s+HABILITA", r"\bCNH\b",
@@ -79,6 +85,19 @@ _ROTULO_FINO = (
     (r"CARTEIRA\s+DE\s+IDENTIDADE", "carteira de identidade"),
 )
 
+# NOTA DE SERVIÇO NÃO TEM GARANTIA DE PRODUTO (auditoria M3.6, P1-5).
+#
+# Conserto de vazamento, corte de cabelo, frete, mensalidade: são notas
+# fiscais de verdade, com DANFE e tudo, e nenhuma delas ganha um ano de
+# garantia de fábrica. Prometer isso é o bot afirmando um fato que não é
+# verdade — e daqui a onze meses a pessoa recebe um aviso sobre a garantia
+# do encanador. Reconhecido como nota de serviço, o documento simplesmente
+# não entra por este caminho.
+_NOTA_DE_SERVICO_RE = re.compile(
+    r"\b(nota\s+fiscal\s+de\s+servi[çc]|NFS-?e|servi[çc]os?\s+prestados?|"
+    r"m[ãa]o\s+de\s+obra|conserto|reparo|instala[çc][ãa]o|manuten[çc][ãa]o|"
+    r"consultoria|honor[áa]rios|ISS(?:QN)?\b|frete)\b", re.I)
+
 _DATA_RE = re.compile(r"\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})\b")
 
 # Linhas que NUNCA viram descrição: carregam dado de identificação e não
@@ -89,12 +108,22 @@ _LIXO_NA_DESCRICAO = re.compile(
 
 
 def _iso(m: re.Match) -> Optional[str]:
+    """Data do OCR -> ISO. None quando a data não existe no calendário.
+
+    VALIDAR A FAIXA NÃO BASTA (auditoria M3.6, P0-2). "31/09/2026" passa em
+    `1<=mes<=12 and 1<=d<=31` e não existe. Um dígito errado da visão gravava
+    "2026-09-31" no banco, e daí em diante `date(y, m, d)` estourava DENTRO
+    do motor proativo — derrubando o ciclo inteiro, de TODO MUNDO, todo dia,
+    até alguém apagar a linha na mão. `date()` é o único juiz de calendário
+    que não erra bissexto nem mês de 30.
+    """
     d, mes, a = int(m.group(1)), int(m.group(2)), int(m.group(3))
     if a < 100:
         a += 2000
-    if not (1 <= mes <= 12 and 1 <= d <= 31):
+    try:
+        return date(a, mes, d).isoformat()
+    except ValueError:
         return None
-    return "%04d-%02d-%02d" % (a, mes, d)
 
 
 def _data_do_tipo(texto: str, tipo: str) -> Optional[str]:
@@ -125,11 +154,21 @@ def _descricao(texto: str, rotulo: str, marcas: tuple = ()) -> str:
             continue
         if _LIXO_NA_DESCRICAO.search(l):
             continue
-        # A LINHA QUE IDENTIFICOU O TIPO NÃO É O NOME DA COISA. Sem isto,
+        # A LINHA QUE É SÓ O RÓTULO NÃO É O NOME DA COISA. Sem isto,
         # "NOTA FISCAL ELETRONICA" no cabeçalho virava a descrição e o item
         # saía como "nota fiscal — Nota Fiscal Eletronica" — o rótulo escrito
         # duas vezes, e nenhuma pista de qual nota é essa.
-        if any(re.search(m, l, re.I) for m in marcas):
+        #
+        # SÓ QUE DESCARTAR A LINHA INTEIRA ERA DEMAIS (auditoria M3.6, P2-1):
+        # "USO CONTÍNUO" é marca do tipo E aparece na linha do remédio, então
+        # "Losartana 50mg - uso contínuo" era jogada fora e a receita ficava
+        # sem o nome do medicamento — o único dado que a pessoa procura na
+        # lista. A linha só cai fora quando a marca É a linha; sobrando nome
+        # de verdade, ele fica.
+        _sem_marca = l
+        for _m in marcas:
+            _sem_marca = re.sub(_m, " ", _sem_marca, flags=re.I)
+        if sum(c.isalnum() for c in _sem_marca) < 4:
             continue
         if _DATA_RE.search(l) or re.search(r"R\$", l):
             continue
@@ -143,7 +182,13 @@ def _descricao(texto: str, rotulo: str, marcas: tuple = ()) -> str:
     melhor = re.sub(r"\s{2,}", " ", melhor).strip(" -–—:")
     if len(melhor) > 48:
         melhor = melhor[:48].rstrip() + "…"
-    return "%s — %s" % (rotulo, melhor.title()) if melhor else rotulo
+    # `.title()` SO EM LINHA TODA MAIUSCULA. Aplicado sempre, ele estragava
+    # o que o OCR tinha lido certo: "Losartana 50mg" virava "Losartana 50Mg"
+    # — e dose de remedio escrita errada e o tipo de detalhe que faz a pessoa
+    # duvidar de tudo o que esta na lista.
+    if melhor.isupper():
+        melhor = melhor.title()
+    return "%s — %s" % (rotulo, melhor) if melhor else rotulo
 
 
 def reconhecer(texto: Optional[str]) -> Optional[dict]:
@@ -159,6 +204,8 @@ def reconhecer(texto: Optional[str]) -> Optional[dict]:
     for tipo, marcas, rotulo in _TIPOS:
         if not any(re.search(m, bruto, re.I) for m in marcas):
             continue
+        if tipo == "nota_fiscal" and _NOTA_DE_SERVICO_RE.search(bruto):
+            return None
         if tipo == "documento":
             for padrao, fino in _ROTULO_FINO:
                 if re.search(padrao, bruto, re.I):
@@ -221,19 +268,24 @@ _AVISOS = {
 
 
 def _iso_mais_dias(iso: str, dias: int) -> str:
-    from datetime import date as _d, timedelta as _td
     a, m, d = (int(x) for x in iso.split("-"))
-    return (_d(a, m, d) + _td(days=dias)).isoformat()
+    return (date(a, m, d) + timedelta(days=dias)).isoformat()
 
 
 def vencimento(doc: Optional[dict]) -> Optional[str]:
-    """A data que vira `data_vencimento` no item. None se não dá pra saber."""
+    """A data que vira `data_vencimento` no item. None se não dá pra saber.
+
+    TODO CAMINHO PASSA PELO CALENDÁRIO, inclusive o de prazo zero. Antes,
+    `if prazo else doc["data"]` devolvia a data crua sem conferir — e como
+    CNH e vacina têm prazo zero, eram justamente os dois tipos que podiam
+    gravar "31/09" no banco (auditoria M3.6, P0-2).
+    """
     if not doc or not doc.get("data"):
         return None
     prazo = _PRAZO_APOS_A_DATA.get(doc.get("tipo"), 0)
     try:
-        return _iso_mais_dias(doc["data"], prazo) if prazo else doc["data"]
-    except (ValueError, TypeError):
+        return _iso_mais_dias(doc["data"], prazo)
+    except (ValueError, TypeError, AttributeError):
         return None
 
 
@@ -242,42 +294,95 @@ def avisos(tipo: Optional[str]) -> tuple:
     return _AVISOS.get(tipo or "", ())
 
 
-def _frase_de_aviso(tipo: str) -> str:
+def _dias_que_ainda_cabem(tipo: str, faltam: Optional[int]) -> tuple:
+    """Dos avisos do tipo, os que ainda dá tempo de fazer.
+
+    A CNH que vence em 20 dias não tem como receber o aviso de D-60 nem o de
+    D-30 — e a confirmação prometia os dois assim mesmo (auditoria M3.6,
+    P1-1). A pessoa ouviria uma única mensagem, no dia, e concluiria — com
+    razão — que o bot fala o que não cumpre.
+    """
     dias = avisos(tipo)
+    if faltam is None:
+        return dias
+    return tuple(d for d in dias if d <= faltam)
+
+
+def _frase_de_aviso(tipo: str, faltam: Optional[int] = None) -> str:
+    dias = _dias_que_ainda_cabem(tipo, faltam)
     if not dias:
+        # Sem antecedência que caiba, quem avisa é a política global: D-1.
         return "te aviso na véspera"
+
+    # "60 dias antes e 30 dias antes" e o jeito que ninguem escreve. Quando
+    # todos os avisos sao numeros, o "dias antes" sai uma vez so.
+    if 1 not in dias:
+        if len(dias) == 1:
+            return "te aviso %d dias antes" % dias[0]
+        return "te aviso %s e %d dias antes" % (
+            ", ".join(str(d) for d in dias[:-1]), dias[-1])
+
+    def _um(d):
+        return "na véspera" if d == 1 else "%d dias antes" % d
+
     if len(dias) == 1:
-        return "te aviso %d dias antes" % dias[0]
-    return "te aviso %s e %d dias antes" % (
-        ", ".join(str(d) for d in dias[:-1]), dias[-1])
+        return "te aviso %s" % _um(dias[0])
+    return "te aviso %s e %s" % (
+        ", ".join(_um(d) for d in dias[:-1]), _um(dias[-1]))
 
 
 # O que cada tipo promete fazer, em uma linha — é o que convence a pessoa a
-# confirmar. "Guardei sua nota" não diz nada; "te aviso 30 dias antes da
+# confirmar. "Guardei sua nota" não diz nada; "te aviso 30 dias antes de a
 # garantia acabar" diz.
 #
 # O trecho dos dias é GERADO a partir de `_AVISOS`, nunca escrito à mão: foi
 # exatamente a cópia manual que deixou a promessa dizer 60/30 enquanto o
 # motor avisava na véspera. Se alguém mudar a antecedência, o texto muda
 # junto — não tem como esquecer.
+#
+# "COSTUMA" NA NOTA FISCAL, não "é" (auditoria M3.6, P1-5). Um ano é o prazo
+# usual de garantia de fábrica, não uma regra da lei — o CDC trata de outra
+# coisa (prazo de reclamação, 30 e 90 dias). O bot lembra da data; ele não
+# dá parecer jurídico.
 _PROMESSA = {
-    "nota_fiscal": "%s da garantia de 1 ano acabar",
+    "nota_fiscal": "%s de completar 1 ano da compra, "
+                   "que é quando a garantia costuma acabar",
     "documento": "%s de vencer",
     "receita": "%s de a receita completar 6 meses",
     "vacina": "%s da próxima dose",
 }
 
 
-def promessa(tipo: Optional[str]) -> str:
+def promessa(tipo: Optional[str], faltam: Optional[int] = None) -> str:
     molde = _PROMESSA.get(tipo or "")
     if not molde:
         return "eu te aviso na hora certa"
-    return molde % _frase_de_aviso(tipo or "")
+    return molde % _frase_de_aviso(tipo or "", faltam)
+
+
+# "Isso parece UMA CNH" / "UM passaporte". Concordância errada num texto que
+# a pessoa lê no primeiro contato com a feature parece descuido — e descuido
+# é o que faz alguém não confiar o documento ao bot.
+# COMO CHAMAR A DATA EM CADA TIPO. "Vence em" numa carteirinha de vacina
+# esta errado: dose nao vence, chega a hora. E na nota o que a pessoa precisa
+# ver e ate quando a garantia vai, nao "quando a nota vence".
+_ROTULO_DA_DATA = {
+    "nota_fiscal": "Garantia vai até",
+    "vacina": "Próxima dose em",
+    "receita": "Vale até",
+}
+
+_ARTIGO = {
+    "passaporte": "um",
+    "certificado digital": "um",
+    "documento": "um",
+}
 
 BOTOES = ["Confirmar", "Ajustar", "Esquece"]
 
 
-def pergunta_de_confirmacao(doc: Optional[dict]) -> Optional[dict]:
+def pergunta_de_confirmacao(doc: Optional[dict],
+                            hoje: Optional[date] = None) -> Optional[dict]:
     """A pergunta que a pessoa responde com um toque. None sem documento.
 
     Os três caminhos existem por motivos diferentes:
@@ -292,18 +397,41 @@ def pergunta_de_confirmacao(doc: Optional[dict]) -> Optional[dict]:
     # Mostra a data QUE VALE, não a que está impressa: pra nota fiscal a
     # pessoa precisa ver o fim da garantia, não a emissão que ela já conhece.
     quando = vencimento(doc)
+    faltam = None
     if quando:
         d = "%s/%s/%s" % (quando[8:10], quando[5:7], quando[0:4])
-        rotulo_data = ("Garantia vai até" if doc.get("tipo") == "nota_fiscal"
-                       else "Vence em")
+        rotulo_data = _ROTULO_DA_DATA.get(doc.get("tipo"), "Vence em")
         linha_data = "%s: *%s*" % (rotulo_data, d)
+        try:
+            a, m, dd = (int(x) for x in quando.split("-"))
+            faltam = (date(a, m, dd) - (hoje or date.today())).days
+        except (ValueError, TypeError):
+            faltam = None
     else:
-        linha_data = "_Não consegui ler a data — toca em *Ajustar* que você me diz._"
+        linha_data = ("_Não consegui ler a data — toca em *Ajustar* que você "
+                      "me diz._")
+
+    # A DESCRIÇÃO SÓ ENTRA QUANDO ACRESCENTA (auditoria M3.6, P2-5). No
+    # documento de identidade ela É o rótulo, e a mensagem saía com "CNH"
+    # escrito duas vezes seguidas — o mesmo defeito que o filtro de marcas
+    # tinha acabado de matar na nota fiscal.
+    corpo = (doc["descricao"] or "").strip()
+    _rot = (doc["rotulo"] or "").strip()
+    if corpo.lower() == _rot.lower():
+        corpo = ""
+    elif corpo.lower().startswith(_rot.lower() + " — "):
+        # "nota fiscal — Geladeira Brastemp" logo abaixo de "Isso parece uma
+        # *nota fiscal*" e o rotulo escrito duas vezes na mesma tela. Na
+        # LISTA o prefixo serve (identifica o item); aqui ele so ocupa
+        # espaco, porque a frase de cima ja disse o que e.
+        corpo = corpo[len(_rot) + 3:].strip()
+
     texto = (
-        "Isso parece uma *%s*. 📄\n\n"
-        "%s\n%s\n\n"
+        "Isso parece %s *%s*. 📄\n\n"
+        "%s%s\n\n"
         "Se estiver certo, %s."
-        % (doc["rotulo"], doc["descricao"], linha_data,
-           promessa(doc.get("tipo")))
+        % (_ARTIGO.get(doc["rotulo"], "uma"), doc["rotulo"],
+           (corpo + "\n") if corpo else "", linha_data,
+           promessa(doc.get("tipo"), faltam))
     )
     return {"texto": texto, "botoes": list(BOTOES), "doc": doc}

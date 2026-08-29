@@ -130,15 +130,36 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
             if rec == "diaria" or rec.startswith("horas"):
                 continue  # o alarme de hora já cobre; evita aviso duplo
             if item.get("data_vencimento"):
-                y, m, d = map(int, item["data_vencimento"].split("-"))
-                days_left = (date(y, m, d) - ref).days
-                # Antecedência do ITEM manda; depois a da categoria; depois
-                # a global. O item ganha porque é o único lugar que sabe que
-                # aquilo é uma CNH — a categoria dela é "Outros", e mexer na
-                # política de "Outros" mudaria o aviso de todo o resto.
-                alerta = (db.dias_de_aviso(item)
-                          or DUE_ALERT_DAYS_POR_CATEGORIA.get(
-                              item.get("categoria") or "", DUE_ALERT_DAYS))
+                # UMA LINHA RUIM NAO PODE MATAR O CICLO INTEIRO.
+                #
+                # O `check_overdue` ganhou esta blindagem na v23.4 (P1-5) e o
+                # `check_due_items` ficou de fora — a janela era de 1 dia, e
+                # uma data podre praticamente nunca chegava ate aqui. A
+                # janela agora vai a 90 dias, e a auditoria M3.6 (P0-2)
+                # mostrou o resultado: um "31/09" lido de uma foto derrubava
+                # o motor proativo de TODOS os usuarios, todo ciclo, ate
+                # alguem apagar a linha na mao. O item ruim e pulado e o log
+                # diz qual e; o resto do ciclo segue.
+                try:
+                    y, m, d = map(int, str(item["data_vencimento"]).split("-"))
+                    days_left = (date(y, m, d) - ref).days
+                except (ValueError, TypeError, AttributeError):
+                    import logging
+                    logging.getLogger("resolveai").error(
+                        "[vencimento] item %s com data invalida (%r) - pulado",
+                        item.get("id"), item.get("data_vencimento"))
+                    continue
+                # ANTECEDENCIA DO ITEM SOMA COM A VESPERA, nao substitui
+                # (auditoria M3.6, P1-1). Com `or`, "60,30" APAGAVA o D-1: a
+                # CNH era avisada 60 e 30 dias antes e ficava muda na
+                # vespera, e a nota fiscal (so D-30) perdia a vespera de vez.
+                # A vespera e a rede de baixo de todo item com data — nada
+                # que a gente adicione pode tirar ela.
+                _do_item = db.dias_de_aviso(item)
+                alerta = DUE_ALERT_DAYS_POR_CATEGORIA.get(
+                    item.get("categoria") or "", DUE_ALERT_DAYS)
+                if _do_item:
+                    alerta = set(alerta) | set(_do_item)
                 if days_left not in alerta:
                     # REDE DE SEGURANCA DO DIA DO VENCIMENTO.
                     #

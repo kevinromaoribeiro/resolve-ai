@@ -173,10 +173,31 @@ def enviar(number: str, texto: str, botoes: list) -> bool:
     if not to or not botoes:
         return False
 
+    # DUAS CONVENCOES DE BOTAO CONVIVEM NESTA BASE, e uma quase matou uma
+    # feature inteira (auditoria M3.6, P0-1).
+    #
+    #   aqui, historicamente:  [("Paguei", "paguei"), ...]   tupla
+    #   meta_cloud/BOTOES_POR_KIND:  ["Paguei", "Adiar"]     string
+    #
+    # Quando o `enviar_resposta` passou a aceitar botoes explicitos, os das
+    # features novas (`documento.BOTOES`, `recorrencia.BOTOES`) chegaram aqui
+    # como STRING e o `for i, (titulo, _payload)` estourou ValueError — fora
+    # do try do httpx, fora do try do webhook. A pessoa mandava a foto do
+    # documento e nao recebia NADA, e o msg_id ja carimbado fazia o reenvio
+    # da Meta cair no dedup: a mensagem dela sumia pra sempre.
+    #
+    # Normalizar aqui e o lugar certo: e o unico ponto por onde as duas
+    # convencoes passam, e assim nenhum chamador futuro precisa saber disso.
     lista = []
-    for i, (titulo, _payload) in enumerate(botoes[:MAX_BOTOES]):
+    for i, b in enumerate(botoes[:MAX_BOTOES]):
+        titulo = b[0] if isinstance(b, (tuple, list)) else b
+        if not isinstance(titulo, str) or not titulo.strip():
+            log.warning("[botoes] botao invalido ignorado: %r", b)
+            continue
         lista.append({"type": "reply",
                       "reply": {"id": f"b{i}", "title": titulo[:MAX_TITULO]}})
+    if not lista:
+        return False
 
     corpo = {
         "messaging_product": "whatsapp",
@@ -239,7 +260,18 @@ def enviar_resposta(number: str, texto: str, send_text_fallback,
         else:
             botoes = escolher(texto)
         if botoes:
-            if enviar(number, texto, botoes):
-                return True
+            # A PROMESSA DO DOCSTRING TEM QUE SER VERDADE (auditoria M3.6).
+            #
+            # "NUNCA deixa de enviar" era falso: qualquer excecao dentro do
+            # `enviar` subia daqui, e esta chamada esta FORA do try que
+            # protege o webhook. Uma linha de formatacao de botao virava
+            # silencio total pra pessoa. Agora o interativo pode falhar do
+            # jeito que for — o texto puro sai.
+            try:
+                if enviar(number, texto, botoes):
+                    return True
+            except Exception:
+                log.warning("[botoes] interativo estourou — vai texto puro",
+                            exc_info=True)
             log.info("[botoes] interativo falhou — caindo pra texto puro")
     return send_text_fallback(number, texto)

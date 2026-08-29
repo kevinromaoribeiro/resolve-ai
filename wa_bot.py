@@ -53,7 +53,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v25.3-m35-auditoria-corrigida-2026-08-29"
+BUILD = "v25.4-m36-auditoria-corrigida-2026-08-29"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -739,17 +739,43 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     # aqui já houve pergunta e a próxima mensagem é a resposta dela.
     _pend_aj = PENDING.get(phone) or {}
     if (_pend_aj.get("tipo") in ("ajustar_retorno", "ajustar_documento")
-            and _proposta_viva(_pend_aj)):
+            and _proposta_viva(_pend_aj, ttl=AJUSTE_TTL_S)):
+        # TRÊS PORTAS DE SAÍDA ANTES DE LER A DATA (auditoria M3.6, P1-3).
+        #
+        # O bloco original pegava QUALQUER frase em que o parser achasse um
+        # número de data. Medido pelo auditor: "paguei a luz dia 20" virava a
+        # data do documento — e a baixa da luz nunca acontecia. "hoje não
+        # precisa" virava um item pra hoje. A janela era de 24h.
+        #
+        # Recusa e outro assunto saem daqui SEM criar nada; a mensagem segue
+        # pro motor normal, que é quem sabe tratar as duas coisas.
+        if _e_recusa(text):
+            PENDING.pop(phone, None)
+            return ("Beleza, não guardei nada. 👍\n\n"
+                    "Se mudar de ideia, é só me mandar de novo.")
+        if _e_outro_assunto(text):
+            PENDING.pop(phone, None)
+            _pend_aj = {}
+
+    if (_pend_aj.get("tipo") in ("ajustar_retorno", "ajustar_documento")
+            and _proposta_viva(_pend_aj, ttl=AJUSTE_TTL_S)):
         _quando = _data_do_texto(text)
         if _quando:
             PENDING.pop(phone, None)
+            # O QUE A PESSOA ESCREVEU GANHA DO QUE O OCR ACHOU (M3.6, P1-2).
+            # O bot pediu "me diz o que é e quando vence" e usava só a data,
+            # mantendo justamente a descrição que ela tocou em Ajustar pra
+            # corrigir. `_descricao_do_texto` devolve None quando ela só
+            # mandou a data — aí a antiga continua valendo.
+            _dito = _descricao_do_texto(text)
+            _hora = _hora_do_texto(text)
             if _pend_aj["tipo"] == "ajustar_retorno":
-                _desc = _pend_aj.get("descricao") or "seu compromisso"
+                _desc = _dito or _pend_aj.get("descricao") or "seu compromisso"
                 _cat = ai_engine.classify_category(_desc)
                 _avisos = None
             else:
                 _doc = _pend_aj.get("doc") or {}
-                _desc = _doc.get("descricao") or "documento"
+                _desc = _dito or _doc.get("descricao") or "documento"
                 _cat = _CATEGORIA_DE_DOC.get(_doc.get("tipo"), "Outros")
                 _avisos = ",".join(
                     str(d) for d in documento.avisos(_doc.get("tipo")))
@@ -757,6 +783,7 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 db.add_item(user_id=user["id"], tipo="lembrete",
                             categoria=_cat, descricao=_desc[:120],
                             valor_reais=None, data_vencimento=_quando,
+                            hora_alvo=_hora,
                             status="pendente", avisar_dias=_avisos or None)
             except Exception:
                 logging.getLogger("resolveai").warning(
@@ -764,7 +791,8 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 return ("Não consegui guardar agora. 😕 Tenta de novo daqui "
                         "a pouco.")
             return (f"Anotado! ✅ *{_desc}* — "
-                    f"{_quando[8:10]}/{_quando[5:7]}/{_quando[0:4]}.\n\n"
+                    f"{_quando[8:10]}/{_quando[5:7]}/{_quando[0:4]}"
+                    f"{(' às ' + _hora) if _hora else ''}.\n\n"
                     f"Te aviso antes. Pode esquecer que eu lembro.")
         # NÃO ENTENDI A DATA: solta a pendência e deixa a mensagem seguir pro
         # motor normal, que sabe ler frase solta. Insistir aqui prenderia a
@@ -1413,13 +1441,25 @@ def entende_comando(texto: str) -> bool:
 PROPOSTA_TTL_S = 24 * 3600
 
 
-def _proposta_viva(pend: dict) -> bool:
+# JANELA CURTA PRA "ME DIZ A DATA" (auditoria M3.6, P1-3).
+#
+# A proposta com botao vive 24h: a pessoa pode abrir o WhatsApp so a noite e
+# tocar em Confirmar, e o contexto tem que estar la. Ja o estado de AJUSTE e
+# outra coisa — o bot acabou de fazer uma pergunta aberta, e quem responde a
+# uma pergunta responde na hora. Vinte minutos depois, a proxima mensagem
+# quase certamente e outro assunto, e trata-la como "a data que eu pedi" e
+# como o bot sequestrava a conversa.
+AJUSTE_TTL_S = 20 * 60
+
+
+def _proposta_viva(pend: dict, ttl: Optional[int] = None) -> bool:
     """A proposta ainda vale? Sem carimbo, nao vale — fail-closed."""
     quando = (pend or {}).get("quando")
     if not quando:
         return False
     try:
-        return (tempo.agora() - quando).total_seconds() <= PROPOSTA_TTL_S
+        return ((tempo.agora() - quando).total_seconds()
+                <= (ttl or PROPOSTA_TTL_S))
     except Exception:
         return False
 
@@ -1890,81 +1930,246 @@ def _data_iso_ou_none(valor):
 # Ela é DELIBERADAMENTE curta. Só entende o que gente escreve respondendo
 # "quando?", e devolve None em tudo o mais — e `None` aqui não perde nada: a
 # mensagem segue pro motor normal, que é quem sabe interpretar frase solta.
-_DATA_BR_LIVRE_RE = re.compile(r"\b(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?\b")
+#
+# A ORDEM DAS REGRAS É A REGRA (auditoria M3.6, P1-4). A primeira versão
+# testava as palavras relativas ("hoje", "mês que vem") ANTES do número, e
+# por isso errava calada nas duas construções mais comuns:
+#   "não é hoje, é 12/03"        -> devolvia hoje
+#   "vence no dia 5 do mês que vem" -> devolvia o dia 29 do mês seguinte
+# Devolver `None` é seguro (a mensagem segue pro motor normal). Devolver a
+# data ERRADA não é: o item nasce com a data errada e ninguém confere.
+#
+# Data com ANO explícito vence tudo. Depois "dia N" com o mês dito. Só então
+# as palavras relativas — e nenhuma delas vale se a frase tem negação.
+
+# ISO: "2027-03-12". Aparece quando a pessoa copia de outro sistema.
+_DATA_ISO_LIVRE_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+
+# Com ano: aceita ponto ("05.12.2026"), porque o ano remove a ambiguidade.
+_DATA_COM_ANO_RE = re.compile(
+    r"\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})\b")
+
+# SEM ano: só barra e hífen. O PONTO SAIU de propósito — "R$ 30.12",
+# "processo 05.12" e "1.200,00" viravam data. Sem o ano não há nada que
+# desempate número de dinheiro de número de calendário.
+_DATA_SEM_ANO_RE = re.compile(r"\b(\d{1,2})[/\-](\d{1,2})\b")
+
 _DAQUI_RE = re.compile(
     r"daqui\s+(?:a\s+)?(?:(\d{1,3})|um|uma|1)\s*(dias?|semanas?|m[êe]s(?:es)?|anos?)",
     re.I)
 _DIA_SOLTO_RE = re.compile(r"\bdia\s+(\d{1,2})\b", re.I)
 
+_MESES_NOME = ("janeiro", "fevereiro", "mar[çc]o", "abril", "maio", "junho",
+               "julho", "agosto", "setembro", "outubro", "novembro",
+               "dezembro")
+_MES_POR_NOME_RE = re.compile(
+    r"\bde\s+(" + "|".join(_MESES_NOME) + r")\b", re.I)
+
+# NEGAÇÃO DESLIGA A PALAVRA RELATIVA. "hoje não precisa" e "amanhã não" são
+# recusas, e viravam a data de hoje/amanhã — o item nascia do "não".
+_NEGACAO_RE = re.compile(r"\b(n[ãa]o|nem|nunca|jamais)\b", re.I)
+
+# RECORRÊNCIA NÃO É DATA. "todo dia 10" é uma conta que se repete; virar um
+# item único pra setembro perde a repetição inteira sem avisar.
+_RECORRENTE_RE = re.compile(
+    r"\b(todo|todos|toda|todas|sempre|mensalmente|semanalmente)\b", re.I)
+
+# Frases que são RECUSA, não resposta. O bot perguntou a data; isto é a
+# pessoa dizendo que não vai responder — e insistir é o que faz ela parar de
+# responder de vez.
+#
+# BUSCA NA FRASE INTEIRA, não só no começo: "hoje não precisa" e "isso aí
+# esquece" são recusas que não começam com a palavra da recusa — e a primeira
+# versão, ancorada em `^`, deixava "hoje não precisa" virar um item chamado
+# *não precisa*, com data de hoje.
+_RECUSA_RE = re.compile(
+    r"\b(n[ãa]o\s+(precisa|quero|sei|lembro|tenho|vale)|deixa\s+(pra\s+)?l[áa]|"
+    r"esquec[ea]|tanto\s+faz|sei\s+l[áa]|cancela)\b", re.I)
+
+# Marcas de OUTRO ASSUNTO. Quem escreve isso não está respondendo "quando
+# vence?" — está dando baixa, pedindo a lista, registrando outra coisa.
+# Sem esta guarda, "paguei a luz dia 20" virava a data do documento e a
+# baixa da luz nunca acontecia (auditoria M3.6, P1-3).
+_OUTRO_ASSUNTO_RE = re.compile(
+    r"\b(paguei|pago|quitei|resolvi|feito|fiz|comprei|gastei|"
+    r"ver\s+tudo|minha\s+lista|meus\s+itens|quanto\s+(eu\s+)?gastei|"
+    r"cancela|apagar|assinar|ajuda)\b", re.I)
+
+
+def _e_recusa(texto: str) -> bool:
+    return bool(_RECUSA_RE.search((texto or "").strip()))
+
+
+def _e_outro_assunto(texto: str) -> bool:
+    return bool(_OUTRO_ASSUNTO_RE.search(texto or ""))
+
 
 def _data_do_texto(texto: str, base=None):
     """Frase -> 'YYYY-MM-DD'. None quando não dá pra ter certeza."""
     t = (texto or "").strip().lower()
-    if not t:
+    if not t or _RECORRENTE_RE.search(t):
         return None
     hoje = base or tempo.hoje()
 
-    if re.search(r"\bdepois\s+de\s+amanh", t):
-        return (hoje + timedelta(days=2)).isoformat()
-    if re.search(r"\bamanh[ãa]\b", t):
-        return (hoje + timedelta(days=1)).isoformat()
-    if re.search(r"\bhoje\b", t):
-        return hoje.isoformat()
-    if re.search(r"\bsemana\s+que\s+vem\b", t):
-        return (hoje + timedelta(days=7)).isoformat()
-    if re.search(r"\b(m[êe]s\s+que\s+vem|pr[óo]ximo\s+m[êe]s)\b", t):
-        return _somar_meses(hoje, 1).isoformat()
-    if re.search(r"\bano\s+que\s+vem\b", t):
-        return _somar_meses(hoje, 12).isoformat()
-
-    m = _DAQUI_RE.search(t)
-    if m:
-        n = int(m.group(1)) if m.group(1) else 1
-        unidade = m.group(2)
-        if unidade.startswith("dia"):
-            return (hoje + timedelta(days=n)).isoformat()
-        if unidade.startswith("semana"):
-            return (hoje + timedelta(days=7 * n)).isoformat()
-        if unidade.startswith("ano"):
-            return _somar_meses(hoje, 12 * n).isoformat()
-        return _somar_meses(hoje, n).isoformat()
-
-    m = _DATA_BR_LIVRE_RE.search(t)
-    if m:
-        d, mes = int(m.group(1)), int(m.group(2))
-        ano = int(m.group(3)) if m.group(3) else hoje.year
-        if ano < 100:
-            ano += 2000
-        if not (1 <= mes <= 12 and 1 <= d <= 31):
-            return None
+    def _valida(a, mes, d):
         try:
-            alvo = date(ano, mes, d)
+            return date(a, mes, d).isoformat()
         except ValueError:
             return None
+
+    # 1. ISO — sem ambiguidade nenhuma.
+    m = _DATA_ISO_LIVRE_RE.search(t)
+    if m:
+        return _valida(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    # 2. dd/mm/aaaa — o ano dito manda em qualquer palavra da frase.
+    m = _DATA_COM_ANO_RE.search(t)
+    if m:
+        ano = int(m.group(3))
+        if ano < 100:
+            ano += 2000
+        return _valida(ano, int(m.group(2)), int(m.group(1)))
+
+    # 3. "dia 5 de setembro" / "dia 5 do mês que vem" — o dia com o mês dito.
+    #    Vem ANTES das palavras relativas: era aqui que "dia 5 do mês que vem"
+    #    virava "dia 29 do mês que vem", porque o "mês que vem" casava
+    #    primeiro e o 5 era ignorado.
+    md = _DIA_SOLTO_RE.search(t)
+    if md:
+        d = int(md.group(1))
+        mm = _MES_POR_NOME_RE.search(t)
+        if mm:
+            alvo_mes = _MESES_NOME.index(
+                next(n for n in _MESES_NOME
+                     if re.fullmatch(n, mm.group(1), re.I))) + 1
+            ano = hoje.year
+            iso = _valida(ano, alvo_mes, d)
+            if iso and iso < hoje.isoformat():
+                iso = _valida(ano + 1, alvo_mes, d)
+            return iso
+        if re.search(r"\b(m[êe]s\s+que\s+vem|pr[óo]ximo\s+m[êe]s)\b", t):
+            base_mes = _somar_meses(hoje.replace(day=1), 1)
+            return _valida(base_mes.year, base_mes.month, d)
+
+    # 4. dd/mm sem ano — sempre pra frente.
+    m = _DATA_SEM_ANO_RE.search(t)
+    if m:
+        d, mes = int(m.group(1)), int(m.group(2))
+        iso = _valida(hoje.year, mes, d)
         # SEM ANO, A DATA É SEMPRE PRA FRENTE. "vence 12/03" dito em agosto
         # é março do ano que vem — gravar 12/03 deste ano faria o item nascer
-        # vencido e o bot cobrar na hora, que é justamente o defeito que esta
-        # rodada está consertando.
-        if not m.group(3) and alvo < hoje:
-            try:
-                alvo = date(ano + 1, mes, d)
-            except ValueError:
-                return None
-        return alvo.isoformat()
+        # vencido e o bot cobrar na hora.
+        if iso and iso < hoje.isoformat():
+            iso = _valida(hoje.year + 1, mes, d)
+        if iso:
+            return iso
 
-    m = _DIA_SOLTO_RE.search(t)
-    if m:
-        d = int(m.group(1))
+    # 5. Palavras relativas — e só sem negação na frase.
+    if not _NEGACAO_RE.search(t):
+        if re.search(r"\bdepois\s+de\s+amanh", t):
+            return (hoje + timedelta(days=2)).isoformat()
+        if re.search(r"\bamanh[ãa]\b", t):
+            return (hoje + timedelta(days=1)).isoformat()
+        if re.search(r"\bhoje\b", t):
+            return hoje.isoformat()
+        if re.search(r"\bsemana\s+que\s+vem\b", t):
+            return (hoje + timedelta(days=7)).isoformat()
+        if re.search(r"\b(m[êe]s\s+que\s+vem|pr[óo]ximo\s+m[êe]s)\b", t):
+            return _somar_meses(hoje, 1).isoformat()
+        if re.search(r"\bano\s+que\s+vem\b", t):
+            return _somar_meses(hoje, 12).isoformat()
+
+        m = _DAQUI_RE.search(t)
+        if m:
+            n = int(m.group(1)) if m.group(1) else 1
+            unidade = m.group(2)
+            if unidade.startswith("dia"):
+                return (hoje + timedelta(days=n)).isoformat()
+            if unidade.startswith("semana"):
+                return (hoje + timedelta(days=7 * n)).isoformat()
+            if unidade.startswith("ano"):
+                return _somar_meses(hoje, 12 * n).isoformat()
+            return _somar_meses(hoje, n).isoformat()
+
+    # 6. "dia 15" sozinho — a próxima ocorrência desse dia.
+    if md and not _NEGACAO_RE.search(t):
+        d = int(md.group(1))
         if not 1 <= d <= 31:
             return None
         for salto in (0, 1, 2):
             base_mes = _somar_meses(hoje.replace(day=1), salto)
-            try:
-                alvo = date(base_mes.year, base_mes.month, d)
-            except ValueError:
-                continue
-            if alvo >= hoje:
-                return alvo.isoformat()
+            iso = _valida(base_mes.year, base_mes.month, d)
+            if iso and iso >= hoje.isoformat():
+                return iso
+    return None
+
+
+_HORA_RE = re.compile(r"\b([01]?\d|2[0-3])\s*(?:h|:)\s*([0-5]\d)?\b", re.I)
+
+
+def _hora_do_texto(texto: str):
+    """"às 14h", "14:30" -> 'HH:MM'. None quando não há hora na frase.
+
+    Existe porque o ajuste pedia "o que é e quando" e jogava a hora fora:
+    "dentista dia 15 às 14h" guardava o dia e perdia o horário, que é
+    justamente o dado que faz o lembrete servir.
+    """
+    m = _HORA_RE.search(texto or "")
+    if not m:
+        return None
+    return "%02d:%s" % (int(m.group(1)), m.group(2) or "00")
+
+
+# Conectivo que abre frase e não descreve nada. Só o COMEÇO é limpo — tirar
+# preposição do meio transformava "passaporte da minha filha" em "passaporte
+# minha filha", que é pior que não ter mexido.
+#
+# A ALTERNATIVA LONGA VEM PRIMEIRO: o `re` casa a primeira que der certo, não
+# a maior. Com "na" listado antes de "na verdade", a frase "na verdade é a
+# CNH do meu pai" perdia só o "na" e o item saía chamado "verdade e a CNH do
+# meu pai".
+_ABERTURA_RE = re.compile(
+    r"^(?:\W|\b(?:na\s+verdade|acho\s+que|isso\s+é|isso\s+eh|"
+    r"vencem|vence|venc[ei]|ent[ãa]o|at[ée]|"
+    r"é|eh|e|o|a|os|as|um|uma|no|na|em|de|do|da|pra|para)\b)+", re.I)
+
+# Sobra de "às 14h" depois que a hora sai: "dentista as" na lista é descuido
+# visível.
+_SOBRA_FINAL_RE = re.compile(r"\s+\b(a|as|às|ate|até|de|do|da|em|no|na)\s*$",
+                             re.I)
+
+
+def _descricao_do_texto(texto: str):
+    """O que sobra da frase depois de tirar data, hora e abertura.
+
+    A pergunta do ajuste é "me diz **o que é** e quando vence" — e a primeira
+    versão usava só a data, mantendo a descrição do OCR que a pessoa tinha
+    acabado de dizer que estava errada (auditoria M3.6, P1-2). Quem responde
+    "não é minha CNH, é o passaporte da minha filha, vence 15/06/2028" tem
+    que ver *passaporte da minha filha* na lista.
+
+    Lê a ÚLTIMA oração com conteúdo, não a frase inteira: a correção vem
+    depois da negação ("não é X, é Y"), e é o Y que interessa. Oração com
+    negação é descartada — ela diz o que a coisa NÃO é.
+
+    None quando não sobra nome nenhum. Aí a descrição antiga continua
+    valendo, que é melhor que um item chamado "15/06/2028".
+    """
+    t = " " + (texto or "") + " "
+    for rx in (_DATA_ISO_LIVRE_RE, _DATA_COM_ANO_RE, _DATA_SEM_ANO_RE,
+               _DAQUI_RE, _DIA_SOLTO_RE, _HORA_RE, _MES_POR_NOME_RE):
+        t = rx.sub(" ", t)
+    t = re.sub(r"\b(hoje|amanh[ãa]|semana que vem|m[êe]s que vem|"
+               r"pr[óo]ximo m[êe]s|ano que vem)\b", " ", t, flags=re.I)
+
+    for oracao in reversed(re.split(r"[,;]", t)):
+        if _NEGACAO_RE.search(oracao):
+            continue
+        limpo = _ABERTURA_RE.sub("", oracao.strip())
+        limpo = re.sub(r"\s{2,}", " ", limpo).strip(" -–—:.")
+        limpo = _SOBRA_FINAL_RE.sub("", limpo).strip()
+        if len(re.sub(r"[^A-Za-zÀ-ÿ]", "", limpo)) >= 4:
+            return limpo[:120]
     return None
 
 

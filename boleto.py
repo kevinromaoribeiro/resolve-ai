@@ -664,7 +664,7 @@ def codigo_de_pagamento(texto: Optional[str]) -> Optional[dict]:
             m = re.search(r"6304[0-9A-Fa-f]{4}", trecho)
             if m:
                 return {"tipo": "pix", "colavel": trecho[:m.end()]}
-            # SEM O CRC, NÃO DEVOLVE NADA (auditoria M3.5, P1-7).
+            # SEM O CRC, ESTE PIX NÃO VALE (auditoria M3.5, P1-7).
             #
             # O fallback antigo devolvia TODO o resto do texto como se fosse
             # o código. Num OCR real isso arrastava nome, CPF, endereço e
@@ -673,9 +673,13 @@ def codigo_de_pagamento(texto: Optional[str]) -> Optional[dict]:
             #
             # PIX sem CRC também não seria aceito pelo banco: devolver algo
             # aqui só criaria a expectativa de colar e a frustração de ver
-            # recusado. None é a resposta honesta.
+            # recusado.
+            #
+            # MAS SÓ O PIX É DESCARTADO, NÃO A FOTO (M3.6, P2-6): o `return
+            # None` que estava aqui cortava a busca de boleto logo abaixo, e
+            # um documento com o PIX truncado E a linha digitável legível
+            # saía sem código nenhum. Agora o texto segue sendo lido.
             log.info("[boleto] PIX sem CRC (6304xxxx) — ignorado")
-            return None
 
     # --- boleto: sequência longa de dígitos, ponto e espaço ---
     #
