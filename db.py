@@ -674,6 +674,35 @@ def _avisar_dias_limpo(csv: Optional[str]) -> Optional[str]:
     return ",".join(str(d) for d in sorted(set(dias), reverse=True))
 
 
+def _avisar_dias_final(csv: Optional[str], descricao: Optional[str]) -> Optional[str]:
+    """A antecedência do item: a explícita, ou a que a descrição pede.
+
+    AQUI, E NÃO NO CAMINHO DA FOTO. A antecedência de 60/30 dias da CNH
+    nascia só quando a pessoa mandava a IMAGEM do documento; quem digitava
+    "minha CNH vence 12/03/2027" ganhava só o aviso de véspera. A promessa
+    estava na landing e no /dash e o produto cumpria em metade dos caminhos.
+
+    Este é o funil por onde TODO item passa — foto, texto, ajuste, painel,
+    motor. Resolvendo aqui, nenhum caminho novo precisa lembrar da regra, que
+    é exatamente como o defeito nasceu.
+
+    O explícito sempre ganha: quem passou `avisar_dias` sabe o que quer.
+    """
+    explicito = _avisar_dias_limpo(csv)
+    if explicito:
+        return explicito
+    try:
+        import documento
+        dias = documento.avisos_por_descricao(descricao)
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[db] nao consegui derivar avisar_dias de %r", descricao,
+            exc_info=True)
+        return None
+    return _avisar_dias_limpo(",".join(str(d) for d in dias)) if dias else None
+
+
 def dias_de_aviso(item) -> Optional[set]:
     """Antecedência do item, ou None quando ele segue a política global.
 
@@ -734,10 +763,29 @@ def add_item(
             (user_id, tipo, categoria, descricao, valor_reais,
              data_vencimento, hora_alvo, recorrencia, status,
              link_afiliado, _now_iso(), codigo_pagamento, codigo_tipo,
-             _avisar_dias_limpo(avisar_dias)),
+             _avisar_dias_final(avisar_dias, descricao)),
         )
     touch_user(user_id)
     return int(cur.lastrowid)
+
+
+def item_com_codigo_mais_recente(user_id: int) -> Optional[dict]:
+    """A conta PENDENTE mais próxima de vencer que tem código de pagamento.
+
+    Ordena por vencimento, não por criação: quem pede o código está pagando
+    agora, e o que ela vai pagar é o que vence primeiro — não o último boleto
+    que ela fotografou.
+    """
+    with get_conn() as conn:
+        r = conn.execute(
+            """SELECT * FROM items
+                WHERE user_id=? AND status='pendente'
+                  AND codigo_pagamento IS NOT NULL
+                  AND TRIM(codigo_pagamento) <> ''
+                ORDER BY COALESCE(data_vencimento, '9999-12-31') ASC,
+                         id DESC
+                LIMIT 1""", (user_id,)).fetchone()
+    return dict(r) if r else None
 
 
 def get_item(item_id: int) -> Optional[dict]:

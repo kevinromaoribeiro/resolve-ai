@@ -53,7 +53,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v25.5-m37-auditoria-corrigida-2026-08-29"
+BUILD = "v25.6-m39-copiar-codigo-e-cnh-por-texto-2026-08-29"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -726,6 +726,35 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         return (f"Pronto, agora é *{novo.split()[0]}*. "
                 f"{'Eu vinha te chamando de ' + anterior.split()[0] + ' — foi mal. ' if anterior and anterior.split()[0].lower() != novo.split()[0].lower() else ''}"
                 f"Anotado pra sempre. ✅")
+
+    # --- "Copiar código": reenvia o código sozinho -------------------------
+    #
+    # O WhatsApp não tem botão que copia fora de template de autenticação
+    # (categoria de OTP, que não pode ser usada pra cobrança). O que dá pra
+    # fazer é isto: um toque traz o código pro fim da conversa, sozinho numa
+    # mensagem, onde o toque-e-segura → Copiar entrega exatamente o que o app
+    # do banco aceita. Serve principalmente quando o lembrete já rolou pra
+    # cima e procurar a mensagem do código dá trabalho.
+    if _COPIAR_CODIGO_RE.match(text):
+        _item = db.item_com_codigo_mais_recente(user["id"])
+        if not _item:
+            return ("Não tenho código de pagamento guardado agora. 🤔\n\n"
+                    "Me manda a foto ou o PDF do boleto que eu leio o código "
+                    "e te devolvo pronto pra colar.")
+        _cod = {"tipo": _item.get("codigo_tipo"),
+                "colavel": _item.get("codigo_pagamento")}
+        _nome = boleto.nome_do_codigo(_cod)
+        _so = boleto.mensagem_so_do_codigo(_cod)
+        if not _so:
+            return ("Não tenho código de pagamento guardado agora. 🤔\n\n"
+                    "Me manda a foto do boleto que eu leio pra você.")
+        # Duas mensagens: a explicação e o código puro. Juntas, o
+        # toque-e-copia levaria a explicação junto pro campo do banco.
+        send_whatsapp(phone,
+                      f"Aqui vai o *{_nome}* de *{_item['descricao']}* — "
+                      f"é só segurar na próxima mensagem e tocar em "
+                      f"*Copiar*. 👇")
+        return _so
 
     # --- a pessoa está DIZENDO a data que o bot pediu -----------------------
     #
@@ -1497,6 +1526,18 @@ _COMECAR_RE = re.compile(
 # Títulos curtos (a Meta corta em 20 chars) e, acima de tudo, títulos que
 # `entende_comando` reconhece. A ordem importa: a ação mais provável primeiro,
 # porque no celular o primeiro botão é o que o polegar alcança.
+# O botão que reenvia o código sozinho. Título curto de propósito: a Meta
+# corta em 20 caracteres, e botão cortado no meio parece defeito.
+BOTAO_COPIAR = "Copiar código"
+
+# O clique no botão chega como TEXTO (`button_reply.title`), então quem
+# atende é a mesma regra que atende quem digita. Aceita as duas grafias e o
+# jeito que a pessoa escreveria sem o botão.
+_COPIAR_CODIGO_RE = re.compile(
+    r"^\s*(copiar\s+c[óo]digo|copiar\s+o\s+c[óo]digo|"
+    r"me\s+manda\s+o\s+c[óo]digo|manda\s+o\s+c[óo]digo|"
+    r"c[óo]digo\s+de\s+barras|copia\s+e\s+cola)\s*[.!?]?\s*$", re.I)
+
 BOTOES_POR_KIND = {
     "vencimento": ["Paguei", "Adiar", "Ver tudo"],
     "vencido": ["Paguei", "Adiar", "Ver tudo"],
@@ -1523,6 +1564,15 @@ def _botoes_do_disparo(d: dict):
         return None
     if not d.get("item_id") and kind in ("vencimento", "vencido", "hora"):
         return ["Ver tudo"]
+    # BOLETO COM CÓDIGO TROCA "Ver tudo" POR "Copiar código".
+    #
+    # São no máximo 3 botões (limite da Meta), então entrar custa sair. Na
+    # hora de pagar, "Ver tudo" é o menos útil dos três: a pessoa está com o
+    # app do banco aberto, não querendo revisar a lista. E o botão resolve o
+    # caso que o toque-e-copia não resolve — quando o lembrete já rolou pra
+    # cima e achar a mensagem do código dá trabalho.
+    if d.get("tem_codigo") and kind in ("vencimento", "vencido"):
+        return [b for b in botoes if b != "Ver tudo"] + [BOTAO_COPIAR]
     return list(botoes)
 
 
@@ -4953,14 +5003,21 @@ PODERES = [
     {"grupo": "Entra dado", "titulo": "Código de barras e PIX guardados",
      "desc": "Do boleto, o bot guarda o código e devolve na hora de pagar — "
              "sem espaço e sem ponto, pronto pra colar no app do banco, "
-             "dizendo se é código de barras ou PIX."},
+             "dizendo se é código de barras ou PIX. No aviso de vencimento "
+             "aparece o botão *Copiar código*: um toque e o código chega "
+             "sozinho numa mensagem, onde segurar e tocar em Copiar pega só "
+             "ele. (O WhatsApp só tem botão que copia de verdade em template "
+             "de autenticação, que é pra código de acesso e não pode ser "
+             "usado em cobrança.)"},
     {"grupo": "Entra dado", "titulo": "Foto de documento que vence",
      "desc": "Nota fiscal, CNH, receita, carteirinha de vacina: o bot "
              "reconhece, mostra o que entendeu e você toca em Confirmar, "
              "Ajustar ou Esquece. Nunca guarda por conta própria. Cada tipo "
              "tem a antecedência que faz sentido: CNH avisa 60 e 30 dias "
              "antes, nota fiscal 30 dias antes de a garantia de 1 ano "
-             "acabar."},
+             "acabar. Vale por FOTO ou por TEXTO — quem escreve \"minha CNH "
+             "vence 12/03/2027\" ganha a mesma antecedência de quem manda a "
+             "foto."},
     {"grupo": "Entra dado", "titulo": "Placa do carro",
      "desc": "Com o final da placa, calcula IPVA e licenciamento de SP — "
              "inclusive o pulo de fim de semana e feriado."},
@@ -5665,6 +5722,30 @@ try:
         # só sai com token, senão /health vira vazamento de conversa.
         if _painel_autorizado(request):
             body["v8_ultima_falha"] = getattr(motor_v8, "ULTIMA_FALHA", "")
+            # QUAL KIND ESTA MUDO FORA DA JANELA DE 24H.
+            #
+            # `TEMPLATES_APROVADOS` e uma env var, e o gate e fail-closed: o
+            # que nao esta la NAO SAI, sem erro e sem log de negocio. Isso e
+            # certo — template nao aprovado nunca pode virar envio silencioso
+            # — mas cria o buraco oposto: template APROVADO na Meta e
+            # esquecido na variavel tambem fica mudo, e do lado de ca nada
+            # aparece. Ja perdemos aviso assim.
+            #
+            # Aqui o /health responde a pergunta direto, sem precisar abrir o
+            # EasyPanel (onde o token da Meta esta na mesma tela).
+            try:
+                import templates as _tpls
+                _apr = wasender._aprovados()
+                _faltando = sorted(
+                    {k: t for k, t in _tpls.KIND_TEMPLATE.items()
+                     if t not in _apr}.items())
+                body["templates"] = {
+                    "aprovados": sorted(_apr),
+                    "kind_sem_template_liberado": [
+                        f"{k} -> {t}" for k, t in _faltando],
+                }
+            except Exception:
+                body["templates"] = "nao consegui ler"
         if wa in ("close", "closed", "disconnected", "removed"):
             from fastapi.responses import JSONResponse
             return JSONResponse(status_code=500, content=body)

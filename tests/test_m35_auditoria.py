@@ -699,3 +699,61 @@ def test_valor_com_ponto_nao_esconde_o_codigo():
     achado = boleto.codigo_de_pagamento("Valor do documento 187.40 " + linha)
     assert achado and achado["colavel"] == (
         "34191790010104351004791020150008291070026000"), achado
+
+
+# ---------------------------------------------------------------------------
+# ENTREGAR O QUE A GENTE PROMETE: foto OU texto (pedido do Kevin, 29/08/2026)
+# ---------------------------------------------------------------------------
+# A antecedencia de 60/30 dias nascia so no caminho da FOTO. Quem digitava
+# "minha CNH vence 12/03/2027" — que e o jeito mais rapido, e o que a maioria
+# faz — ganhava so o aviso de vespera. A promessa estava na landing e no
+# /dash e o produto cumpria em metade dos caminhos.
+
+def test_cnh_digitada_ganha_a_mesma_antecedencia_da_foto(usuario):
+    """O funil e o `add_item`: foto, texto, ajuste e painel passam por ele."""
+    iid = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                      categoria="Outros",
+                      descricao="minha CNH vence 12/03/2027",
+                      data_vencimento="2027-03-12", status="pendente")
+    assert db.get_item(iid)["avisar_dias"] == "60,30", db.get_item(iid)
+
+
+@pytest.mark.parametrize("desc,esperado", [
+    ("minha CNH vence 12/03/2027", "60,30"),
+    ("renovar habilitacao", "60,30"),
+    ("passaporte da Maria", "60,30"),
+    ("certificado digital da empresa", "60,30"),
+    ("vacina do Rex", "7,1"),
+    # o que NAO pode pegar: nomes com outro sentido em portugues
+    ("conta de luz", None),
+    ("receita de bolo", None),
+    ("comprar racao", None),
+    ("dentista", None),
+])
+def test_so_documento_de_nome_inequivoco_muda_a_antecedencia(
+        usuario, desc, esperado):
+    iid = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                      categoria="Outros", descricao=desc,
+                      data_vencimento="2027-03-12", status="pendente")
+    assert db.get_item(iid)["avisar_dias"] == esperado, desc
+
+
+def test_antecedencia_explicita_ganha_da_derivada(usuario):
+    """Quem passou `avisar_dias` sabe o que quer — o palpite nao atropela."""
+    iid = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                      categoria="Outros", descricao="CNH",
+                      data_vencimento="2027-03-12", status="pendente",
+                      avisar_dias="15")
+    assert db.get_item(iid)["avisar_dias"] == "15"
+
+
+def test_cnh_digitada_avisa_mesmo_em_d60(usuario, horario_util):
+    """De ponta a ponta: sem isto, gravar "60,30" no banco seria enfeite."""
+    hoje = tempo.hoje()
+    db.add_item(user_id=usuario["id"], tipo="lembrete", categoria="Outros",
+                descricao="minha CNH",
+                data_vencimento=(hoje + _dt.timedelta(days=60)).isoformat(),
+                status="pendente")
+    saidas = scheduler.check_due_items(ref=hoje)
+    assert any("CNH" in d.get("message", "") for d in saidas), (
+        "digitou em vez de fotografar e nao foi avisado: %r" % saidas)

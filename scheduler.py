@@ -195,6 +195,11 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
                 continue
             first_name = user["nome"].split()[0]
             venc = _fmt_br(item["data_vencimento"])
+            # Mensagem extra deste disparo (hoje: so o codigo de pagamento,
+            # que vai sozinho pra que o toque-e-copia entregue so ele).
+            # Zerado por ITEM: sem isto o codigo de um boleto vazaria pro
+            # lembrete do proximo item do mesmo ciclo.
+            tem_codigo = False
             if item.get("link_afiliado"):
                 msg = (
                     f"⏰ {first_name}, seu item *{item['descricao']}* está "
@@ -223,8 +228,31 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
                         f"*{item['descricao']}*{valor} vence em *{venc}*.\n\n"
                         f"Quando pagar, é só me dizer *paguei* que eu dou "
                         f"baixa. Se quiser adiar o aviso, responda *adiar*."
-                        + _bol.bloco_para_pagar(_cod)
+                        + _bol.aviso_de_codigo(_cod)
                     )
+                    # O CÓDIGO NÃO SAI SOZINHO — SAI QUANDO PEDIDO.
+                    #
+                    # O WhatsApp não tem botão que copia fora de template de
+                    # autenticação (categoria de OTP, que não pode ser usada
+                    # pra cobrança). A alternativa era mandar o código numa
+                    # segunda mensagem, e ela custa caro: DOBRA o volume
+                    # proativo por boleto, que é exatamente a métrica do
+                    # termômetro anti-bloqueio (`db.pulso_envio`) — e este
+                    # número já foi restringido duas vezes.
+                    #
+                    # Com o botão é uma mensagem só. E a resposta ao toque é
+                    # REATIVA: não conta como proativa, não gasta o teto
+                    # diário da pessoa e não entra na razão de ritmo.
+                    #
+                    # Aqui viaja só o SINAL de que existe código. O código em
+                    # si fica no banco, fora do dict de disparo — e portanto
+                    # fora de qualquer log que serialize o disparo.
+                    #
+                    # `bool(_cod)`, nao `True`: a maioria das contas nao
+                    # tem codigo nenhum, e prometer "toque em Copiar
+                    # codigo" pra quem nao tem e o bot oferecendo o que
+                    # nao pode entregar.
+                    tem_codigo = bool(_cod)
                 else:
                     msg = (
                         f"📌 {first_name}, lembrete: *{item['descricao']}* "
@@ -239,6 +267,10 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
                 "item_id": item["id"],
                 "kind": kind,
                 "message": msg,
+                # Existe codigo de pagamento guardado pra este item? So o
+                # SINAL: quem decide os botoes precisa saber, e o codigo em si
+                # nao tem por que viajar no dict de disparo.
+                "tem_codigo": tem_codigo,
                 # `quando` E O QUE O TEMPLATE MOSTRA fora da janela de 24h.
                 # Sem ele o corpo saia "vence em *em breve*" em 100% dos
                 # casos — e essa e a UNICA mensagem que chega em quem passou

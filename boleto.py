@@ -735,3 +735,42 @@ def bloco_para_pagar(codigo: Optional[dict]) -> str:
     return ("\n\nCódigo de barras:\n"
             + colavel
             + "\n_(cola no campo de código de barras do seu banco)_")
+
+
+def nome_do_codigo(codigo: Optional[dict]) -> str:
+    """"PIX copia e cola" ou "código de barras". "" quando não há código."""
+    if not codigo or not (codigo.get("colavel") or "").strip():
+        return ""
+    return ("PIX copia e cola" if codigo.get("tipo") == "pix"
+            else "código de barras")
+
+
+def aviso_de_codigo(codigo: Optional[dict]) -> str:
+    """A LINHA que anuncia o código — sem o código dentro.
+
+    O código não viaja no lembrete: ele sai quando a pessoa toca no botão, e
+    aí vai numa mensagem só dele, onde o toque-e-segura → Copiar entrega
+    exatamente o que o app do banco aceita.
+    """
+    nome = nome_do_codigo(codigo)
+    if not nome:
+        return ""
+    return ("\n\n📋 Toque em *Copiar código* que eu te mando o *%s* "
+            "pronto pra colar no app do banco." % nome)
+
+
+def mensagem_so_do_codigo(codigo: Optional[dict]) -> str:
+    """O código, SOZINHO. "" quando não há código.
+
+    Nada de rótulo, emoji, aspas ou formatação: o toque-e-segura do WhatsApp
+    copia a MENSAGEM INTEIRA, então tudo o que estiver aqui vai junto pro
+    campo do banco — e o banco recusa. Esta função existe para que o que a
+    pessoa cola seja exatamente o que o app do banco espera.
+
+    (Botão nativo de copiar não é opção: no WhatsApp ele só existe em
+    template de AUTENTICAÇÃO, que é para código de verificação de identidade
+    e não pode ser usado para cobrança.)
+    """
+    if not codigo:
+        return ""
+    return (codigo.get("colavel") or "").strip()

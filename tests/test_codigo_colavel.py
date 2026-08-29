@@ -136,8 +136,20 @@ def test_o_aviso_de_vencimento_leva_o_codigo(usuario, horario_util):
     disp = scheduler.check_due_items()
     assert disp, "nem disparou"
     msg = disp[0]["message"]
-    assert "34191790010104351004791020150008291070026000" in msg, msg
-    assert "barras" in msg.lower()
+
+    # O LEMBRETE ANUNCIA; O CODIGO SO SAI QUANDO PEDIDO.
+    #
+    # O WhatsApp nao tem botao que copia fora de template de autenticacao, e
+    # o toque-e-segura copia a MENSAGEM INTEIRA — com o codigo dentro do
+    # lembrete, a pessoa colava "passando pra lembrar..." junto no campo do
+    # banco. Mandar numa segunda mensagem proativa resolveria, mas DOBRA o
+    # volume por boleto, que e a metrica do termometro anti-bloqueio. Por
+    # isso: uma mensagem so, com botao.
+    assert "barras" in msg.lower(), msg
+    assert "34191790010104351004791020150008291070026000" not in msg, (
+        "o codigo continua grudado no lembrete: %r" % msg)
+    assert disp[0]["tem_codigo"] is True, disp[0]
+    assert "Copiar" in msg, msg
 
 
 def test_item_sem_codigo_avisa_normal(usuario, horario_util):
@@ -270,3 +282,105 @@ def test_valor_na_mesma_linha_nao_esconde_o_codigo():
         "Valor do documento 187.40 " + LINHA_BANCO)
     assert c, "codigo perdido por causa do valor na mesma linha"
     assert c["colavel"] == "34191790010104351004791020150008291070026000"
+
+
+# ---------------------------------------------------------------------------
+# BOTAO "COPIAR CODIGO" (pedido do Kevin, 29/08/2026)
+# ---------------------------------------------------------------------------
+# O WhatsApp NAO tem botao que copia fora de template de AUTENTICACAO — a
+# doc da Meta e explicita ("only authentication templates can be used to send
+# a one-time passcode; marketing and utility templates cannot"). Usar
+# categoria de autenticacao pra mandar codigo de boleto e desvio de
+# categoria, que e o que derruba numero.
+#
+# O que da pra entregar e a FUNCAO: um toque traz o codigo pro fim da
+# conversa, sozinho numa mensagem, onde o toque-e-segura -> Copiar entrega
+# exatamente o que o app do banco aceita.
+
+LINHA_LUZ = "34191790010104351004791020150008291070026000"
+
+
+def _conta_com_codigo(usuario, tipo="boleto", colavel=LINHA_LUZ, dias=1):
+    import datetime as _dt
+    import tempo
+    return db.add_item(
+        user_id=usuario["id"], tipo="despesa", categoria="Contas",
+        descricao="conta de luz", valor_reais=187.40,
+        data_vencimento=(tempo.hoje() + _dt.timedelta(days=dias)).isoformat(),
+        status="pendente", codigo_pagamento=colavel, codigo_tipo=tipo)
+
+
+def test_o_disparo_com_codigo_troca_ver_tudo_pelo_botao_de_copiar(
+        usuario, horario_util):
+    """Sao no maximo 3 botoes: entrar custa sair.
+
+    Na hora de pagar, "Ver tudo" e o menos util dos tres — a pessoa esta com
+    o app do banco aberto, nao querendo revisar a lista.
+    """
+    import scheduler
+    import wa_bot
+    _conta_com_codigo(usuario)
+    disp = scheduler.check_due_items()
+    bts = wa_bot._botoes_do_disparo(disp[0])
+    assert wa_bot.BOTAO_COPIAR in bts, bts
+    assert "Ver tudo" not in bts, bts
+    assert len(bts) <= 3, "a Meta aceita no maximo 3: %r" % (bts,)
+    assert all(len(b) <= 20 for b in bts), (
+        "titulo acima de 20 chars sai cortado: %r" % (bts,))
+
+
+def test_item_sem_codigo_mantem_os_botoes_de_sempre(usuario, horario_util):
+    """A troca vale so pra quem tem codigo — o resto nao perde "Ver tudo"."""
+    import datetime as _dt
+    import scheduler
+    import tempo
+    import wa_bot
+    db.add_item(user_id=usuario["id"], tipo="despesa", categoria="Contas",
+                descricao="condominio", valor_reais=450.0,
+                data_vencimento=(tempo.hoje() + _dt.timedelta(days=1)
+                                 ).isoformat(), status="pendente")
+    disp = scheduler.check_due_items()
+    bts = wa_bot._botoes_do_disparo(disp[0])
+    assert "Ver tudo" in bts and wa_bot.BOTAO_COPIAR not in bts, bts
+
+
+def test_tocar_em_copiar_devolve_o_codigo_sozinho(usuario, limpo):
+    """A resposta do botao tem que ser COLAVEL, nao explicada.
+
+    Se o codigo vier junto com "aqui vai o codigo", o toque-e-segura leva a
+    frase pro campo do banco e o banco recusa.
+    """
+    import wa_bot
+    _conta_com_codigo(usuario)
+    r = wa_bot._handle_commands(usuario, usuario["telefone"], "Copiar código")
+    assert r == LINHA_LUZ, (
+        "a resposta do botao nao e o codigo puro: %r" % r)
+    # a explicacao vai numa mensagem separada, ANTES
+    assert any("Copiar" in t for _n, t in limpo), limpo
+
+
+def test_copiar_sem_codigo_guardado_nao_mente(usuario):
+    """Sem codigo, o bot diz o que fazer — nao inventa nem fica mudo."""
+    import wa_bot
+    r = wa_bot._handle_commands(usuario, usuario["telefone"], "Copiar código")
+    assert r and "foto" in r.lower(), r
+    assert LINHA_LUZ not in (r or "")
+
+
+def test_copiar_pega_o_que_vence_primeiro(usuario):
+    """Quem pede o codigo esta pagando AGORA: e o que vence primeiro."""
+    import wa_bot
+    _conta_com_codigo(usuario, colavel="1" * 44, dias=20)
+    _conta_com_codigo(usuario, colavel="2" * 44, dias=2)
+    r = wa_bot._handle_commands(usuario, usuario["telefone"], "Copiar código")
+    assert r == "2" * 44, r
+
+
+def test_pix_tambem_sai_sozinho(usuario, horario_util):
+    import scheduler
+    _conta_com_codigo(usuario, tipo="pix",
+                      colavel="00020126580014BR.GOV.BCB.PIX0136abc63041D3D")
+    disp = scheduler.check_due_items()
+    assert "PIX" in disp[0]["message"], disp[0]["message"]
+    assert disp[0]["tem_codigo"] is True
+    assert "00020126" not in disp[0]["message"], disp[0]["message"]

@@ -301,6 +301,44 @@ def avisos(tipo: Optional[str]) -> tuple:
     return _AVISOS.get(tipo or "", ())
 
 
+# ---------------------------------------------------------------------------
+# O MESMO DOCUMENTO, DIGITADO EM VEZ DE FOTOGRAFADO
+# ---------------------------------------------------------------------------
+# A antecedência de 60/30 dias nascia só no caminho da FOTO. Quem escrevia
+# "minha CNH vence 12/03/2027" — que é o jeito mais rápido de registrar, e o
+# que a maioria faz — ganhava só o aviso de véspera. A promessa estava na
+# landing e no /dash e o produto cumpria em metade dos caminhos.
+#
+# CONSERVADOR DE PROPÓSITO. Só documento cujo nome não tem outro sentido em
+# português. `receita` ficou de fora: "receita de bolo" é receita, e avisar
+# 15 dias antes de um bolo é o bot mostrando que não entende a vida da
+# pessoa. `nota fiscal` também: por texto ninguém escreve a data da compra de
+# um jeito que dê pra derivar garantia sem chutar.
+_POR_DESCRICAO = (
+    ("documento", (r"\bCNH\b", r"carteira\s+nacional\s+de\s+habilita",
+                   r"\bhabilita[çc][ãa]o\b", r"\bpassaporte\b",
+                   r"certificado\s+digital", r"carteira\s+de\s+identidade")),
+    ("vacina", (r"\bvacina(?:[çc][ãa]o)?\b", r"\bvacinar\b",
+                r"carteirinha\s+de\s+vacina")),
+)
+
+
+def tipo_por_descricao(descricao: Optional[str]) -> Optional[str]:
+    """"minha CNH vence em março" -> "documento". None quando não é claro."""
+    if not descricao:
+        return None
+    texto = str(descricao)
+    for tipo, marcas in _POR_DESCRICAO:
+        if any(re.search(m, texto, re.I) for m in marcas):
+            return tipo
+    return None
+
+
+def avisos_por_descricao(descricao: Optional[str]) -> tuple:
+    """A antecedência que a descrição pede. Vazia = política padrão."""
+    return avisos(tipo_por_descricao(descricao))
+
+
 def _dias_que_ainda_cabem(tipo: str, faltam: Optional[int]) -> tuple:
     """Dos avisos do tipo, os que ainda dá tempo de fazer.
 
