@@ -145,7 +145,7 @@ def test_sem_botoes_continua_texto(usuario, monkeypatch):
 # o motor manda os botoes junto
 # ---------------------------------------------------------------------------
 
-def test_lembrete_de_vencimento_sai_com_botao(usuario, monkeypatch):
+def test_lembrete_de_vencimento_sai_com_botao(usuario, horario_util, monkeypatch):
     import datetime as dt
     import db
     import tempo

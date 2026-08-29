@@ -87,7 +87,7 @@ _reg(Template(
 
 _reg(Template(
     nome="resolveai_item_vencido",
-    rotulo="Cobra um item que venceu e nao teve baixa",
+    rotulo="Cobra um item que venceu e não teve baixa",
     categoria="UTILITY",
     idioma="pt_BR",
     corpo=("Oi {{1}}, *{{2}}* venceu {{3}} e eu não registrei a baixa.\n\n"
@@ -102,7 +102,7 @@ _reg(Template(
 
 _reg(Template(
     nome="resolveai_resumo_do_dia",
-    rotulo="Resumo dos compromissos dos proximos dias",
+    rotulo="Resumo dos compromissos dos próximos dias",
     categoria="UTILITY",
     idioma="pt_BR",
     corpo=("Oi {{1}}, você tem *{{2}}* compromisso(s) guardado(s) para os "
@@ -119,7 +119,7 @@ _reg(Template(
 
 _reg(Template(
     nome="resolveai_reengajamento_pendentes",
-    rotulo="Lembra de um item parado ha dias na lista",
+    rotulo="Lembra de um item parado há dias na lista",
     categoria="UTILITY",
     idioma="pt_BR",
     # REESCRITO EM 26/08/2026, depois de a Meta recusar a versão anterior.
@@ -158,7 +158,7 @@ _reg(Template(
 
 _reg(Template(
     nome="resolveai_fim_de_trial_aviso",
-    rotulo="Avisa que o teste esta acabando e oferece a assinatura",
+    rotulo="Avisa que o teste está acabando e oferece a assinatura",
     # MARKETING, e é o único aqui. Decisão do dono em 27/08/2026, depois de
     # a Meta recusar como utilidade — e ela está certa: "seu período de teste
     # termina em 2 dias" não fala de um compromisso que a pessoa cadastrou,
@@ -274,7 +274,7 @@ _reg(Template(
 # volta exatamente os bugs que essas duas variantes existem pra consertar.
 TRIAL_ESTENDIDO = Template(
     nome="resolveai_trial_estendido",
-    rotulo="Conta que voce liberou mais dias de teste",
+    rotulo="Conta que você liberou mais dias de teste",
     # UTILITY, e desta vez a régua da Meta está do nosso lado. A régua é o
     # MOTIVO da mensagem: falar de um prazo determinado que mudou na conta da
     # pessoa é utilidade; convidar a voltar ou a comprar é marketing. Aqui é
@@ -303,7 +303,7 @@ TRIAL_ESTENDIDO = Template(
 
 COBRANCA_LINK = Template(
     nome="resolveai_cobranca_link",
-    rotulo="Cobra quem pediu o link e nao pagou",
+    rotulo="Cobra quem pediu o link e não pagou",
     # MARKETING, assumido. Pela régua da Meta não há discussão: falar de
     # pagamento pendente da assinatura é a relação comercial, não um
     # compromisso que a pessoa cadastrou. Tentar passar como utilidade só

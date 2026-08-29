@@ -165,3 +165,24 @@ def responder(msg: str, telefone: str = TELEFONE) -> str:
     """Manda a mensagem e devolve o texto que o bot responderia ('' se nada)."""
     out = wa_bot.handle_incoming(texto(msg, telefone))
     return (out or {}).get("text", "") or ""
+
+
+@pytest.fixture
+def horario_util(monkeypatch):
+    """Congela o relogio num horario em que o motor PODE falar.
+
+    `run_proactive_engine` silencia das 21h as 8h (`_in_quiet_hours`), entao
+    qualquer teste que passe por `dispatch_proactive` sem congelar a hora
+    PASSA DE DIA E FALHA A NOITE. Descoberto as 21h31 de 28/08/2026, com
+    sete testes vermelhos de uma vez e nenhuma mudanca de codigo que os
+    explicasse — o tipo de falha que faz a gente procurar bug onde nao tem.
+
+    Terca, 10h: fora do quiet hours e fora do `dia_resumo` default (segunda),
+    pra nao ligar o digest semanal sem querer.
+    """
+    import datetime as _dt
+    agora = _dt.datetime(2026, 8, 18, 10, 0, 0)
+    assert agora.weekday() == 1, "18/08/2026 tem que ser terca"
+    monkeypatch.setattr(tempo, "agora", lambda: agora)
+    monkeypatch.setattr(tempo, "hoje", lambda: agora.date())
+    return agora

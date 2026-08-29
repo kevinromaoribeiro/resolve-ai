@@ -64,7 +64,7 @@ Responda *feito* que eu dou baixa, ou *adiar 1h* se precisar de mais tempo.
 ## `resolveai_item_vencido`
 
 - **Nome:** `resolveai_item_vencido`
-- **O que faz:** Cobra um item que venceu e nao teve baixa
+- **O que faz:** Cobra um item que venceu e não teve baixa
 - **Categoria:** UTILITY
 - **Idioma:** pt_BR
 
@@ -93,7 +93,7 @@ Responda *feito* se já resolveu, ou *adiar* que eu remarco.
 ## `resolveai_resumo_do_dia`
 
 - **Nome:** `resolveai_resumo_do_dia`
-- **O que faz:** Resumo dos compromissos dos proximos dias
+- **O que faz:** Resumo dos compromissos dos próximos dias
 - **Categoria:** UTILITY
 - **Idioma:** pt_BR
 
@@ -124,7 +124,7 @@ Responda *ver tudo* para a lista completa.
 ## `resolveai_reengajamento_pendentes`
 
 - **Nome:** `resolveai_reengajamento_pendentes`
-- **O que faz:** Lembra de um item parado ha dias na lista
+- **O que faz:** Lembra de um item parado há dias na lista
 - **Categoria:** UTILITY
 - **Idioma:** pt_BR
 
@@ -153,7 +153,7 @@ Responda *ver tudo* para revisar seus itens.
 ## `resolveai_fim_de_trial_aviso`
 
 - **Nome:** `resolveai_fim_de_trial_aviso`
-- **O que faz:** Avisa que o teste esta acabando e oferece a assinatura
+- **O que faz:** Avisa que o teste está acabando e oferece a assinatura
 - **Categoria:** MARKETING
 - **Idioma:** pt_BR
 
@@ -213,7 +213,7 @@ Responda *feito* quando resolver, ou *adiar* que eu remarco.
 ## `resolveai_trial_estendido`
 
 - **Nome:** `resolveai_trial_estendido`
-- **O que faz:** Conta que voce liberou mais dias de teste
+- **O que faz:** Conta que você liberou mais dias de teste
 - **Categoria:** UTILITY
 - **Idioma:** pt_BR
 
@@ -244,7 +244,7 @@ Seu acesso vale até *{{3}}*. Continuo te avisando dos seus compromissos até l�
 ## `resolveai_cobranca_link`
 
 - **Nome:** `resolveai_cobranca_link`
-- **O que faz:** Cobra quem pediu o link e nao pagou
+- **O que faz:** Cobra quem pediu o link e não pagou
 - **Categoria:** MARKETING
 - **Idioma:** pt_BR
 

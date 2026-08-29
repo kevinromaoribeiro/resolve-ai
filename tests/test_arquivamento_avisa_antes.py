@@ -61,7 +61,7 @@ def _status(iid):
     return r["status"]
 
 
-def test_envio_recusado_nao_arquiva(usuario, monkeypatch):
+def test_envio_recusado_nao_arquiva(usuario, horario_util, monkeypatch):
     """Se o aviso nao saiu, o item continua na lista da pessoa."""
     iid = _velho(usuario)
     _abre_janela(usuario)      # chega ate o `falar`; a recusa e que importa
@@ -74,7 +74,7 @@ def test_envio_recusado_nao_arquiva(usuario, monkeypatch):
         "e nao volta em nenhum ciclo futuro")
 
 
-def test_arquiva_depois_que_o_aviso_saiu(usuario, monkeypatch):
+def test_arquiva_depois_que_o_aviso_saiu(usuario, horario_util, monkeypatch):
     """Aviso confirmado num ciclo, arquivamento no seguinte."""
     iid = _velho(usuario)
     _abre_janela(usuario)
@@ -91,7 +91,7 @@ def test_arquiva_depois_que_o_aviso_saiu(usuario, monkeypatch):
         "aviso saiu mas o item nunca foi arquivado — vira lixo eterno")
 
 
-def test_avisado_uma_vez_so(usuario, monkeypatch):
+def test_avisado_uma_vez_so(usuario, horario_util, monkeypatch):
     """Varios ciclos nao viram varias mensagens de arquivamento."""
     _velho(usuario)
     _abre_janela(usuario)
@@ -106,7 +106,7 @@ def test_avisado_uma_vez_so(usuario, monkeypatch):
     assert len(avisos) == 1, "avisou %d vezes: %r" % (len(avisos), avisos)
 
 
-def test_natimorto_nao_come_vaga_do_ciclo(usuario, alcancavel, monkeypatch):
+def test_natimorto_nao_come_vaga_do_ciclo(usuario, horario_util, alcancavel, monkeypatch):
     """Disparo que NAO tem como sair nao pode ocupar vaga no freio do ciclo.
 
     Consequencia da correcao acima: o aviso de arquivamento agora fica na fila

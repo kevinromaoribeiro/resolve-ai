@@ -245,11 +245,29 @@ def test_resumo_compara_com_a_semana_anterior(usuario, segunda_de_manha):
     assert "50,00" in msg or "150" in msg, msg
 
 
+# Verbos que caracterizam convite concreto. "Me encaminha" entrou depois do
+# incidente de 28/08: o teste varria so o convite SORTEADO pro user_id, e o
+# indice 4 ("Me encaminha aqui") nao tinha nenhum dos verbos listados. Ou
+# seja, o teste passava por sorte — verde com um id, vermelho com outro, sem
+# nada no codigo ter mudado.
+VERBOS_DE_CONVITE = ("manda", "me diz", "me mande", "encaminha")
+
+
 def test_resumo_termina_com_convite_concreto(usuario, segunda_de_manha):
     _despesa(usuario["id"], 10.0, "Contas", 2)
     _despesa(usuario["id"], 20.0, "Casa", 3)
     msg = scheduler.montar_resumo_de_gastos(usuario)
-    assert any(p in msg.lower() for p in ("manda", "me diz", "me mande")), msg
+    assert any(p in msg.lower() for p in VERBOS_DE_CONVITE), msg
+
+
+def test_TODO_convite_pede_acao_concreta():
+    """Varre a lista inteira, e nao so o que calhou de sair pro user_id.
+
+    Convite sem verbo de acao vira frase bonita que nao produz nada — e o
+    resumo semanal existe justamente pra provocar o proximo cadastro."""
+    sem_verbo = [c for c in scheduler.CONVITES_DE_USO
+                 if not any(v in c.lower() for v in VERBOS_DE_CONVITE)]
+    assert not sem_verbo, sem_verbo
 
 
 def test_o_convite_varia(usuario, segunda_de_manha):

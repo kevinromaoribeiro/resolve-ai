@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v24.9-m32-reativacao-2026-08-28"
+BUILD = "v25.0-m33-lote-nao-trava-2026-08-28"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -5978,12 +5978,28 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
                                  "erro": f"template {tpl!r} não existe"})
         gente = grupos[seg]
         enviados, falhas = 0, []
+        import asyncio
         import random as _rnd
-        import time as _time
+        # `await asyncio.sleep`, NUNCA `time.sleep` — esta linha derrubou o
+        # bot em 28/08/2026.
+        #
+        # Este handler é `async def`. `time.sleep()` aqui não espaça envio
+        # nenhum: congela o EVENT LOOP do FastAPI, e com ele o processo
+        # inteiro. Durante os ~15 minutos do disparo o bot ficou surdo pra
+        # TODA a base — os webhooks chegavam, respondiam 200 e morriam sem
+        # processamento. O dono escreveu duas vezes e levou silêncio.
+        #
+        # `asyncio.sleep` cede o controle: o espaçamento continua idêntico
+        # (é ele que evitou a restrição de 04/08) e o bot segue atendendo
+        # quem escreve enquanto o lote corre.
+        #
+        # O envio em si é síncrono (httpx.post, ~1s). Aceitável: bloqueia por
+        # 1 segundo, não por 15 minutos. Se um dia o lote passar de dezenas
+        # de pessoas, ele vira `asyncio.to_thread`.
         for i, p in enumerate(gente):
             if i:
-                _time.sleep(_rnd.uniform(ENVIO_INTERVALO_MIN,
-                                         ENVIO_INTERVALO_MAX))
+                await asyncio.sleep(_rnd.uniform(ENVIO_INTERVALO_MIN,
+                                                ENVIO_INTERVALO_MAX))
             ok_um, motivo = _enviar_template_manual(p["id"], tpl)
             if ok_um:
                 enviados += 1
