@@ -2456,8 +2456,20 @@ def _mandar_podcast(user: dict, phone: str) -> str:
     # "quero ouvir" viravam dez audios e dez chamadas pagas de TTS. Dez notas
     # de voz em segundos e exatamente o padrao que a Meta pune — e este
     # numero ja foi restringido duas vezes.
-    if (podcast.nicho_valido(nicho)
-            and not podcast.pode_enviar(user.get("podcast_ultimo"))):
+    # DATA ILEGIVEL NAO PODE PRENDER A PESSOA (auditoria M4.3). No caminho
+    # proativo, `pode_enviar` trata data podre como "acabou de enviar" — e
+    # esta certo, o erro seguro la e mandar de menos. Aqui e o contrario:
+    # ela PEDIU. Sem isto, um valor corrompido no banco tirava a unica saida
+    # manual que existia, pra sempre e em silencio.
+    _ultimo = user.get("podcast_ultimo")
+    if _ultimo and not podcast.data_legivel(_ultimo):
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[podcast] podcast_ultimo ilegivel (%r) no user %s — limpando",
+            _ultimo, user["id"])
+        db.update_user_fields(user["id"], podcast_ultimo=None)
+        _ultimo = None
+    if podcast.nicho_valido(nicho) and not podcast.pode_enviar(_ultimo):
         return ("Você já ouviu o episódio desta semana. 🎧\n\n"
                 "O próximo sai daqui a alguns dias — mando um toque quando "
                 "estiver pronto.")
@@ -5279,7 +5291,7 @@ PODERES = [
              "sobrancelha, pergunta se já guarda o próximo — com a data "
              "calculada. Conta de luz não ganha essa pergunta."},
     {"grupo": "Sai aviso", "titulo": "Mini podcast semanal",
-     "desc": "Áudio de 3 minutos, um nicho por pessoa, no máximo 1x por "
+     "desc": "Áudio de até 3 minutos, um nicho por pessoa, no máximo 1x por "
              "semana. Cinco nichos — futebol, games, IA, moda e varejo "
              "online — cada um com 3 fontes de RSS conferidas, citadas no "
              "fim do áudio. A notícia vem do feed, nunca da cabeça do "
@@ -5827,10 +5839,21 @@ def dispatch_proactive() -> int:
         # Aqui e o lugar certo pelo mesmo motivo do `log_dispatch`:
         # marcado por QUEM ENVIA, nunca por quem gera. Convite que nao
         # saiu nao pode ficar carimbado.
-        if ok and d.get("kind") == "podcast" and d.get("user_id"):
-            db.podcast_marcar_convite(d["user_id"])
-        if ok and d.get("kind") == "podcast-dia" and d.get("user_id"):
-            db.podcast_marcar_pergunta_do_dia(d["user_id"])
+        # EMBRULHADO como todas as vizinhas deste laco (auditoria M4.3).
+        # Eram as unicas chamadas de banco desprotegidas aqui, e o cron
+        # roda em thread paralela ao webhook: "database is locked" e
+        # cenario real. A mensagem SAIU; se o carimbo estoura, ele leva
+        # junto quem estava atras na fila — e o `_loop_proativo` engole
+        # com "ciclo falhou", que foi o silencio que escondeu o P0-1.
+        try:
+            if ok and d.get("user_id"):
+                if d.get("kind") == "podcast":
+                    db.podcast_marcar_convite(d["user_id"])
+                elif d.get("kind") == "podcast-dia":
+                    db.podcast_marcar_pergunta_do_dia(d["user_id"])
+        except Exception:
+            log.warning("[cron] falhei ao carimbar o podcast",
+                        exc_info=True)
         # A OFERTA DE REMARCAR PRECISA DEIXAR CONTEXTO PRA RESPOSTA.
         #
         # Sem isto a feature nao funcionava de ponta a ponta: a pergunta saia,

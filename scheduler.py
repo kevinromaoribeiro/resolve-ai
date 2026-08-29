@@ -1169,6 +1169,20 @@ def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
             return
         if not db.user_can_receive(u):
             return
+        # UMA VEZ POR DIA, o mesmo dedup que todo disparo desta base usa
+        # (auditoria M4.3).
+        #
+        # `podcast_convite_em` cobria so a PRIMEIRA vez: no caminho semanal
+        # nada segurava, e `podcast_ultimo` so muda quando a pessoa TOCA no
+        # botao. Enquanto ela nao tocasse, o convite era regerado a cada
+        # ciclo do cron — cinco, seis notas identicas em cinco minutos, ate
+        # estourar o teto diario dela. E o teto e compartilhado com o aviso
+        # de vencimento.
+        #
+        # `dispatched_today` e carimbado por quem ENVIA (`log_dispatch` no
+        # laco do cron), entao convite que nao saiu volta amanha.
+        if db.dispatched_today("podcast", u["id"]):
+            return
         if not _pod.pode_enviar(u.get("podcast_ultimo"), agora=agora):
             return
         convite = _pod.convite(u.get("podcast_nicho"), nome=u.get("nome") or "")
@@ -1209,6 +1223,9 @@ def check_podcast_dia(ref: Optional[datetime] = None) -> list[dict]:
     for u in db.podcast_a_perguntar_o_dia(
             ref=agora, minutos=_pod.MINUTOS_ATE_PERGUNTAR_O_DIA):
         if not db.user_can_receive(u):
+            continue
+        # Uma vez por dia, o mesmo dedup de todo disparo (auditoria M4.3).
+        if db.dispatched_today("podcast-dia", u["id"]):
             continue
         p = _pod.pergunta_do_dia(nome=u.get("nome") or "")
         saida.append({

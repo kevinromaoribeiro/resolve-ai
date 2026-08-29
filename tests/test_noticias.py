@@ -251,4 +251,10 @@ def test_feed_gigante_e_cortado():
         bruto = noticias._baixar("https://exemplo.invalido/feed")
     finally:
         httpx.stream = original
+    # O TETO TEM QUE MORDER: sem ele, os 20 MB do dublê chegam inteiros. E o
+    # dublê existe pra que o teste nao dependa da rede nem quando a correcao
+    # e revertida — teste que falha por `ConnectError` falha pelo motivo
+    # errado, e o patch reverso nao prova nada (auditoria M4.3).
+    assert len(bruto) < 20 * 1024 * 1024, (
+        "o feed inteiro entrou na memoria: %d bytes" % len(bruto))
     assert len(bruto) <= noticias.MAX_FEED_BYTES + 1024 * 1024, len(bruto)

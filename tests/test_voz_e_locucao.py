@@ -10,10 +10,16 @@ nao depende de boa vontade — e e isso que estes testes protegem.
 
 Nenhum teste aqui chama modelo pago nem toca a rede.
 """
+import datetime as _dt
+
 import pytest
 
 import podcast
 import voz
+
+# Relogio fixo: a conferencia libera o ano corrente, e um teste que
+# depende do ano real vira vermelho na virada do ano.
+_HOJE = _dt.date(2026, 8, 29)
 
 ITENS = [
     {"titulo": "Palmeiras vence o Flamengo por 2 a 1", "resumo": "No Allianz.",
@@ -233,3 +239,74 @@ def test_numero_inventado_cai_no_deterministico():
     r = podcast.locucao("futebol", itens, chamar=lambda p: mentira)
     assert r and "7 a 0" not in r, r
     assert "Palmeiras vence por 2 a 1" in r, r
+
+
+# ---------------------------------------------------------------------------
+# a CALIBRAGEM da conferencia (auditoria M4.3)
+# ---------------------------------------------------------------------------
+# A primeira versao exigia o numero IDENTICO na fonte e reprovava 5 de 12
+# reescritas normais — inclusive o proprio roteiro deterministico desta casa,
+# que numera os blocos. Conferencia que reprova tudo nao protege nada: ela so
+# desliga a locucao, e sobra o roteiro cru de quarenta segundos.
+
+MATERIA = ("Palmeiras vence o Flamengo por 2 a 1 no Allianz, dia 05/09, com "
+           "62% de posse. Corinthians contrata meia por R$ 1.200.000,00. "
+           "Zagueiro fica 3 semanas fora.")
+BASE = "Oi, Kevin! Resumo de futebol. " + "palavra " * 120
+
+
+@pytest.mark.parametrize("trecho,porque", [
+    (" Ganhou por 2 a 1.", "placar que esta na fonte"),
+    (" Sao 3 noticias hoje.", "o LLM anuncia a quantidade de blocos"),
+    (" 1. Primeira. 2. Segunda. 3. Terceira.", "a numeracao do formato"),
+    (" Custou R$ 1,2 milhao.", "escala falada: a fonte diz 1.200.000,00"),
+    (" Teve mais de 60% de posse.", "arredondamento: a fonte diz 62%"),
+    (" Foi no dia 5.", "a fonte escreve 05"),
+])
+def test_reescrita_legitima_passa(trecho, porque):
+    assert podcast.conferir_locucao(
+        BASE + trecho, "futebol", materia=MATERIA,
+        hoje=_HOJE) is None, porque
+
+
+@pytest.mark.parametrize("trecho", [
+    " Goleou por 7 a 0.",
+    " Custou 300 milhoes.",
+    " Contrato ate 2031.",
+    " Foram 45 mil torcedores.",
+])
+def test_numero_inventado_continua_sendo_pego(trecho):
+    motivo = podcast.conferir_locucao(BASE + trecho, "futebol",
+                                      materia=MATERIA, hoje=_HOJE)
+    assert motivo and "nao veio das fontes" in motivo, (trecho, motivo)
+
+
+def test_o_ano_corrente_nao_e_alucinacao():
+    """"temporada 2026" e fala normal, nao invencao."""
+    assert podcast.conferir_locucao(
+        BASE + " Na temporada 2026.", "futebol", materia=MATERIA,
+        hoje=_HOJE) is None
+
+
+def test_o_roteiro_da_casa_passa_na_propria_conferencia():
+    """O deterministico numera os blocos "1." "2." "3.".
+
+    Se a conferencia reprova o roteiro que a propria casa gera, ela esta
+    calibrada errada — e o sintoma seria a locucao do LLM nunca ser usada.
+    """
+    itens = [
+        {"titulo": "Palmeiras vence o Flamengo por 2 a 1",
+         "resumo": "No Allianz, com 62% de posse.", "fonte": "ge.globo"},
+        {"titulo": "Corinthians contrata meia",
+         "resumo": "Por R$ 1.200.000,00.", "fonte": "ESPN Brasil"},
+        {"titulo": "Zagueiro fica 3 semanas fora",
+         "resumo": "Lesao muscular.", "fonte": "Gazeta Esportiva"},
+    ]
+    det = podcast.montar_roteiro("futebol", itens, nome="Kevin")
+    assert det
+    materia = " ".join("%s %s" % (i["titulo"], i["resumo"]) for i in itens)
+    for numero in ("1.", "2.", "3."):
+        assert numero in det, det
+    motivo = podcast.conferir_locucao(det + " " + "palavra " * 80, "futebol",
+                                      materia=materia, hoje=_HOJE)
+    assert motivo is None, ("a casa reprova o proprio roteiro: %s" % motivo)

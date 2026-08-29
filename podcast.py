@@ -390,8 +390,13 @@ def convite(nicho: Optional[str], nome: str = "") -> Optional[dict]:
     primeiro = (nome or "").split()[0] if nome else ""
     return {
         "texto": (f"{d['emoji']} {('Bom dia, ' + primeiro + '! ') if primeiro else ''}"
+                  # SEM MINUTAGEM NO CONVITE (auditoria M4.3). O audio
+                  # sai entre 40s e 3 min conforme a semana e conforme
+                  # o roteiro venha da locucao ou do fallback. Prometer
+                  # "3 minutos" na primeira frase e errar pra menos
+                  # justo onde a pessoa decide se toca ou nao.
                   f"Seu mini podcast de *{d['rotulo'].lower()}* da semana "
-                  f"está pronto — 3 minutos.\n\n"
+                  f"está pronto.\n\n"
                   f"Quer ouvir agora?"),
         "botoes": list(BOTOES_CONVITE),
         "nicho": k,
@@ -412,6 +417,30 @@ def pergunta_do_dia(nome: str = "") -> dict:
                   f"Que dia é melhor pra você?"),
         "botoes": list(BOTOES_DIA),
     }
+
+
+def data_legivel(valor) -> bool:
+    """A data de ultimo envio da pra ler? Usado pelo caminho MANUAL.
+
+    `pode_enviar` trata data podre como "acabou de enviar", e esta certo no
+    caminho proativo: la o erro seguro e mandar de menos. No caminho manual e
+    o contrario — a pessoa PEDIU, e um valor corrompido no banco tirava a
+    unica saida que ela tinha, pra sempre e em silencio.
+    """
+    if not valor:
+        return True
+    from datetime import date as _d, datetime as _dt
+    if isinstance(valor, (_d, _dt)):
+        return True
+    texto = str(valor).strip().replace("T", " ")
+    texto = re.sub(r"(\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?$", "", texto)[:19]
+    for forma in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            _dt.strptime(texto, forma)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def pode_enviar(ultimo_envio_iso: Optional[str],
@@ -529,7 +558,8 @@ _VEICULO_RE = re.compile(
 
 
 def conferir_locucao(texto: Optional[str], nicho: Optional[str],
-                     materia: Optional[str] = None) -> Optional[str]:
+                     materia: Optional[str] = None,
+                     hoje=None) -> Optional[str]:
     """O roteiro do LLM passa? Devolve o motivo da recusa, ou None se passa.
 
     Conferência em PYTHON, sobre o texto pronto — não confiança no prompt.
@@ -554,51 +584,92 @@ def conferir_locucao(texto: Optional[str], nicho: Optional[str],
         if not any(alvo in p for p in permitidas):
             return "citou fonte de fora da lista: %r" % achado
 
-    # NUMERO QUE NAO ESTAVA NA MATERIA-PRIMA (auditoria M4.2, P1-5).
+    # NUMERO QUE NAO ESTAVA NA MATERIA-PRIMA (auditoria M4.2, P1-5;
+    # recalibrado na M4.3).
     #
-    # O teste de fonte pega o modelo citando a Folha; NAO pegava ele
-    # afirmando "venceu por 7 a 0 e contratou o Messi por 300 milhoes" sem
-    # citar ninguem — que e a alucinacao que realmente importa, porque a
-    # pessoa nao tem como desconfiar.
+    # O teste de fonte pega o modelo citando a Folha; nao pega ele afirmando
+    # "venceu por 7 a 0" sem citar ninguem — que e a alucinacao que importa,
+    # porque a pessoa nao tem como desconfiar.
     #
-    # Placar, valor e idade sao o que o modelo mais inventa, e sao a parte
-    # verificavel de graca: todo numero do roteiro tem que aparecer no que
-    # veio dos feeds. Numero por extenso ("dois a um") escapa desta rede —
-    # e por isso ela e uma camada, nao a unica.
+    # A PRIMEIRA VERSAO ERA CEGA E REPROVAVA O LEGITIMO: exigia o numero
+    # IDENTICO na fonte, e derrubou 5 de 12 reescritas normais — "3
+    # noticias", "R$ 1,2 milhao" (fonte: 1.200.000), "mais de 60%" (fonte:
+    # 62%), "temporada 2026". Pior: reprovava o PROPRIO roteiro
+    # deterministico desta casa, que numera os blocos "1." "2." "3.".
+    # Conferencia que reprova tudo nao protege nada — ela so desliga a
+    # locucao, e sobra o roteiro cru de quarenta segundos.
+    #
+    # Agora ela permite o que a fala legitimamente faz e barra o que e
+    # invencao:
+    #   - o numero que esta na fonte, com escala ("1,2 milhao" == 1.200.000)
+    #   - ARREDONDAMENTO de ate 10%: locucao arredonda, e o cabecalho deste
+    #     modulo pede isso
+    #   - 1 ate BLOCOS: a numeracao que o proprio formato cria
+    #   - o ano corrente e o proximo
     if materia is not None:
-        # COMPARA VALOR, NAO TEXTO: "05" na fonte e "5" na locucao sao o
-        # mesmo numero, e reprovar por causa do zero a esquerda seria a
-        # conferencia brigando com a reescrita que ela existe pra permitir.
-        fonte_num = {int(x) for x in
-                     _NUMERO_RE.findall(_so_digitos_e_espaco(materia))}
-        # SEM ISENCAO POR TAMANHO. A primeira versao liberava tudo ate 31
-        # "porque e dia do mes" — e placar inventado ("venceu por 7 a 0"),
-        # que era o caso do auditor, passava por essa porta. Numero pequeno e
-        # justamente o que o modelo mais inventa.
-        #
-        # Reprovar aqui NAO perde o episodio: cai no roteiro deterministico,
-        # que e feio e verdadeiro. Errar pro lado do texto simples e barato;
-        # errar pro lado do placar inventado, nao.
-        for n_ in _NUMERO_RE.findall(_so_digitos_e_espaco(texto)):
-            if int(n_) not in fonte_num:
-                return "numero %r nao veio das fontes" % n_
+        fonte = _valores(materia)
+        ano = (hoje or tempo.hoje()).year
+        for valor, cru in _valores(texto, com_texto=True):
+            if not _autorizado(valor, fonte, ano):
+                return "numero %r nao veio das fontes" % cru.rstrip(".,")
     return None
 
 
-_NUMERO_RE = re.compile(r"\d+")
+# Escala falada: "1,2 milhao" e "1.200.000" sao o mesmo numero, e a locucao
+# escolhe a primeira forma.
+_ESCALAS = (
+    (r"bilh[õo]es|bilh[ãa]o", 1_000_000_000),
+    (r"milh[õo]es|milh[ãa]o", 1_000_000),
+    (r"mil\b", 1_000),
+)
+
+_NUM_BRUTO_RE = re.compile(r"\d[\d.,]*")
 
 
-def _so_digitos_e_espaco(t: str) -> str:
-    """Tira pontuacao de milhar/decimal pra comparar numero com numero.
+def _um_valor(cru: str):
+    """"1.200.000,50" -> 1200000.5 ; "1,2" -> 1.2 ; "05" -> 5."""
+    t = (cru or "").rstrip(".,")
+    if not t:
+        return None
+    try:
+        if "," in t:                       # virgula e o decimal no Brasil
+            return float(t.replace(".", "").replace(",", "."))
+        partes = t.split(".")
+        if len(partes) > 1 and all(len(x) == 3 for x in partes[1:]):
+            return float("".join(partes))  # 1.200.000 = separador de milhar
+        return float(partes[0]) if len(partes) > 1 else float(t)
+    except ValueError:
+        return None
 
-    "R$ 1.200,50" e "1200" tem que casar: o roteiro reescreve o formato, e
-    recusar por causa do ponto seria a conferencia brigando com a locucao.
-    """
-    t = re.sub(r"(?<=\d)[.,](?=\d)", "", t or "")
-    # "05" na fonte e "5" na locucao sao o mesmo numero: recusar por causa do
-    # zero a esquerda seria a conferencia brigando com a reescrita.
-    return re.sub(r"0+(\d)", r"", t)
 
+def _valores(texto: str, com_texto: bool = False) -> list:
+    """Todos os numeros do texto, com a escala falada ja aplicada."""
+    saida = []
+    for m in _NUM_BRUTO_RE.finditer(texto or ""):
+        valor = _um_valor(m.group(0))
+        if valor is None:
+            continue
+        depois = (texto[m.end():m.end() + 24] or "").lower()
+        for padrao, mult in _ESCALAS:
+            if re.match(r"\s*(?:de\s+)?(?:%s)" % padrao, depois):
+                valor *= mult
+                break
+        saida.append((valor, m.group(0)) if com_texto else valor)
+    return saida
+
+
+def _autorizado(valor: float, fonte: list, ano: int) -> bool:
+    if 0 <= valor <= BLOCOS and float(valor).is_integer():
+        return True                        # numeracao de bloco / "primeiro"
+    if valor in (ano, ano + 1):
+        return True
+    for f in fonte:
+        if f == valor:
+            return True
+        maior = max(abs(f), abs(valor))
+        if maior and abs(f - valor) <= 0.1 * maior:
+            return True                    # arredondamento de locucao
+    return False
 
 def locucao(nicho: Optional[str], itens: Optional[list], nome: str = "",
             chamar=None) -> Optional[str]:

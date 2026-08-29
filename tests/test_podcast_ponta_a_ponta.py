@@ -467,3 +467,124 @@ def test_o_ciclo_nao_morre_na_madrugada(usuario, monkeypatch):
         monkeypatch.setattr(tempo, "hoje", lambda a=agora: a.date())
         r = sched.run_proactive_engine()
         assert isinstance(r, dict) and "total" in r, (hora, r)
+
+
+# ---------------------------------------------------------------------------
+# 8. auditoria M4.3 — o caminho SEMANAL, que era o unico sem freio
+# ---------------------------------------------------------------------------
+
+def test_o_convite_SEMANAL_nao_se_repete_no_ciclo_seguinte(
+        usuario, horario_util, com_voz, monkeypatch):
+    """O carimbo `podcast_convite_em` cobria so a PRIMEIRA vez.
+
+    No caminho de quem ja escolheu dia, nada segurava: `podcast_ultimo` so
+    muda quando a pessoa TOCA no botao, entao enquanto ela nao tocasse o
+    convite era regerado a cada ciclo do cron. Cinco, seis notas identicas
+    em cinco minutos — o padrao que ja rendeu duas restricoes neste numero.
+    """
+    _com_nicho(usuario)
+    # assinante de terca (a fixture congela terca 18/08), ouviu ha 8 dias
+    db.update_user_fields(usuario["id"], podcast_dia="Terça")
+    db.podcast_marcar_envio(
+        usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
+    db.podcast_marcar_convite(usuario["id"])
+    saiu = _cron_pronto(monkeypatch, usuario)
+
+    for _ in range(5):
+        wa_bot.dispatch_proactive()
+    convites = [t for t in saiu if "podcast" in t.lower()]
+    assert len(convites) == 1, (
+        "o convite semanal se repetiu %d vezes" % len(convites))
+
+
+def test_carimbo_que_estoura_nao_derruba_o_resto_do_ciclo(
+        usuario, horario_util, com_voz, monkeypatch):
+    """"database is locked" e cenario real: o cron roda em thread paralela
+    ao webhook.
+
+    A mensagem SAIU; se o carimbo estoura sem protecao, ele leva junto quem
+    estava atras na fila — e o `_loop_proativo` engole com "ciclo falhou",
+    que foi o silencio que escondeu o P0 da madrugada.
+    """
+    _com_nicho(usuario)
+    db.add_item(user_id=usuario["id"], tipo="despesa", categoria="Contas",
+                descricao="IPTU", valor_reais=900.0,
+                data_vencimento=(tempo.hoje() + _dt.timedelta(days=1)
+                                 ).isoformat(), status="pendente")
+    saiu = _cron_pronto(monkeypatch, usuario)
+
+    def _explode(*a, **k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(db, "podcast_marcar_convite", _explode)
+    wa_bot.dispatch_proactive()          # nao pode levantar
+    wa_bot.dispatch_proactive()
+    assert any("IPTU" in t for t in saiu), (
+        "o carimbo estourou e levou o aviso da conta junto: %r" % saiu)
+
+
+def test_data_ilegivel_nao_prende_quem_pediu(usuario, com_voz, com_noticia,
+                                             monkeypatch):
+    """No caminho proativo, data podre conta como "acabou de enviar" — e
+    esta certo, o erro seguro la e mandar de menos. Aqui e o contrario: ela
+    PEDIU. Sem isto um valor corrompido tirava a unica saida manual, pra
+    sempre e em silencio."""
+    db.update_user_fields(usuario["id"], podcast_nicho="futebol")
+    with db.get_conn() as c:
+        c.execute("UPDATE users SET podcast_ultimo=? WHERE id=?",
+                  ("ontem de manha", usuario["id"]))
+    enviados = []
+    monkeypatch.setattr(
+        wa_bot.wasender, "falar_audio",
+        lambda tel, dados, **kw: enviados.append(dados) or
+        {"enviado": True, "via": "audio", "motivo": ""}, raising=False)
+    responder("Quero ouvir")
+    assert enviados, "a data corrompida trancou a pessoa pra sempre"
+
+
+def test_depois_so_responde_quem_tem_podcast(usuario):
+    """P2-6: "depois" e "mais tarde" sao palavras de qualquer conversa.
+
+    Quem nunca ouviu falar do recurso nao pode receber resposta sobre
+    podcast.
+    """
+    r = responder("depois")
+    assert "podcast" not in (r or "").lower(), r
+    assert "próxima semana" not in (r or "").lower(), r
+
+    db.update_user_fields(usuario["id"], podcast_nicho="games")
+    r2 = responder("agora não")
+    assert "próxima" in (r2 or "").lower(), r2
+
+
+def test_o_convite_nao_promete_minutagem(usuario):
+    """P2-8: o audio sai entre 40s e 3 min conforme a semana. Prometer "3
+    minutos" na primeira frase e errar pra menos justo onde a pessoa decide
+    se toca ou nao."""
+    c = podcast.convite("futebol", nome="Kevin")
+    assert "3 minutos" not in c["texto"], c["texto"]
+    assert "minuto" not in c["texto"].lower(), c["texto"]
+
+
+def test_carimbo_que_falhou_calado_nao_libera_a_pergunta_de_novo(
+        usuario, horario_util, monkeypatch):
+    """A protecao do carimbo agora ENGOLE a excecao — de proposito, pra nao
+    derrubar o ciclo. Mas engolir cria o buraco oposto: sem carimbo, a
+    pergunta voltaria a cada ciclo.
+
+    O `dispatched_today` e a segunda camada exatamente pra esse caso, e este
+    teste e o que prova que ela existe por um motivo.
+    """
+    _com_nicho(usuario)
+    db.podcast_marcar_envio(
+        usuario["id"], quando=tempo.agora() - _dt.timedelta(minutes=11))
+    saiu = _cron_pronto(monkeypatch, usuario)
+    # o carimbo "falha" em silencio, como faria com o banco travado
+    monkeypatch.setattr(db, "podcast_marcar_pergunta_do_dia",
+                        lambda *a, **k: None)
+
+    for _ in range(4):
+        wa_bot.dispatch_proactive()
+    perguntas = [t for t in saiu if "que dia" in t.lower()]
+    assert len(perguntas) == 1, (
+        "sem o carimbo, a pergunta voltou %d vezes" % len(perguntas))
