@@ -53,7 +53,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v25.4-m36-auditoria-corrigida-2026-08-29"
+BUILD = "v25.5-m37-auditoria-corrigida-2026-08-29"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -753,13 +753,10 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
             PENDING.pop(phone, None)
             return ("Beleza, não guardei nada. 👍\n\n"
                     "Se mudar de ideia, é só me mandar de novo.")
-        if _e_outro_assunto(text):
-            PENDING.pop(phone, None)
-            _pend_aj = {}
-
-    if (_pend_aj.get("tipo") in ("ajustar_retorno", "ajustar_documento")
-            and _proposta_viva(_pend_aj, ttl=AJUSTE_TTL_S)):
-        _quando = _data_do_texto(text)
+        # Outro assunto: solta a pendência e NÃO responde — a mensagem segue
+        # pro resto do `_handle_commands` e pro motor, que é quem sabe dar
+        # baixa, listar e registrar.
+        _quando = None if _e_outro_assunto(text) else _data_do_texto(text)
         if _quando:
             PENDING.pop(phone, None)
             # O QUE A PESSOA ESCREVEU GANHA DO QUE O OCR ACHOU (M3.6, P1-2).
@@ -2012,10 +2009,19 @@ def _data_do_texto(texto: str, base=None):
     hoje = base or tempo.hoje()
 
     def _valida(a, mes, d):
+        # JANELA DE SANIDADE, o mesmo raciocínio do `boleto.py`: "12/03/2126"
+        # é dedo escorregando, não um lembrete pra daqui a cem anos. Item com
+        # data absurda nunca dispara e fica na lista pra sempre — a pessoa
+        # não perde nada por ele ter sido recusado, e perde a confiança na
+        # lista se ele ficar lá.
         try:
-            return date(a, mes, d).isoformat()
+            alvo = date(a, mes, d)
         except ValueError:
             return None
+        hoje_ = base or tempo.hoje()
+        if not (hoje_.year - 1 <= alvo.year <= hoje_.year + 10):
+            return None
+        return alvo.isoformat()
 
     # 1. ISO — sem ambiguidade nenhuma.
     m = _DATA_ISO_LIVRE_RE.search(t)
@@ -2066,6 +2072,15 @@ def _data_do_texto(texto: str, base=None):
 
     # 5. Palavras relativas — e só sem negação na frase.
     if not _NEGACAO_RE.search(t):
+        # "FIM DO MÊS" É O ÚLTIMO DIA, não "hoje + 30". Sem esta regra,
+        # "fim do mês que vem" caía no ramo genérico de "mês que vem" e
+        # devolvia o dia 29 — data errada, calada, com cara de certa.
+        _fim = re.search(r"\b(fim|final)\s+d[oe]\s+m[êe]s\b", t)
+        if _fim:
+            salto = 1 if re.search(r"\b(que\s+vem|seguinte)\b",
+                                   t[_fim.end():]) else 0
+            primeiro = _somar_meses(hoje.replace(day=1), salto + 1)
+            return (primeiro - timedelta(days=1)).isoformat()
         if re.search(r"\bdepois\s+de\s+amanh", t):
             return (hoje + timedelta(days=2)).isoformat()
         if re.search(r"\bamanh[ãa]\b", t):
@@ -2104,7 +2119,12 @@ def _data_do_texto(texto: str, base=None):
     return None
 
 
-_HORA_RE = re.compile(r"\b([01]?\d|2[0-3])\s*(?:h|:)\s*([0-5]\d)?\b", re.I)
+# COM DOIS-PONTOS, OS MINUTOS SÃO OBRIGATÓRIOS. Com o `?` valendo pros dois
+# separadores, "9:5" virava 09:00 — hora inventada a partir de um número
+# truncado, e `hora_alvo` é o que dispara o alarme. Mensagem na hora errada é
+# pior que mensagem nenhuma: ensina a pessoa a ignorar o alarme.
+_HORA_RE = re.compile(r"\b([01]?\d|2[0-3])\s*(?:h\s*([0-5]\d)?|:\s*([0-5]\d))\b",
+                      re.I)
 
 
 def _hora_do_texto(texto: str):
@@ -2117,7 +2137,7 @@ def _hora_do_texto(texto: str):
     m = _HORA_RE.search(texto or "")
     if not m:
         return None
-    return "%02d:%s" % (int(m.group(1)), m.group(2) or "00")
+    return "%02d:%s" % (int(m.group(1)), m.group(2) or m.group(3) or "00")
 
 
 # Conectivo que abre frase e não descreve nada. Só o COMEÇO é limpo — tirar
@@ -2135,8 +2155,16 @@ _ABERTURA_RE = re.compile(
 
 # Sobra de "às 14h" depois que a hora sai: "dentista as" na lista é descuido
 # visível.
-_SOBRA_FINAL_RE = re.compile(r"\s+\b(a|as|às|ate|até|de|do|da|em|no|na)\s*$",
-                             re.I)
+_SOBRA_FINAL_RE = re.compile(
+    r"(\s+\b(a|as|às|ate|até|de|do|da|em|no|na|pra|para|"
+    r"vence|vencem|venc[ei])\b)+\s*[,;]?\s*$", re.I)
+
+# CPF, CNPJ e telefone: nunca viram descrição de item.
+_IDENTIFICACAO_RE = re.compile(
+    r"(\b\d{3}\.\d{3}\.\d{3}-?\d{2}\b|"        # CPF
+    r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-?\d{2}\b|"   # CNPJ
+    r"\b\d{2}\s?9?\d{4}[- ]?\d{4}\b|"          # telefone
+    r"\bcpf\b|\bcnpj\b|\brg\b)", re.I)
 
 
 def _descricao_do_texto(texto: str):
@@ -2162,12 +2190,21 @@ def _descricao_do_texto(texto: str):
     t = re.sub(r"\b(hoje|amanh[ãa]|semana que vem|m[êe]s que vem|"
                r"pr[óo]ximo m[êe]s|ano que vem)\b", " ", t, flags=re.I)
 
-    for oracao in reversed(re.split(r"[,;]", t)):
+    # A VÍRGULA DECIMAL NÃO SEPARA ORAÇÃO. Partindo em toda vírgula,
+    # "custou R$ 1,50, vence 05/09" virava a descrição "custou R$ 1" — um
+    # valor cortado ao meio na lista da pessoa.
+    for oracao in reversed(re.split(r"(?<!\d)[,;](?!\d)", t)):
         if _NEGACAO_RE.search(oracao):
+            continue
+        # DADO DE IDENTIFICAÇÃO NÃO VIRA NOME DE ITEM. O `documento.py` já
+        # tem essa regra pro OCR; aqui vale igual, porque a pessoa às vezes
+        # responde com o telefone ou o CPF na mesma frase — e esse número
+        # ficaria na lista dela, visível, pra sempre.
+        if _IDENTIFICACAO_RE.search(oracao):
             continue
         limpo = _ABERTURA_RE.sub("", oracao.strip())
         limpo = re.sub(r"\s{2,}", " ", limpo).strip(" -–—:.")
-        limpo = _SOBRA_FINAL_RE.sub("", limpo).strip()
+        limpo = _SOBRA_FINAL_RE.sub("", limpo).strip(" ,;-–—:.")
         if len(re.sub(r"[^A-Za-zÀ-ÿ]", "", limpo)) >= 4:
             return limpo[:120]
     return None

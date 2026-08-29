@@ -611,6 +611,83 @@ def test_pix_truncado_nao_apaga_o_boleto_da_mesma_foto():
     assert achado and achado["tipo"] == "boleto", achado
 
 
+# ---------------------------------------------------------------------------
+# AUDITORIA M3.7 — o que a correcao do M3.6 deixou passar
+# ---------------------------------------------------------------------------
+
+def test_fim_do_mes_e_o_ultimo_dia():
+    """"fim do mes que vem" caia no ramo generico e devolvia o dia 29.
+
+    Data errada com cara de certa — o pior tipo, porque ninguem confere.
+    """
+    base = _dt.date(2026, 8, 29)
+    assert wa_bot._data_do_texto("fim do mes que vem", base=base) == "2026-09-30"
+    assert wa_bot._data_do_texto("no fim do mes", base=base) == "2026-08-31"
+    assert wa_bot._data_do_texto("final do mes", base=base) == "2026-08-31"
+
+
+def test_ano_absurdo_nao_vira_item():
+    """"12/03/2126" e dedo escorregando, nao lembrete pra daqui a 100 anos.
+
+    Item com data absurda nunca dispara e fica na lista pra sempre. Mesma
+    janela de sanidade que o `boleto.py` tem desde o M2.1.
+    """
+    base = _dt.date(2026, 8, 29)
+    assert wa_bot._data_do_texto("12/03/2126", base=base) is None
+    assert wa_bot._data_do_texto("12/03/1990", base=base) is None
+    assert wa_bot._data_do_texto("12/03/2028", base=base) == "2028-03-12"
+
+
+def test_hora_truncada_nao_vira_alarme():
+    """"9:5" virava 09:00 — hora inventada a partir de numero cortado.
+
+    `hora_alvo` e o que dispara o alarme: mensagem na hora errada ensina a
+    pessoa a ignorar o alarme, que e pior que nao ter alarme.
+    """
+    assert wa_bot._hora_do_texto("9:5") is None
+    assert wa_bot._hora_do_texto("as 9h30") == "09:30"
+    assert wa_bot._hora_do_texto("14:30") == "14:30"
+    assert wa_bot._hora_do_texto("15h") == "15:00"
+    assert wa_bot._hora_do_texto("as 25h") is None
+
+
+def test_descricao_nao_carrega_cpf_nem_telefone():
+    """O `documento.py` ja tinha essa regra pro OCR; aqui vale igual.
+
+    A pessoa as vezes responde com o telefone na mesma frase, e o numero
+    ficaria na lista dela, visivel, pra sempre.
+    """
+    assert wa_bot._descricao_do_texto(
+        "meu telefone 11 98888-7777, vence 05/09") is None
+    assert wa_bot._descricao_do_texto(
+        "e o cpf 123.456.789-00, vence 05/09") is None
+
+
+def test_virgula_decimal_nao_parte_a_descricao():
+    """"custou R$ 1,50, vence 05/09" virava a descricao "custou R$ 1"."""
+    r = wa_bot._descricao_do_texto("custou R$ 1,50, vence 05/09")
+    assert r == "custou R$ 1,50", repr(r)
+
+
+def test_documento_usa_o_relogio_do_produto(monkeypatch):
+    """`date.today()` e a hora da VPS; `tempo.hoje()` e America/Sao_Paulo.
+
+    Entre 21h e meia-noite no Brasil os dois discordam de UM DIA numa
+    maquina em UTC — e esse dia decide se o D-60 "ainda cabe" na promessa.
+    """
+    doc = documento.reconhecer("CNH\nValidade 05/10/2026")
+    # Relogio do produto adiantado em relacao ao do servidor de proposito: com
+    # `tempo.hoje()` faltam 15 dias (nenhuma antecedencia cabe -> "vespera");
+    # com o relogio do servidor faltariam mais de 30 e o texto prometeria
+    # "30 dias antes". E assim que este teste separa os dois.
+    monkeypatch.setattr(tempo, "hoje", lambda: _dt.date(2026, 9, 20))
+    p = documento.pergunta_de_confirmacao(doc)   # sem passar `hoje`
+    assert "véspera" in p["texto"], (
+        "usou o relogio do servidor em vez do relogio do produto: %s"
+        % p["texto"])
+    assert "30 dias" not in p["texto"], p["texto"]
+
+
 def test_valor_com_ponto_nao_esconde_o_codigo():
     """P2 do prefixo: o descarte e por BLOCO, nunca por contagem.
 

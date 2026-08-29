@@ -25,6 +25,13 @@ import re
 from datetime import date, timedelta
 from typing import Optional
 
+# O RELOGIO DO PRODUTO E O `tempo`, NUNCA o do servidor. `tempo.hoje()` e
+# America/Sao_Paulo; `date.today()` e a hora local da VPS. Entre 21h e
+# meia-noite no Brasil os dois discordam de UM DIA numa maquina em UTC — e
+# aqui esse dia decide se a antecedencia de D-60 "ainda cabe" na promessa.
+# O `boleto.py` importa `tempo` pelo mesmo motivo.
+import tempo
+
 # ---------------------------------------------------------------------------
 # COMO CADA TIPO SE ANUNCIA
 # ---------------------------------------------------------------------------
@@ -404,7 +411,7 @@ def pergunta_de_confirmacao(doc: Optional[dict],
         linha_data = "%s: *%s*" % (rotulo_data, d)
         try:
             a, m, dd = (int(x) for x in quando.split("-"))
-            faltam = (date(a, m, dd) - (hoje or date.today())).days
+            faltam = (date(a, m, dd) - (hoje or tempo.hoje())).days
         except (ValueError, TypeError):
             faltam = None
     else:
