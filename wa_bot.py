@@ -734,6 +734,7 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     # "confirmar" solto não pode virar item do nada.
     _pend_ret = PENDING.get(phone) or {}
     if (_pend_ret.get("tipo") == "confirmar_retorno"
+            and _proposta_viva(_pend_ret)
             and _CONFIRMA_DOC_RE.match(text)):
         _sug = _pend_ret.get("sugestao") or {}
         _desc = _pend_ret.get("descricao") or "seu compromisso"
@@ -773,6 +774,7 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     # telefone: "confirmar" solto, sem contexto, não pode virar item do nada.
     _pend_doc = PENDING.get(phone) or {}
     if (_pend_doc.get("tipo") == "confirmar_documento"
+            and _proposta_viva(_pend_doc)
             and _CONFIRMA_DOC_RE.match(text)):
         _doc = _pend_doc.get("doc") or {}
         _low = text.strip().lower()
@@ -1337,6 +1339,27 @@ def entende_comando(texto: str) -> bool:
 # não é boleto e PROPÕE o que entendeu. Sem tratamento aqui, o clique cairia
 # no LLM e podia virar "não entendi" — logo depois de a pessoa ter feito
 # exatamente o que o bot pediu.
+# QUANTO TEMPO UMA PROPOSTA FICA DE PE (M3.5).
+#
+# Mais longo que o `PENDING_TTL_S` (20 min, feito pra menu 1/2 na tela) porque
+# "quer marcar a proxima unha?" e "isso e uma nota fiscal?" sao perguntas que
+# a pessoa responde quando puder, nao na hora. Mas NAO e eterno: sem prazo, um
+# "confirmar" digitado dias depois, por outro motivo, criava um item de data
+# velha — contexto zumbi virando dado errado na lista.
+PROPOSTA_TTL_S = 24 * 3600
+
+
+def _proposta_viva(pend: dict) -> bool:
+    """A proposta ainda vale? Sem carimbo, nao vale — fail-closed."""
+    quando = (pend or {}).get("quando")
+    if not quando:
+        return False
+    try:
+        return (tempo.agora() - quando).total_seconds() <= PROPOSTA_TTL_S
+    except Exception:
+        return False
+
+
 # Em que categoria cada documento entra. "Outros" e o fallback honesto:
 # categoria errada polui o resumo de gastos e a leitura do painel.
 # So categorias que EXISTEM em db.VALID_CATEGORIES. `add_item` faz fallback
@@ -1381,6 +1404,9 @@ BOTOES_POR_KIND = {
     "trial-ending": ["Assinar", "Ver tudo"],
     "winback": ["Ver tudo", "Assinar"],
     "reengajamento": ["Ver tudo", "Feito"],
+    # M3.5 — oferta de remarcar servico. Os titulos vem de
+    # `recorrencia.BOTOES` e sao os mesmos que `_CONFIRMA_DOC_RE` entende.
+    "retorno": ["Confirmar", "Outra data", "Não precisa"],
 }
 
 def _botoes_do_disparo(d: dict):
@@ -5072,6 +5098,27 @@ def dispatch_proactive() -> int:
                  ("OK via " + (res.get("via") or "?")) if ok
                  else f"NAO ENVIADO ({res.get('motivo')})")
         cabeca_ok[(d.get("user_id"), d.get("kind"))] = bool(ok)
+        # A OFERTA DE REMARCAR PRECISA DEIXAR CONTEXTO PRA RESPOSTA.
+        #
+        # Sem isto a feature nao funcionava de ponta a ponta: a pergunta saia,
+        # a pessoa tocava em "Confirmar" e o handler nao achava contexto
+        # nenhum — silencio total, logo depois de ela fazer o que o bot pediu.
+        # Meus testes passavam porque setavam o PENDING na mao.
+        #
+        # SO QUANDO `ok`: se a pergunta nao saiu, nao pode existir contexto
+        # esperando resposta, senao um "confirmar" de outro assunto criaria
+        # item do nada.
+        # NAO ATROPELA CONVERSA EM ANDAMENTO. Se ja ha algo esperando
+        # resposta (menu 1/2, escolha de baixa), a oferta de remarcar nao
+        # toma o lugar dele — a pessoa responderia o menu e cairia aqui.
+        _ocupado = bool((PENDING.get(number) or {}) and
+                        (PENDING[number].get("tipo") != "confirmar_retorno"))
+        if (ok and d.get("kind") == "retorno" and d.get("sugestao")
+                and not _ocupado):
+            PENDING[number] = {"tipo": "confirmar_retorno",
+                               "sugestao": d["sugestao"],
+                               "descricao": d.get("descricao") or "",
+                               "quando": tempo.agora()}
         if ok:
             sent += 1
             # DEDUP DO TRIAL GUIADO: marcado por QUEM ENVIA, nunca por quem

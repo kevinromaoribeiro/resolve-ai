@@ -185,3 +185,127 @@ def test_nao_precisa_nao_cria_nada(usuario):
     resp = wa_bot._handle_commands(usuario, usuario["telefone"], "Não precisa")
     assert resp
     assert len(db.list_items(usuario["id"], status="pendente")) == antes
+
+
+# ---------------------------------------------------------------------------
+# O CAMINHO DE VERDADE: motor -> envio -> a pessoa responde
+# ---------------------------------------------------------------------------
+# Os testes acima setavam o PENDING na mao, entao passavam sem provar que o
+# fluxo real funciona. E nao funcionava: ninguem setava PENDING no envio, e a
+# pessoa que respondia "Confirmar" nao recebia nada. Teste que nao exercita o
+# caminho real e teste que mente.
+
+def _servico_concluido_ha_horas(usuario, desc="fazer as unhas", horas=12):
+    iid = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                      categoria="Outros", descricao=desc,
+                      valor_reais=None, status="pendente")
+    db.update_item_status(iid, "concluido")
+    with db.get_conn() as c:
+        c.execute("UPDATE items SET data_conclusao=? WHERE id=?",
+                  ((tempo.agora() - _dt.timedelta(hours=horas)
+                    ).strftime("%Y-%m-%d %H:%M:%S"), iid))
+    return iid
+
+
+def test_a_pergunta_sai_com_botao(usuario, horario_util, monkeypatch):
+    """Sem botao, a pessoa tem que digitar — e o pedido era o contrario."""
+    import wa_bot
+    _servico_concluido_ha_horas(usuario)
+    db.log_message(None, usuario["telefone"], "in", "texto", "oi")
+    visto = {}
+    monkeypatch.setattr(
+        wa_bot.wasender, "falar",
+        lambda tel, txt, **kw: visto.update(kw, texto=txt) or
+        {"enviado": True, "via": "botoes", "motivo": ""})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    wa_bot.dispatch_proactive()
+    assert "unhas" in (visto.get("texto") or "").lower(), visto
+    assert visto.get("botoes"), "a pergunta saiu sem botao"
+
+
+def test_depois_de_enviar_a_resposta_funciona(usuario, horario_util,
+                                              monkeypatch):
+    """O teste que faltava: motor manda, pessoa responde, item nasce."""
+    import wa_bot
+    _servico_concluido_ha_horas(usuario, desc="sobrancelha")
+    db.log_message(None, usuario["telefone"], "in", "texto", "oi")
+    monkeypatch.setattr(wa_bot.wasender, "falar",
+                        lambda *a, **k: {"enviado": True, "via": "botoes",
+                                         "motivo": ""})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    wa_bot.dispatch_proactive()
+
+    antes = len(db.list_items(usuario["id"], status="pendente"))
+    resp = wa_bot._handle_commands(usuario, usuario["telefone"], "Confirmar")
+    assert resp and "guardado" in resp.lower(), (
+        "a pessoa confirmou e o bot nao guardou nada: %r" % resp)
+    assert len(db.list_items(usuario["id"], status="pendente")) == antes + 1
+
+
+def test_envio_recusado_nao_deixa_pendencia(usuario, horario_util,
+                                            monkeypatch):
+    """Se a pergunta NAO saiu, nao pode haver contexto esperando resposta —
+    senao um "confirmar" de outro assunto criaria item do nada."""
+    import wa_bot
+    _servico_concluido_ha_horas(usuario, desc="manicure")
+    monkeypatch.setattr(wa_bot.wasender, "falar",
+                        lambda *a, **k: {"enviado": False, "via": None,
+                                         "motivo": "fora_da_janela"})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    wa_bot.PENDING.pop(usuario["telefone"], None)
+    wa_bot.dispatch_proactive()
+    p = wa_bot.PENDING.get(usuario["telefone"]) or {}
+    assert p.get("tipo") != "confirmar_retorno", p
+
+
+# ---------------------------------------------------------------------------
+# o contexto pendente nao pode virar armadilha
+# ---------------------------------------------------------------------------
+
+def test_contexto_antigo_nao_cria_item(usuario):
+    """A pessoa nao respondeu na hora. Tres dias depois digita "confirmar"
+    por outro motivo — nao pode nascer uma unha de data velha."""
+    import wa_bot
+    wa_bot.PENDING[usuario["telefone"]] = {
+        "tipo": "confirmar_retorno",
+        "sugestao": recorrencia.sugestao("fazer as unhas"),
+        "descricao": "fazer as unhas",
+        "quando": tempo.agora() - _dt.timedelta(days=3)}
+    antes = len(db.list_items(usuario["id"], status="pendente"))
+    wa_bot._handle_commands(usuario, usuario["telefone"], "Confirmar")
+    assert len(db.list_items(usuario["id"], status="pendente")) == antes, (
+        "contexto de 3 dias atras criou item")
+
+
+def test_proposta_de_documento_tambem_expira(usuario):
+    import wa_bot
+    wa_bot.PENDING[usuario["telefone"]] = {
+        "tipo": "confirmar_documento",
+        "doc": {"tipo": "documento", "rotulo": "documento",
+                "descricao": "CNH", "data": "2027-03-12"},
+        "quando": tempo.agora() - _dt.timedelta(days=3)}
+    antes = len(db.list_items(usuario["id"], status="pendente"))
+    wa_bot._handle_commands(usuario, usuario["telefone"], "Confirmar")
+    assert len(db.list_items(usuario["id"], status="pendente")) == antes
+
+
+def test_oferta_nao_atropela_conversa_em_andamento(usuario, horario_util,
+                                                   monkeypatch):
+    """Se a pessoa esta no meio de um menu, a oferta de remarcar nao pode
+    tomar o lugar dele — ela responderia o menu e cairia na oferta."""
+    import wa_bot
+    _servico_concluido_ha_horas(usuario, desc="cortar o cabelo")
+    db.log_message(None, usuario["telefone"], "in", "texto", "oi")
+    wa_bot.PENDING[usuario["telefone"]] = {
+        "tipo": "menu_qualquer", "quando": tempo.agora()}
+    monkeypatch.setattr(wa_bot.wasender, "falar",
+                        lambda *a, **k: {"enviado": True, "via": "botoes",
+                                         "motivo": ""})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    wa_bot.dispatch_proactive()
+    assert wa_bot.PENDING[usuario["telefone"]]["tipo"] == "menu_qualquer", (
+        "a oferta atropelou a conversa que estava em andamento")
