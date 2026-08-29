@@ -52,7 +52,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v25.0-m33-lote-nao-trava-2026-08-28"
+BUILD = "v25.1-m34-landing-e-poderes-2026-08-28"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -400,7 +400,19 @@ MASTER_PHONE = re.sub(r"\D", "", os.environ.get("MASTER_PHONE", ""))
 # Numero PUBLICO do bot, usado na assinatura da delegacao (M1.7). Nao
 # confundir com MASTER_PHONE, que e o numero do dono e serve de gate do
 # comando de reset — mandar AQUELE pra terceiro seria expor o Kevin.
-BOT_PHONE = re.sub(r"\D", "", os.environ.get("BOT_PHONE", ""))
+# O NÚMERO DO PRÓPRIO BOT, com default no código (28/08/2026).
+#
+# Ele monta o convite no recado que a pessoa manda pra um terceiro ("quem me
+# lembrou disso foi o Resolve AI — wa.me/…"). Sem ele, a frase sai sem link e
+# o único canal de indicação orgânica do produto morre calado: quem recebe o
+# recado não tem como virar usuário.
+#
+# Ficou vazio na VPS até 28/08, junto com o mesmo número faltando na landing
+# (que apontava pro placeholder 5511000000000 e não convertia ninguém). Número
+# de atendimento é público — versionar não expõe nada, e tira a chance de a
+# variável ser esquecida de novo. A env var segue valendo como override.
+BOT_PHONE = re.sub(r"\D", "",
+                   os.environ.get("BOT_PHONE", "") or "5511988215902")
 _MASTER_RESET_RE = re.compile(
     r"^(reset|resetar|zerar|/reset|novo teste|reiniciar teste|sou novo)\b",
     re.IGNORECASE)
@@ -4317,7 +4329,118 @@ def _dados_do_painel() -> dict:
         # Os recortes da base pro envio em lote, já com a contagem.
         "segmentos": {k: len(v) for k, v in
                       db.segmentos(excluir_telefones=fora).items()},
+        # M3.4 — a lista de poderes, pro Kevin consultar sem depender de
+        # mim nem da memória dele.
+        "poderes": PODERES,
+        "grupos_de_poder": list(GRUPOS_DE_PODER),
     }
+
+
+# ---------------------------------------------------------------------------
+# A ABA DE PODERES DO PAINEL (M3.4)
+# ---------------------------------------------------------------------------
+# Pedido do Kevin em 28/08/2026, e nasceu de um problema concreto: ele perdeu
+# a conta do que o produto já faz. Perguntou se o "avisa minha esposa" existia
+# — e existia há semanas. Recurso que o dono não lembra que tem não entra na
+# landing, não é vendido e não é usado.
+#
+# REGRA PERMANENTE: feature nova entra aqui no MESMO commit. Não é
+# documentação opcional — há teste cobrando que todo template do catálogo
+# apareça nesta lista.
+GRUPOS_DE_PODER = ("Entra dado", "Sai aviso", "A pessoa responde",
+                   "Você controla", "Protege o número")
+
+PODERES = [
+    {"grupo": "Entra dado", "titulo": "Texto do jeito que a pessoa fala",
+     "desc": "\"luz 187 vence dia 20\" vira item com valor, data e categoria. "
+             "Sem formulário e sem palavra mágica."},
+    {"grupo": "Entra dado", "titulo": "Áudio",
+     "desc": "Transcreve sozinho, até 2 minutos. É como a maioria prefere "
+             "mandar."},
+    {"grupo": "Entra dado", "titulo": "Foto de boleto e PDF de conta",
+     "desc": "Lê código de barras, valor e vencimento. O caso que mais "
+             "impressiona na primeira vez."},
+    {"grupo": "Entra dado", "titulo": "Placa do carro",
+     "desc": "Com o final da placa, calcula IPVA e licenciamento de SP — "
+             "inclusive o pulo de fim de semana e feriado."},
+
+    {"grupo": "Sai aviso", "titulo": "Conta a vencer",
+     "desc": "Avisa na véspera. Para veículo, avisa em 30, 7 e 1 dia — IPVA "
+             "não se resolve de um dia pro outro."},
+    {"grupo": "Sai aviso", "titulo": "Item vencido",
+     "desc": "Cobra uma vez, no dia seguinte. Vários vencidos viram UMA "
+             "mensagem, não uma por item."},
+    {"grupo": "Sai aviso", "titulo": "Lembrete de hora marcada",
+     "desc": "Alarme no horário exato. É o único aviso que fura o silêncio "
+             "da madrugada."},
+    {"grupo": "Sai aviso", "titulo": "Resumo dos compromissos",
+     "desc": "No dia da semana que a pessoa escolheu. Só sai se houver o que "
+             "dizer."},
+    {"grupo": "Sai aviso", "titulo": "Resumo de gastos da semana",
+     "desc": "Quanto gastou, em quê, e a comparação com a semana anterior. "
+             "Hoje só alcança quem falou nas últimas 24h."},
+    {"grupo": "Sai aviso", "titulo": "Lembra de item parado há dias",
+     "desc": "Reengajamento cita UM item com a data — não uma contagem "
+             "genérica, que a Meta classifica como marketing."},
+    {"grupo": "Sai aviso", "titulo": "Avisa que o teste está acabando",
+     "desc": "Uma vez por pessoa, na vida inteira do trial. É a única "
+             "mensagem que pede a assinatura."},
+    {"grupo": "Sai aviso", "titulo": "Conta que você liberou mais dias",
+     "desc": "Quando você estende o teste, a pessoa fica sabendo do prazo "
+             "novo. Ganhar dias e não saber é o mesmo que não ganhar."},
+    {"grupo": "Sai aviso", "titulo": "Cobra quem pediu o link e não pagou",
+     "desc": "Só por ação sua, nunca sozinho — o bot não sabe se o cartão "
+             "passou."},
+    {"grupo": "Sai aviso", "titulo": "Pede desculpa e reativa quem esfriou",
+     "desc": "Explica a falha, diz que os dias estão valendo e ensina a usar "
+             "com exemplo concreto."},
+    {"grupo": "Sai aviso", "titulo": "Arquivamento com aviso",
+     "desc": "Item parado 15 dias sai da lista, mas só DEPOIS que o aviso "
+             "comprovadamente saiu. Nunca some calado."},
+
+    {"grupo": "A pessoa responde", "titulo": "Botões em vez de digitar",
+     "desc": "Paguei · Adiar · Ver tudo. Todo título de botão é um comando "
+             "que o bot entende, garantido por teste."},
+    {"grupo": "A pessoa responde", "titulo": "Baixa sem ambiguidade",
+     "desc": "\"paguei\", \"feito\", \"já resolvi\" fecham o item. Se houver "
+             "dúvida de qual, o bot PERGUNTA em vez de chutar."},
+    {"grupo": "A pessoa responde", "titulo": "Ver tudo",
+     "desc": "A lista do que está em aberto, com data e valor."},
+    {"grupo": "A pessoa responde", "titulo": "Recado para outra pessoa",
+     "desc": "\"avisa minha esposa\" → o bot escreve o recado e devolve um "
+             "link: sai do WhatsApp da própria pessoa, num toque. Nunca "
+             "escreve pra quem não autorizou."},
+    {"grupo": "A pessoa responde", "titulo": "Apagar os dados de verdade",
+     "desc": "\"apagar meus dados\" limpa itens, conversas e cadastro — "
+             "verificado contra o banco, não contra a mensagem na tela."},
+
+    {"grupo": "Você controla", "titulo": "Funil de validação",
+     "desc": "Entraram → registram sozinhas → o bot já salvou → voltaram → "
+             "pagam. O veredito aponta UM gargalo por vez."},
+    {"grupo": "Você controla", "titulo": "Aprovar pagamento na mão",
+     "desc": "Quem pede o link entra numa fila. Você confere no Mercado Pago "
+             "e aprova como mensal ou anual — o dia da aprovação inicia o "
+             "ciclo."},
+    {"grupo": "Você controla", "titulo": "Dar dias, bloquear, zerar cliente",
+     "desc": "Por cliente, com confirmação. Zerar exige digitar o nome."},
+    {"grupo": "Você controla", "titulo": "Disparo em lote por segmento",
+     "desc": "Desengajados, sem itens, trial, ativos. Espaça os envios e "
+             "mostra quem NÃO recebeu e por quê."},
+    {"grupo": "Você controla", "titulo": "Devolver 14 dias pra todo mundo",
+     "desc": "Comando `liberar 14 dias para todos`. Você fica de fora, e "
+             "clicar duas vezes no mesmo dia não dá 28."},
+
+    {"grupo": "Protege o número", "titulo": "Porta única de saída",
+     "desc": "Toda proativa passa por um lugar só. Fora da janela de 24h, "
+             "sem template aprovado, NÃO SAI — nem por decisão do LLM."},
+    {"grupo": "Protege o número", "titulo": "Freios de ritmo",
+     "desc": "5 por ciclo, 6 por pessoa/dia, 60 a 120s entre envios. Em "
+             "04/08 saíram 4 num minuto e a Meta restringiu o número."},
+    {"grupo": "Protege o número", "titulo": "Silêncio das 21h às 8h",
+     "desc": "Só alarme de hora marcada fura."},
+    {"grupo": "Protege o número", "titulo": "LGPD com aceite antes do dado",
+     "desc": "Nada é guardado antes do aceite, e recusa apaga de verdade."},
+]
 
 
 def _templates_com_rotulo() -> list:
@@ -5760,6 +5883,7 @@ async function carrega(){
  // BASE COM CONTROLE. Filtro por status + os botoes de admin em cada linha.
  const F=window.__filtro||'todos';
  window.__users=d.usuarios||[];   // `zerar` lê o nome daqui, não do onclick
+ window.__dados=d;                // `poderes()` lê a lista daqui
  const cont={todos:(d.usuarios||[]).length};
  (d.usuarios||[]).forEach(u=>{const k=u.status||'trial';
    cont[k]=(cont[k]||0)+1});
@@ -5775,6 +5899,13 @@ async function carrega(){
  const optTplLote=TPL.map(t=>
    `<option value="${t.nome}">${t.rotulo}${t.automatico?' · já automático':''}</option>`
  ).join('');
+ // O QUE O RESOLVE AI FAZ (M3.4). Fica junto dos controles porque o Kevin
+ // consulta isso pra decidir o que vender e o que ainda falta construir.
+ h+=card('O que o Resolve AI faz',
+  `<div class="muted" style="font-size:11px;margin-bottom:9px">
+     ${(d.poderes||[]).length} recursos no ar — atualizado a cada entrega.</div>
+   <button class="b" style="width:100%" onclick="poderes()">
+     Ver a lista completa</button>`);
  // RESET DE TRIAL EM BOTÃO. O comando por WhatsApp exige a frase exata
  // ("resetar trial de todos") e falhou calado em 28/08 quando a frase saiu
  // diferente. Botão não erra a digitação.
@@ -5873,6 +6004,37 @@ function mandar(uid){
   acao(uid,'enviar_template',{template:s.value});
 }
 function cobrar(uid){ acao(uid,'reenviar_link',{}); }
+// A LISTA DE PODERES. Abre sobre a tela, sem sair do painel — a ideia é
+// consultar rápido, não navegar.
+function poderes(){
+  const d=window.__dados||{};
+  const lista=d.poderes||[], grupos=d.grupos_de_poder||[];
+  if(!lista.length){ alert('Lista ainda não carregou. Tenta de novo.'); return; }
+  let h='';
+  grupos.forEach(g=>{
+    const doGrupo=lista.filter(p=>p.grupo===g);
+    if(!doGrupo.length) return;
+    h+=`<h3 style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+         color:#8296b3;margin:18px 0 9px;font-weight:700">${g}</h3>`;
+    doGrupo.forEach(p=>{
+      h+=`<div style="padding:9px 0;border-bottom:1px solid #1f2c47">
+            <div style="font-weight:600;font-size:14px">${p.titulo}</div>
+            <div class="muted" style="font-size:12px;margin-top:3px;
+                 line-height:1.45">${p.desc}</div></div>`;
+    });
+  });
+  const cx=document.createElement('div');
+  cx.style.cssText='position:fixed;inset:0;z-index:99;background:#0b1220;'
+    +'overflow-y:auto;padding:16px 14px calc(28px + env(safe-area-inset-bottom))';
+  cx.innerHTML=`<div style="display:flex;justify-content:space-between;
+      align-items:center;margin-bottom:6px">
+      <h2 style="font-size:17px;margin:0;font-weight:700">O que o Resolve AI faz</h2>
+      <button class="b" id="fechaPoderes">fechar</button></div>
+    <div class="muted" style="font-size:11px;margin-bottom:4px">
+      ${lista.length} recursos no ar.</div>${h}`;
+  document.body.appendChild(cx);
+  cx.querySelector('#fechaPoderes').onclick=()=>cx.remove();
+}
 async function resetarTrials(){
   if(!confirm('Devolver 14 dias de teste pra TODOS os clientes, contados de '
     +'hoje?')) return;
