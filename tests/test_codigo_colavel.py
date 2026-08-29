@@ -514,3 +514,61 @@ def test_pix_tambem_sai_sozinho(usuario, horario_util):
     assert "PIX" in disp[0]["message"], disp[0]["message"]
     assert disp[0]["tem_codigo"] is True
     assert "00020126" not in disp[0]["message"], disp[0]["message"]
+
+
+def test_a_memoria_do_lembrete_e_gravada_PELO_MOTOR(usuario, horario_util,
+                                                    monkeypatch, limpo):
+    """Sem setar `ULTIMO_COBRADO` na mao — o motor tem que gravar sozinho.
+
+    A auditoria M4.0 provou que apagar a UNICA linha de producao que grava
+    esse dict deixava a suite inteira verde: todos os testes de P1-3 setavam
+    o dict na mao. E a mesma armadilha do M3.5 ("meus testes passavam porque
+    setavam o PENDING na mao"), pela terceira vez.
+    """
+    import scheduler
+    import wa_bot
+    wa_bot.ULTIMO_COBRADO.clear()
+    longe = _conta_com_codigo(usuario, colavel="7" * 44, dias=1)
+    assert longe
+
+    monkeypatch.setattr(wa_bot.wasender, "falar",
+                        lambda *a, **k: {"enviado": True, "via": "botoes",
+                                         "motivo": ""})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    assert scheduler.check_due_items(), "o lembrete nem saiu"
+    wa_bot.dispatch_proactive()
+
+    assert wa_bot.ULTIMO_COBRADO, (
+        "o motor mandou o lembrete com botao e nao lembrou de qual item era")
+    _toque_no_botao(telefone=usuario["telefone"])
+    assert "7" * 44 in [t for _n, t in limpo]
+
+
+def test_lembrete_que_NAO_saiu_nao_deixa_memoria(usuario, horario_util,
+                                                 monkeypatch):
+    """Se o lembrete nao chegou, nao existe botao esperando clique."""
+    import wa_bot
+    wa_bot.ULTIMO_COBRADO.clear()
+    _conta_com_codigo(usuario, colavel="8" * 44, dias=1)
+    monkeypatch.setattr(wa_bot.wasender, "falar",
+                        lambda *a, **k: {"enviado": False, "via": "",
+                                         "motivo": "fora da janela"})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    wa_bot.dispatch_proactive()
+    assert not wa_bot.ULTIMO_COBRADO, wa_bot.ULTIMO_COBRADO
+
+
+@pytest.mark.parametrize("frase,vale", [
+    ("Copiar código", True), ("copiar codigo", True),
+    ("copiar o código", True), ("copia e cola", True), ("copiar pix", True),
+    # NAO pode responder com a linha digitavel de um boleto: codigo pode ser
+    # de rastreio, de cupom, do portao, do medico.
+    ("me manda o código", False), ("código de barras", False),
+    ("me manda o código do rastreio", False),
+    ("o que é código de barras?", False), ("qual o codigo do portao", False),
+])
+def test_so_frase_inequivoca_devolve_o_codigo(frase, vale):
+    import wa_bot
+    assert bool(wa_bot._COPIAR_CODIGO_RE.match(frase)) is vale, frase

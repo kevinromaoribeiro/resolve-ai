@@ -210,3 +210,95 @@ def test_o_fluxo_do_kevin_esta_nas_constantes():
     assert podcast.HORAS_ATE_O_CONVITE == 6
     assert podcast.MINUTOS_ATE_PERGUNTAR_O_DIA == 10
     assert podcast.DIAS_ENTRE_EPISODIOS == 7
+
+
+# ---------------------------------------------------------------------------
+# auditoria M4.0
+# ---------------------------------------------------------------------------
+
+def test_uma_noticia_gigante_tambem_cabe_em_tres_minutos():
+    """Com UMA noticia nao da pra cortar bloco, e o teto continua valendo.
+
+    Sem isto, um resumo grande virava um "audio de tres minutos" de onze
+    horas: promessa quebrada, e TTS e cobrado por minuto.
+    """
+    for n in (5_000, 100_000):
+        r = podcast.montar_roteiro(
+            "games", [{"titulo": "Lancamento", "resumo": "palavra " * n,
+                       "fonte": "IGN Brasil"}])
+        assert r
+        assert podcast.duracao_estimada_s(r) <= 3 * 60 * 1.15, (
+            "%d palavras -> %ds" % (n, podcast.duracao_estimada_s(r)))
+        assert r.rstrip().endswith("Até lá!"), r[-80:]
+
+
+def test_noticia_sem_titulo_e_descartada():
+    """O par do "sem fonte": manchete vazia nao vira bloco de audio.
+
+    Este teste existe porque o de fonte NAO cobria esta metade — a fonte
+    vazia ja caia na lista de permitidas, e apagar a checagem de titulo
+    deixava a suite verde (auditoria M4.0).
+    """
+    itens = [{"titulo": "", "resumo": "algo", "fonte": "IGN Brasil"},
+             {"titulo": "   ", "resumo": "algo", "fonte": "IGN Brasil"}]
+    assert podcast.montar_roteiro("games", itens) is None
+
+
+def test_fonte_pode_vir_como_dominio_ou_url():
+    """Um scraper devolve "ge.globo.com" ou a URL, nao o rotulo bonito.
+
+    Casar so por nome exato virava episodio vazio, em silencio.
+    """
+    for f in ("ge.globo", "ge.globo.com", "https://ge.globo.com/futebol/"):
+        assert podcast.montar_roteiro(
+            "futebol", [{"titulo": "T", "resumo": "r", "fonte": f}]), f
+    assert podcast.montar_roteiro(
+        "futebol", [{"titulo": "T", "resumo": "r",
+                     "fonte": "https://blogdoze.com/x"}]) is None
+
+
+@pytest.mark.parametrize("valor,esperado", [
+    ("2026-09-01 10:00:00", True),
+    ("2026-09-01T10:00:00.123456", True),       # microssegundos
+    ("2026-09-01T10:00:00-03:00", True),        # timezone
+    ("2026-09-01", True),                       # so a data
+    ("2026-09-09", False),                      # ontem
+    (_dt.datetime(2026, 9, 1, 10), True),       # objeto, nao string
+    (_dt.date(2026, 9, 1), True),
+])
+def test_pode_enviar_aceita_o_que_o_banco_devolve(valor, esperado):
+    """Se a coluna virar datetime (ou vier com timezone), a versao anterior
+    devolvia False PARA SEMPRE — o podcast morria calado, que e o pior tipo
+    de defeito porque ninguem vai procurar."""
+    agora = _dt.datetime(2026, 9, 10, 10, 0, 0)
+    assert podcast.pode_enviar(valor, agora=agora) is esperado, valor
+
+
+def test_pode_enviar_com_relogio_de_data_nao_estoura():
+    """`tempo.hoje()` devolve `date`; subtrair de `datetime` estourava
+    TypeError FORA do try e mataria o cron inteiro."""
+    assert podcast.pode_enviar("2026-09-01 10:00:00",
+                               agora=_dt.date(2026, 9, 10)) is True
+
+
+def test_todas_as_urls_tem_dominio_coerente_com_o_nome():
+    """Fonte cujo dominio nao bate com o nome e fonte que ninguem confere."""
+    esperado = {
+        "ge.globo": "ge.globo.com", "ESPN Brasil": "espn.com.br",
+        "Lance!": "lance.com.br", "IGN Brasil": "br.ign.com",
+        "The Enemy": "theenemy.com.br", "Adrenaline": "adrenaline.com.br",
+        "Canaltech IA": "canaltech.com.br", "Olhar Digital": "olhardigital.com.br",
+        "MIT Technology Review Brasil": "mittechreview.com.br",
+        "Vogue Brasil": "vogue.globo.com", "Elle Brasil": "elle.com.br",
+        "FFW": "ffw.uol.com.br",
+        "E-Commerce Brasil": "ecommercebrasil.com.br",
+        "Mercado&Consumo": "mercadoeconsumo.com.br",
+        "NeoFeed varejo": "neofeed.com.br",
+    }
+    vistos = 0
+    for dados in podcast.NICHOS.values():
+        for nome, url in dados["fontes"]:
+            assert nome in esperado, "fonte nova sem dominio conferido: %s" % nome
+            assert podcast._dominio(url) == esperado[nome], (nome, url)
+            vistos += 1
+    assert vistos == 15

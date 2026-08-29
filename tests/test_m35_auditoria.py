@@ -791,5 +791,51 @@ def test_corrigir_a_descricao_recalcula_a_antecedencia(usuario):
     db.atualizar_item(iid, descricao="renovar CNH")
     assert db.get_item(iid)["avisar_dias"] == "60,30", db.get_item(iid)
 
+    # O CAMINHO INVERSO NAO APAGA (auditoria M4.0). Sobrescrever com None
+    # apagava a antecedencia que veio da FOTO — o tipo detectado na imagem
+    # sabe coisas que o texto nao diz, e corrigir a descricao e justamente o
+    # que o bot OFERECE. Ganhar antecedencia por texto e bonus; perder a que
+    # ja existia e quebrar promessa.
     db.atualizar_item(iid, descricao="comprar pao")
+    assert db.get_item(iid)["avisar_dias"] == "60,30", db.get_item(iid)
+    # Pra tirar de verdade, o caminho e explicito.
+    db.atualizar_item(iid, avisar_dias="")
     assert db.get_item(iid)["avisar_dias"] is None, db.get_item(iid)
+
+
+def test_corrigir_a_descricao_nao_apaga_o_que_veio_da_foto(usuario):
+    """O bot OFERECE corrigir a descricao quando erra a leitura do OCR.
+
+    A pessoa aceitava a correcao e perdia calada o aviso de 60 dias da CNH e
+    o de 30 da nota fiscal, que sao os que a landing promete.
+    """
+    iid = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                      categoria="Casa", descricao="nota fiscal — Geladeira",
+                      data_vencimento="2027-03-12", status="pendente",
+                      avisar_dias="30")
+    db.atualizar_item(iid, descricao="geladeira nova da cozinha")
+    assert db.get_item(iid)["avisar_dias"] == "30", db.get_item(iid)
+
+
+@pytest.mark.parametrize("desc", [
+    "renovar CNH que eu paguei ano passado",
+    "CNH vence em marco, conta com isso",
+    "passaporte da Ana (comprar capinha)",
+    "CNH - levar no cartorio",
+])
+# NAO entra aqui: "buscar a CNH nova no Detran". O auditor listou como falso
+# negativo e eu discordo — essa frase e uma TAREFA num dia especifico ("ir
+# buscar"), nao a validade do documento. Avisar 60 dias antes de uma ida ao
+# Detran e o ruido que o veto existe pra evitar.
+def test_palavra_de_compra_NO_MEIO_da_frase_nao_veta(usuario, desc):
+    """O veto so vale no VERBO QUE ABRE a frase (auditoria M4.0).
+
+    A primeira versao procurava "pagar", "conta", "levar" em QUALQUER lugar
+    e vetava frase que gente escreve todo dia — a pessoa perdia o D-60 que a
+    landing promete. Falso negativo aqui e promessa quebrada, que e pior que
+    o ruido que o veto evita.
+    """
+    iid = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                      categoria="Outros", descricao=desc,
+                      data_vencimento="2027-03-12", status="pendente")
+    assert db.get_item(iid)["avisar_dias"] == "60,30", desc

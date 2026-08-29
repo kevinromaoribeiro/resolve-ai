@@ -84,7 +84,8 @@ NICHOS = {
         "emoji": "🤖",
         "fontes": (
             ("Canaltech IA", "https://canaltech.com.br/inteligencia-artificial/"),
-            ("Olhar Digital", "https://olhardigital.com.br/editorias/pro/"),
+            ("Olhar Digital",
+             "https://olhardigital.com.br/tag/inteligencia-artificial/"),
             ("MIT Technology Review Brasil", "https://mittechreview.com.br/"),
         ),
         "assuntos": ("ferramenta nova que dá pra usar hoje",
@@ -210,6 +211,13 @@ def briefing(nicho: Optional[str]) -> Optional[dict]:
     }
 
 
+def _dominio(url: str) -> str:
+    """"https://ge.globo.com/futebol/" -> "ge.globo.com"."""
+    t = re.sub(r"^https?://", "", (url or "").strip().lower())
+    t = re.sub(r"^www\.", "", t)
+    return t.split("/")[0]
+
+
 def _conta_palavras(texto: str) -> int:
     return len([p for p in re.split(r"\s+", (texto or "").strip()) if p])
 
@@ -235,7 +243,13 @@ def montar_roteiro(nicho: Optional[str], itens: Optional[list],
     if not k or not itens:
         return None
     d = NICHOS[k]
-    permitidas = {f[0].lower() for f in d["fontes"]}
+    # A FONTE PODE CHEGAR COMO NOME OU COMO URL (auditoria M4.0). Um scraper
+    # devolve "ge.globo.com" ou a URL inteira, não o rótulo bonito — e casar
+    # só por nome exato transformava isso em episódio vazio, em silêncio.
+    permitidas = set()
+    for _nome_f, _url_f in d["fontes"]:
+        permitidas.add(_nome_f.lower())
+        permitidas.add(_dominio(_url_f))
 
     bons = []
     for it in itens:
@@ -248,7 +262,7 @@ def montar_roteiro(nicho: Optional[str], itens: Optional[list],
         # FONTE FORA DA LISTA NÃO ENTRA. A lista existe pra que a pessoa possa
         # conferir; aceitar qualquer fonte devolveria o problema que ela
         # resolve.
-        if fonte.lower() not in permitidas:
+        if fonte.lower() not in permitidas and _dominio(fonte) not in permitidas:
             continue
         bons.append({"titulo": titulo,
                      "resumo": (it.get("resumo") or "").strip(),
@@ -258,6 +272,32 @@ def montar_roteiro(nicho: Optional[str], itens: Optional[list],
     if not bons:
         return None
 
+    roteiro = _montar(d, bons, nome)
+
+    # CORTE PELO FIM, NUNCA PELO MEIO. Passar do teto é quebrar a promessa dos
+    # três minutos; cortar uma notícia inteira mantém o áudio coerente, e
+    # cortar no meio de uma frase deixa o ouvinte no ar.
+    while _conta_palavras(roteiro) > PALAVRAS_TETO and len(bons) > 1:
+        bons.pop()
+        roteiro = _montar(d, bons, nome)
+
+    # COM UMA NOTÍCIA SÓ NÃO DÁ PRA CORTAR BLOCO — E O TETO CONTINUA VALENDO
+    # (auditoria M4.0). Sem isto, um resumo gigante virava um "áudio de três
+    # minutos" de onze horas: a promessa quebrada, e TTS é cobrado por
+    # minuto. Aqui o resumo encurta até caber, sempre terminando em frase
+    # fechada; se nem assim couber, fica só a manchete.
+    if _conta_palavras(roteiro) > PALAVRAS_TETO:
+        unico = dict(bons[0])
+        unico["resumo"] = _encurtar(unico["resumo"], PALAVRAS_TETO // 2)
+        roteiro = _montar(d, [unico], nome)
+        if _conta_palavras(roteiro) > PALAVRAS_TETO:
+            unico["resumo"] = ""
+            roteiro = _montar(d, [unico], nome)
+    return roteiro
+
+
+def _montar(d: dict, bons: list, nome: str) -> str:
+    """Monta o texto. Separado do corte pra que remontar não recurse."""
     primeiro = (nome or "").split()[0] if nome else ""
     saudacao = f"Oi, {primeiro}!" if primeiro else "Oi!"
     partes = [
@@ -277,16 +317,21 @@ def montar_roteiro(nicho: Optional[str], itens: Optional[list],
             citadas.append(it["fonte"])
     partes.append("Isso foi o que saiu em " + _lista(citadas) + ".")
     partes.append("Semana que vem eu te trago mais. Até lá!")
+    return "\n".join(partes).strip()
 
-    roteiro = "\n".join(partes).strip()
 
-    # CORTE PELO FIM, NUNCA PELO MEIO. Passar do teto é quebrar a promessa dos
-    # três minutos; cortar uma notícia inteira mantém o áudio coerente, e
-    # cortar no meio de uma frase deixa o ouvinte no ar.
-    while _conta_palavras(roteiro) > PALAVRAS_TETO and len(bons) > 1:
-        bons.pop()
-        return montar_roteiro(k, bons, nome)
-    return roteiro
+def _encurtar(texto: str, palavras: int) -> str:
+    """Corta o resumo terminando em FRASE FECHADA, nunca no meio.
+
+    Se nem a primeira frase couber, devolve vazio — manchete sozinha é um
+    áudio honesto; meia frase é o ouvinte no ar.
+    """
+    saida = []
+    for frase in re.split(r"(?<=[.!?])\s+", (texto or "").strip()):
+        if _conta_palavras(" ".join(saida + [frase])) > palavras:
+            break
+        saida.append(frase)
+    return " ".join(saida).strip()
 
 
 def _lista(nomes: list) -> str:
@@ -343,15 +388,45 @@ def pode_enviar(ultimo_envio_iso: Optional[str],
 
     Sem registro de envio, pode: é o primeiro episódio.
     """
+    from datetime import date as _date, datetime as _datetime
     if not ultimo_envio_iso:
         return True
     ref = agora or tempo.agora()
-    try:
-        texto = str(ultimo_envio_iso)[:19].replace("T", " ")
-        from datetime import datetime
-        ultimo = datetime.strptime(texto, "%Y-%m-%d %H:%M:%S")
-    except (ValueError, TypeError):
-        # Data ilegível conta como "acabou de enviar": o erro seguro aqui é
-        # mandar de menos.
-        return False
+    if isinstance(ref, _date) and not isinstance(ref, _datetime):
+        # `tempo.hoje()` devolve `date`, e subtrair `date` de `datetime`
+        # estoura TypeError FORA do try — o cron inteiro morreria por causa
+        # de um argumento (auditoria M4.0).
+        ref = _datetime(ref.year, ref.month, ref.day)
+
+    # ACEITA O QUE O BANCO REALMENTE DEVOLVE, não só a string do formato
+    # exato. Se um dia a coluna virar `datetime` (ou vier com timezone, ou
+    # com microssegundos), a versão anterior devolvia False pra sempre — e o
+    # podcast morria PERMANENTE E CALADO, que é o pior tipo de defeito
+    # porque ninguém vai procurar.
+    # `str()` DA CONTA DE TUDO: `datetime` vira "2026-09-01 10:00:00",
+    # `date` vira "2026-09-01", timezone e microssegundos saem no regex
+    # abaixo. Os ramos `isinstance` que estavam aqui eram codigo morto —
+    # nenhum teste conseguia distinguir a presenca deles, e ramo que teste
+    # nenhum alcanca e ramo que ninguem mantem (auditoria M4.0).
+    if True:
+        texto = str(ultimo_envio_iso).strip().replace("T", " ")
+        texto = re.sub(r"(\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?$", "", texto)[:19]
+        ultimo = None
+        for forma in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                ultimo = _datetime.strptime(texto, forma)
+                break
+            except ValueError:
+                continue
+        if ultimo is None:
+            # Data ilegível conta como "acabou de enviar": o erro seguro aqui
+            # é mandar de MENOS. Mas ela sai no log — silêncio permanente sem
+            # rastro é como uma feature morre sem ninguém perceber.
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[podcast] data de ultimo envio ilegivel: %r",
+                ultimo_envio_iso)
+            return False
+    if ultimo.tzinfo is not None:
+        ultimo = ultimo.replace(tzinfo=None)
     return (ref - ultimo) >= timedelta(days=DIAS_ENTRE_EPISODIOS)

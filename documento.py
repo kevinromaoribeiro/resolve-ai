@@ -333,13 +333,27 @@ _POR_DESCRICAO = (
 #
 # Na dúvida, política padrão: a véspera nunca é perdida (o `scheduler` faz
 # união, não substituição), então errar aqui só custa a antecedência extra.
+# SO QUANDO A PALAVRA DE COMPRA ABRE A FRASE (auditoria M4.0).
+#
+# A primeira versao procurava a palavra em QUALQUER lugar, e vetava frase
+# que gente escreve todo dia: "renovar CNH que eu paguei ano passado",
+# "CNH vence em marco, conta com isso", "passaporte da Ana (comprar
+# capinha)". Todas perdiam o D-60 que a landing promete — falso negativo e
+# promessa quebrada, que e pior que o ruido que o veto evita.
+#
+# O que decide se aquilo e uma compra ou um documento e o VERBO QUE GOVERNA
+# o item, e ele abre a frase: "comprar vacina pro gato", "pagar CNH parcela
+# 3", "curso de habilitacao", "conta da autoescola". No meio da frase a
+# mesma palavra so descreve contexto.
 _NAO_E_VALIDADE_RE = re.compile(
-    r"\b(comprar|compra|comprei|pagar|paguei|pago|boleto|conta|fatura|"
-    r"parcela|presta[çc][ãa]o|mensalidade|aula|aulas|curso|autoescola|"
-    r"auto\s+escola|pre[çc]o|custo|or[çc]amento|levar|buscar)\b"
-    # Preço colado na descrição também é sinal de compra: carteirinha de
-    # vacinação e CNH não vêm com valor escrito ao lado.
-    r"|R\$", re.I)
+    r"^\W*(comprar|compra|comprei|pagar|paguei|pago|quitar|boleto|conta|"
+    r"fatura|parcela|presta[çc][ãa]o|mensalidade|aula|aulas|curso|"
+    r"autoescola|auto\s+escola|pre[çc]o|custo|or[çc]amento|levar|buscar|"
+    r"marcar|agendar)\b", re.I)
+
+# Preco colado na descricao e sinal de compra em qualquer posicao:
+# carteirinha de vacinacao e CNH nao vem com valor escrito ao lado.
+_TEM_PRECO_RE = re.compile(r"R\$", re.I)
 
 
 def tipo_por_descricao(descricao: Optional[str]) -> Optional[str]:
@@ -347,7 +361,7 @@ def tipo_por_descricao(descricao: Optional[str]) -> Optional[str]:
     if not descricao:
         return None
     texto = str(descricao)
-    if _NAO_E_VALIDADE_RE.search(texto):
+    if _NAO_E_VALIDADE_RE.match(texto) or _TEM_PRECO_RE.search(texto):
         return None
     for tipo, marcas in _POR_DESCRICAO:
         if any(re.search(m, texto, re.I) for m in marcas):

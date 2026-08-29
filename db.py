@@ -2581,7 +2581,7 @@ def atualizar_item(item_id: int, **campos) -> bool:
     """Completa/corrige um item existente (valor, data, hora, descrição...).
     Usado quando a pessoa manda a informação em partes."""
     permitidos = {"descricao", "valor_reais", "data_vencimento", "hora_alvo",
-                  "recorrencia", "categoria", "status", "tipo"}
+                  "recorrencia", "categoria", "status", "tipo", "avisar_dias"}
     limpos = {k: v for k, v in campos.items()
               if k in permitidos and v is not None}
     if "status" in limpos and limpos["status"] not in VALID_STATUSES:
@@ -2601,10 +2601,20 @@ def atualizar_item(item_id: int, **campos) -> bool:
     # descrição é justamente o que o bot OFERECE quando erra a leitura.
     #
     # Só quando não veio explícito: quem passa `avisar_dias` manda.
-    if "descricao" in limpos and "avisar_dias" not in campos:
-        limpos["avisar_dias"] = _avisar_dias_final(None, limpos["descricao"])
-    elif campos.get("avisar_dias") is not None:
+    if campos.get("avisar_dias") is not None:
         limpos["avisar_dias"] = _avisar_dias_limpo(campos["avisar_dias"])
+    elif "descricao" in limpos:
+        # SO QUANDO A DERIVACAO ACHA ALGO (auditoria M4.0).
+        #
+        # Sobrescrever com None apagava a antecedencia que veio da FOTO — o
+        # tipo detectado na imagem sabe coisas que o texto nao diz, e o
+        # proprio bot e quem OFERECE corrigir a descricao. A pessoa aceitava
+        # a correcao e perdia calada o aviso de 60 dias da CNH e o de 30 da
+        # nota fiscal. Ganhar antecedencia por texto e um bonus; perder a
+        # que ja existia e quebrar promessa.
+        _novo = _avisar_dias_final(None, limpos["descricao"])
+        if _novo:
+            limpos["avisar_dias"] = _novo
     sets = ", ".join(f"{k}=?" for k in limpos)
     try:
         with get_conn() as conn:

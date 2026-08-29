@@ -53,7 +53,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v25.7-m40-auditoria-p0-corrigida-e-podcast-2026-08-29"
+BUILD = "v25.8-m41-pronto-pro-ar-2026-08-29"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -5806,6 +5806,13 @@ try:
             except Exception:
                 # O /health existe pra dizer o que esta mudo; se ELE
                 # emudecer, tem que sobrar rastro (auditoria M3.9, P2-7).
+                #
+                # `import logging` LOCAL (auditoria M4.0): o `wa_bot` nao tem
+                # `logging` no namespace do modulo, entao a versao anterior
+                # trocava um `except: pass` silencioso por um NameError que
+                # devolvia 500 PELADO — justo na ferramenta que a gente usa
+                # pra conferir se o deploy subiu.
+                import logging
                 logging.getLogger("resolveai").warning(
                     "[health] nao consegui ler os templates", exc_info=True)
                 body["templates"] = "nao consegui ler"
@@ -5866,9 +5873,16 @@ try:
             num = (key.get("remoteJid") or "").split("@")[0] or None
             msgobj = data.get("message", {}) if isinstance(data, dict) else {}
             kind, content = _classify_message(msgobj)
-            db.log_message(None, num, "in", kind, content)
+            # SCRUB TAMBEM NA ENTRADA (auditoria M4.0). A pessoa cola o
+            # codigo de volta pra perguntar alguma coisa, e a linha
+            # digitavel dela ficava em claro no msg_log — a frase "codigo de
+            # pagamento nao entra no log" tem que valer nas duas direcoes.
+            db.log_message(None, num, "in", kind,
+                           boleto.sem_codigo_de_pagamento(content))
         except Exception:
-            pass
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[webhook] falha ao logar entrada", exc_info=True)
 
         # Comando do dono para conferir se o canal de alerta está de pé.
         # Alerta que ninguém testou é alerta que você descobre que não
@@ -6148,6 +6162,7 @@ try:
                                "out" if ok else "out_falhou", "texto",
                                boleto.sem_codigo_de_pagamento(reply["text"]))
             except Exception:
+                import logging
                 logging.getLogger("resolveai").warning(
                     "[webhook] falha ao logar resposta", exc_info=True)
         return {"ok": True}
@@ -7073,6 +7088,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
                                "texto",
                                boleto.sem_codigo_de_pagamento(reply["text"]))
             except Exception:
+                import logging
                 logging.getLogger("resolveai").warning(
                     "[painel] falha ao logar resposta", exc_info=True)
             return JSONResponse({"ok": True, "enviado": bool(enviado),
