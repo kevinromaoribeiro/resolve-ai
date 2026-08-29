@@ -87,7 +87,7 @@ QUIET_START, QUIET_END = 21, 8   # silêncio 21h–8h (exceto alarme com hora)
 # envelheceria em silêncio, que é o defeito que ela existe pra evitar.
 KINDS_PROATIVOS = {
     "vencimento", "1-click-buy", "anti-churn", "trial-ending", "arquivado",
-    "vencido", "hora", "resumo", "winback", "gastos", "retorno", "podcast", "podcast-dia",
+    "vencido", "hora", "resumo", "winback", "gastos", "retorno", "podcast",
 } | {f"trial_d{n}" for n in range(1, 13)}
 
 
@@ -1077,7 +1077,7 @@ def run_proactive_engine(
     if _in_quiet_hours(now):
         # TODA CHECAGEM PRECISA DE VALOR NOS DOIS RAMOS (auditoria M4.2).
         #
-        # `podcast_conv`/`podcast_dia` nasceram so no `else`, e das 21h
+        # `podcast_conv` nasceu so no `else`, e das 21h
         # as 8h o `return` la embaixo estourava UnboundLocalError —
         # derrubando o CICLO INTEIRO, inclusive o alarme de hora
         # marcada, que e justamente o unico que fura o silencio. Onze
@@ -1088,7 +1088,7 @@ def run_proactive_engine(
         # Checagem nova entra NESTA tupla no mesmo commit em que nasce.
         due, churn, trial, guided, overdue, resumo, gastos, retorno = (
             [], [], [], [], [], [], [], [])
-        podcast_conv, podcast_dia = [], []
+        podcast_conv = []
     else:
         overdue = check_overdue(ref=ref_date) + check_winback()
         due = check_due_items(ref=ref_date)
@@ -1100,7 +1100,6 @@ def run_proactive_engine(
         # proativo — ele vai como resposta ao toque no botao, dentro da
         # conversa que a pessoa acabou de abrir.
         podcast_conv = check_podcast(ref=now)
-        podcast_dia = check_podcast_dia(ref=now)
         try:
             import trial_guiado
             guided = trial_guiado.run_trial_nudges()
@@ -1119,10 +1118,9 @@ def run_proactive_engine(
         "guided_dispatches": guided,
         "retorno_dispatches": retorno,
         "podcast_dispatches": podcast_conv,
-        "podcast_dia_dispatches": podcast_dia,
         "total": (len(alarms) + len(resumo) + len(overdue) + len(due)
                   + len(churn) + len(trial) + len(guided) + len(gastos)
-                  + len(retorno) + len(podcast_conv) + len(podcast_dia)),
+                  + len(retorno) + len(podcast_conv)),
     }
 
 
@@ -1206,33 +1204,16 @@ def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
                                    horas=_pod.HORAS_ATE_O_CONVITE):
         _junta(u, True)
 
-    # DIA DA SEMANA EM PORTUGUES, do jeito que a pessoa escolheu no botao.
-    dia = ("Segunda", "Terça", "Quarta", "Quinta", "Sexta",
-           "Sábado", "Domingo")[agora.weekday()]
-    for u in db.podcast_assinantes(dia=dia):
+    # PRIMEIRO DIA EM QUE ELA APARECER, nao um dia fixo (decisao do
+    # Kevin, 29/08/2026: "1x por semana pode ser, o importante e todo
+    # cliente ter" + "nao pode deixar de mandar").
+    #
+    # O dia fixo era incompativel com as duas coisas ao mesmo tempo: o
+    # convite so sai DENTRO da janela de 24h, entao quem nao mandasse
+    # mensagem naquela sexta perdia a semana inteira em silencio — e com
+    # uso episodico, isso era a maioria das semanas. Quem segura o ritmo
+    # agora e so o teto de 1x por semana, que continua duro.
+    for u in db.podcast_assinantes():
         _junta(u, False)
     return dispatches
 
-
-def check_podcast_dia(ref: Optional[datetime] = None) -> list[dict]:
-    """A pergunta do dia da semana, 10 min depois do primeiro episodio."""
-    import podcast as _pod
-
-    agora = ref or tempo.agora()
-    saida: list[dict] = []
-    for u in db.podcast_a_perguntar_o_dia(
-            ref=agora, minutos=_pod.MINUTOS_ATE_PERGUNTAR_O_DIA):
-        if not db.user_can_receive(u):
-            continue
-        # Uma vez por dia, o mesmo dedup de todo disparo (auditoria M4.3).
-        if db.dispatched_today("podcast-dia", u["id"]):
-            continue
-        p = _pod.pergunta_do_dia(nome=u.get("nome") or "")
-        saida.append({
-            "user_id": u["id"], "user_nome": u["nome"],
-            "telefone": u["telefone"], "item_id": None,
-            "kind": "podcast-dia", "message": p["texto"],
-            "botoes": p["botoes"],
-            "quando": _fmt_br(agora.date().isoformat()),
-        })
-    return saida

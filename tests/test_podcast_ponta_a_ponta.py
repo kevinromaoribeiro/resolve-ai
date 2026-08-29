@@ -249,67 +249,74 @@ def test_desligar_o_podcast_nao_mexe_nos_lembretes(usuario):
 
 
 # ---------------------------------------------------------------------------
-# 5. a pergunta do dia, 10 min depois
+# 5. UMA VEZ POR SEMANA, PRA TODO MUNDO — no primeiro dia em que ela aparecer
 # ---------------------------------------------------------------------------
+# Decisao do Kevin (29/08/2026): "1x por semana pode ser, o importante e todo
+# cliente ter" + "nao pode deixar de mandar". As duas juntas tornam o dia fixo
+# impossivel de cumprir: o convite so sai DENTRO da janela de 24h, entao quem
+# nao mandasse mensagem naquela sexta perdia a semana em silencio.
+#
+# A pergunta do dia saiu junto. Perguntar um dia que a gente nao honra e pior
+# que nao perguntar.
 
-def test_a_pergunta_do_dia_vem_depois_do_audio(usuario, horario_util):
-    _com_nicho(usuario)
-    db.podcast_marcar_envio(
-        usuario["id"], quando=tempo.agora() - _dt.timedelta(minutes=11))
-    d = scheduler.check_podcast_dia()
-    assert len(d) == 1 and d[0]["kind"] == "podcast-dia", d
-    assert d[0]["botoes"] == ["Segunda", "Sexta", "Domingo"]
-
-
-def test_logo_depois_do_audio_ainda_nao_pergunta(usuario, horario_util):
-    _com_nicho(usuario)
-    db.podcast_marcar_envio(usuario["id"])
-    assert not scheduler.check_podcast_dia()
-
-
-def test_nao_pergunta_duas_vezes(usuario, horario_util):
-    """Ela ouviu, nao quis assinar. Insistir e o caminho pro bloqueio."""
-    _com_nicho(usuario)
-    db.podcast_marcar_envio(
-        usuario["id"], quando=tempo.agora() - _dt.timedelta(minutes=11))
-    db.podcast_marcar_pergunta_do_dia(usuario["id"])
-    assert not scheduler.check_podcast_dia()
-
-
-def test_a_resposta_do_dia_vira_assinatura(usuario):
-    db.update_user_fields(usuario["id"], podcast_nicho="ia")
-    db.podcast_marcar_pergunta_do_dia(usuario["id"])
-    r = responder("Sexta")
-    assert db.get_user(usuario["id"])["podcast_dia"] == "Sexta"
-    assert "sexta" in r.lower(), r
-
-
-def test_dia_solto_sem_a_pergunta_pendente_nao_vira_assinatura(usuario):
-    """"segunda" numa frase qualquer nao pode virar assinatura de audio."""
-    db.update_user_fields(usuario["id"], podcast_nicho="ia")
-    responder("Segunda")
-    assert not db.get_user(usuario["id"])["podcast_dia"]
-
-
-def test_so_quem_escolheu_dia_entra_no_ciclo_semanal(usuario, horario_util,
-                                                     com_voz):
-    """Quem ouviu uma vez e nao pediu recorrencia nao vira assinante.
-
-    Transformar silencio em assinatura semanal de audio e o tipo de coisa
-    que faz a pessoa bloquear o numero.
-    """
+def test_o_episodio_semanal_alcanca_quem_ja_ouviu(usuario, horario_util,
+                                                  com_voz):
+    """Sem exigir dia escolhido: quem tem nicho e ja ouviu entra."""
     _com_nicho(usuario)
     db.podcast_marcar_envio(
         usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
     db.podcast_marcar_convite(usuario["id"])
-    assert not scheduler.check_podcast(), "convidou quem nao pediu semanal"
-
-    db.update_user_fields(usuario["id"], podcast_dia="Terça")
-    terca = _dt.datetime(2026, 8, 18, 10, 0, 0)      # a fixture congela terça
-    assert terca.weekday() == 1
-    assert scheduler.check_podcast(ref=terca), "assinante de terça nao recebeu"
+    d = scheduler.check_podcast()
+    assert len(d) == 1, ("quem ja ouviu ficou de fora: %r" % d)
 
 
+@pytest.mark.parametrize("dia", [0, 1, 2, 3, 4, 5, 6])
+def test_qualquer_dia_da_semana_serve(usuario, com_voz, monkeypatch, dia):
+    """O dia fixo era o que fazia a pessoa perder a semana inteira."""
+    base = _dt.datetime(2026, 8, 17, 10, 0, 0) + _dt.timedelta(days=dia)
+    monkeypatch.setattr(tempo, "agora", lambda: base)
+    monkeypatch.setattr(tempo, "hoje", lambda: base.date())
+    _com_nicho(usuario)
+    db.podcast_marcar_envio(
+        usuario["id"], quando=base - _dt.timedelta(days=8))
+    db.podcast_marcar_convite(usuario["id"])
+    assert scheduler.check_podcast(), ("nao alcancou no dia %d" % dia)
+
+
+def test_o_teto_de_uma_por_semana_continua_valendo(usuario, horario_util,
+                                                   com_voz):
+    """"Mais alcance" nao pode virar "mais ruido": e o teto que segura."""
+    _com_nicho(usuario)
+    db.podcast_marcar_convite(usuario["id"])
+    for dias, esperado in ((8, True), (6, False), (1, False)):
+        db.podcast_marcar_envio(
+            usuario["id"], quando=tempo.agora() - _dt.timedelta(days=dias))
+        assert bool(scheduler.check_podcast()) is esperado, dias
+
+
+def test_quem_nunca_ouviu_nao_entra_pelo_caminho_semanal(usuario,
+                                                         horario_util,
+                                                         com_voz):
+    """O caminho semanal e pra quem ja ouviu; quem nunca ouviu tem o convite
+    de primeira vez, que respeita as 6h do cadastro."""
+    _com_nicho(usuario, horas_atras=2)
+    assert not db.podcast_assinantes()
+    assert not scheduler.check_podcast()
+
+
+def test_o_fecho_do_episodio_diz_a_frequencia_e_a_saida(usuario, com_voz,
+                                                        com_noticia,
+                                                        monkeypatch):
+    """A pergunta do dia saiu; o combinado vai no fecho, sem gastar mensagem
+    nova. E a saida tem que estar visivel: sem ela, a unica saida da pessoa e
+    bloquear o numero."""
+    db.update_user_fields(usuario["id"], podcast_nicho="futebol")
+    monkeypatch.setattr(wa_bot.wasender, "falar_audio",
+                        lambda *a, **k: {"enviado": True, "via": "audio",
+                                         "motivo": ""}, raising=False)
+    r = responder("Quero ouvir")
+    assert "uma vez por semana" in r.lower(), r
+    assert "não quero mais" in r.lower(), r
 # ---------------------------------------------------------------------------
 # 6. guardrails
 # ---------------------------------------------------------------------------
@@ -337,7 +344,6 @@ def test_o_convite_nao_tem_template_e_isso_e_deliberado():
     marketing — e marketing neste numero e o que ja rendeu duas restricoes."""
     import templates as T
     assert "podcast" in T.KINDS_SEM_TEMPLATE
-    assert "podcast-dia" in T.KINDS_SEM_TEMPLATE
     assert "podcast" not in T.KIND_TEMPLATE
     assert "podcast" in scheduler.KINDS_PROATIVOS
 
@@ -411,34 +417,6 @@ def test_o_convite_nao_come_a_vaga_do_aviso_de_conta(usuario, horario_util,
     textos = " ".join(saiu)
     assert "IPTU" in textos, (
         "o aviso da conta nao saiu — o podcast comeu a cota do dia")
-
-
-def test_a_pergunta_do_dia_nao_se_repete_e_pode_ser_respondida(
-        usuario, horario_util, monkeypatch, limpo):
-    """A pessoa responde o botao que o BOT ofereceu.
-
-    Sem o carimbo, o handler nao reconhecia a resposta e ela virava um
-    lembrete fantasma chamado "Sexta" na lista dela.
-    """
-    _com_nicho(usuario)
-    db.podcast_marcar_envio(
-        usuario["id"], quando=tempo.agora() - _dt.timedelta(minutes=11))
-    saiu = _cron_pronto(monkeypatch, usuario)
-
-    wa_bot.dispatch_proactive()
-    assert db.get_user(usuario["id"])["podcast_dia_perguntado"], (
-        "perguntou e nao carimbou — a pergunta voltaria a cada ciclo")
-
-    wa_bot.dispatch_proactive()
-    quantas = len([t for t in saiu if "que dia" in t.lower()])
-    assert quantas == 1, ("perguntou %d vezes" % quantas)
-
-    antes = len(db.list_items(usuario["id"]))
-    r = responder("Sexta")
-    assert db.get_user(usuario["id"])["podcast_dia"] == "Sexta", r
-    assert len(db.list_items(usuario["id"])) == antes, (
-        "a resposta do botao virou item fantasma na lista")
-
 
 def test_dez_toques_nao_viram_dez_audios(usuario, com_voz, com_noticia,
                                          monkeypatch):
@@ -564,27 +542,3 @@ def test_o_convite_nao_promete_minutagem(usuario):
     c = podcast.convite("futebol", nome="Kevin")
     assert "3 minutos" not in c["texto"], c["texto"]
     assert "minuto" not in c["texto"].lower(), c["texto"]
-
-
-def test_carimbo_que_falhou_calado_nao_libera_a_pergunta_de_novo(
-        usuario, horario_util, monkeypatch):
-    """A protecao do carimbo agora ENGOLE a excecao — de proposito, pra nao
-    derrubar o ciclo. Mas engolir cria o buraco oposto: sem carimbo, a
-    pergunta voltaria a cada ciclo.
-
-    O `dispatched_today` e a segunda camada exatamente pra esse caso, e este
-    teste e o que prova que ela existe por um motivo.
-    """
-    _com_nicho(usuario)
-    db.podcast_marcar_envio(
-        usuario["id"], quando=tempo.agora() - _dt.timedelta(minutes=11))
-    saiu = _cron_pronto(monkeypatch, usuario)
-    # o carimbo "falha" em silencio, como faria com o banco travado
-    monkeypatch.setattr(db, "podcast_marcar_pergunta_do_dia",
-                        lambda *a, **k: None)
-
-    for _ in range(4):
-        wa_bot.dispatch_proactive()
-    perguntas = [t for t in saiu if "que dia" in t.lower()]
-    assert len(perguntas) == 1, (
-        "sem o carimbo, a pergunta voltou %d vezes" % len(perguntas))

@@ -418,7 +418,6 @@ KINDS_SEM_TEMPLATE = {
     # fora dela nao sai naquela semana — e isso e aceitavel, porque o
     # podcast e um extra, nao o que a pessoa contratou.
     "podcast",
-    "podcast-dia",
 } | {
     # nudges do trial guiado: são a coreografia dos primeiros dias, com texto
     # próprio em cada etapa (amostra, primeiro item, oferta do kit...).

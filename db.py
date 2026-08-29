@@ -2759,25 +2759,27 @@ def podcast_a_convidar(ref=None, horas: int = 6, limite: int = 20) -> list[dict]
     return [dict(r) for r in linhas]
 
 
-def podcast_assinantes(dia: Optional[str] = None,
-                       limite: int = 200) -> list[dict]:
-    """Quem ja ouviu pelo menos um e escolheu dia. Filtra pelo dia quando dado.
+def podcast_assinantes(limite: int = 200) -> list[dict]:
+    """Quem tem nicho e ja ouviu pelo menos um episodio.
 
-    Quem NAO escolheu dia nao entra: ela ouviu uma vez e nao pediu recorrencia,
-    e transformar silencio em assinatura semanal de audio e o tipo de coisa
-    que faz a pessoa bloquear o numero.
+    SEM DIA DA SEMANA (decisao do Kevin, 29/08/2026: "1x por semana pode
+    ser, o importante e todo cliente ter" + "nao pode deixar de mandar").
+    O dia fixo era incompativel com as duas coisas: o convite so sai DENTRO
+    da janela de 24h, entao quem nao mandasse mensagem naquela sexta perdia
+    a semana inteira em silencio — e com uso episodico, isso era a maioria
+    das semanas.
+
+    Agora o episodio sai no PRIMEIRO dia em que a pessoa estiver por perto,
+    respeitando o teto de 1x por semana. E o teto que garante que "mais
+    alcance" nao vire "mais ruido".
     """
-    sql = ["SELECT * FROM users WHERE podcast_nicho IS NOT NULL",
-           "AND TRIM(podcast_nicho) <> ''",
-           "AND podcast_dia IS NOT NULL AND TRIM(podcast_dia) <> ''"]
-    args: list = []
-    if dia:
-        sql.append("AND LOWER(podcast_dia) = LOWER(?)")
-        args.append(dia)
-    sql.append("ORDER BY id ASC LIMIT ?")
-    args.append(limite)
     with get_conn() as conn:
-        return [dict(r) for r in conn.execute(" ".join(sql), args).fetchall()]
+        return [dict(r) for r in conn.execute(
+            """SELECT * FROM users
+                WHERE podcast_nicho IS NOT NULL
+                  AND TRIM(podcast_nicho) <> ''
+                  AND podcast_ultimo IS NOT NULL
+                ORDER BY id ASC LIMIT ?""", (limite,)).fetchall()]
 
 
 def podcast_marcar_envio(user_id: int, quando=None) -> None:

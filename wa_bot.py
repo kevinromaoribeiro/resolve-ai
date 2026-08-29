@@ -744,6 +744,18 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 _lg.getLogger("resolveai").info(
                     "[podcast] nicho %r guardado pra user %s", _n, user["id"])
 
+    # --- amostra do dono: um episódio de cada nicho ----------------------
+    #
+    # Pedido do Kevin (29/08/2026): "me manda um áudio de cada categoria pra
+    # eu ver se tá bom". É o teste manual que decide se a voz e o roteiro
+    # prestam antes de isso chegar em cliente.
+    #
+    # SÓ DO NÚMERO DO DONO, e com frase própria: são cinco áudios seguidos,
+    # que é exatamente o padrão de ritmo que a gente evita com cliente.
+    if (ADMIN_PHONE and phone == ADMIN_PHONE
+            and _AMOSTRA_PODCAST_RE.match(text)):
+        return _amostra_de_podcast(user, phone)
+
     # --- MINI-PODCAST: as tres respostas do convite -----------------------
     #
     # O audio SO sai daqui, como resposta a um toque. Nunca proativo: audio de
@@ -767,20 +779,6 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
 
     if _PODCAST_QUERO_RE.match(text):
         return _mandar_podcast(user, phone)
-
-    # A resposta do dia da semana: so vale com a pergunta pendente, senao
-    # "segunda" numa frase qualquer viraria assinatura de audio.
-    if (user.get("podcast_nicho") and not user.get("podcast_dia")
-            and user.get("podcast_dia_perguntado")):
-        _dia = _DIA_DA_SEMANA_RE.match(text)
-        if _dia:
-            _nome_dia = _dia.group(1).capitalize()
-            db.update_user_fields(user["id"], podcast_dia=_nome_dia)
-            return (f"Fechado! 🎧 Toda *{_nome_dia.lower()}* eu te mando "
-                    f"o resumo de "
-                    f"*{podcast.rotulo(user.get('podcast_nicho')).lower()}*.\n\n"
-                    f"Pra parar quando quiser, é só dizer *não quero mais o "
-                    f"podcast*.")
 
     # --- "Copiar código": reenvia o código sozinho -------------------------
     #
@@ -1646,6 +1644,11 @@ _PODCAST_NAO_QUERO_RE = re.compile(
     r"cancela(r)?\s+o\s+(mini\s+)?podcast|"
     r"para(r)?\s+(o\s+)?podcast|sem\s+podcast)\s*[.!?]?\s*$", re.I)
 
+# Comando do dono pra ouvir uma amostra de cada nicho antes de soltar.
+_AMOSTRA_PODCAST_RE = re.compile(
+    r"^\s*(amostra\s+do\s+podcast|testar\s+o\s+podcast|"
+    r"podcast\s+de\s+teste)\s*[.!?]?\s*$", re.I)
+
 _DIA_DA_SEMANA_RE = re.compile(
     r"^\s*(segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo)"
     r"(\s*-?\s*feira)?\s*[.!?]?\s*$", re.I)
@@ -2432,6 +2435,58 @@ _PENDENCIAS_DE_CONVERSA = frozenset({
 })
 
 
+def _amostra_de_podcast(user: dict, phone: str) -> str:
+    """Um episódio de cada nicho, pro dono julgar antes de soltar.
+
+    Roda o caminho REAL — feed, roteiro, locução, voz, envio — cinco vezes.
+    Um dublê aqui não serviria pra nada: o que ele quer ouvir é o que o
+    cliente ouviria.
+
+    Não mexe em `podcast_ultimo` nem carimba nada: isto é inspeção, não
+    entrega. Se marcasse, o dono ficaria uma semana sem receber o episódio
+    dele por ter testado.
+    """
+    import noticias
+    import voz
+
+    if not voz.disponivel():
+        return ("Não tem provedor de voz configurado. 🎙️\n\n"
+                "Falta a chave da OpenAI (ou `VOZ_PROVEDOR`) no ambiente — "
+                "sem ela o podcast nem é oferecido pros clientes.")
+
+    linhas, ok = [], 0
+    for chave in podcast.NICHOS:
+        rotulo = podcast.rotulo(chave)
+        try:
+            itens = noticias.buscar(chave)
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[amostra] feed de %s falhou", chave, exc_info=True)
+            itens = []
+        roteiro = podcast.locucao(chave, itens, nome=user.get("nome") or "")
+        if not roteiro:
+            linhas.append(f"• {rotulo}: sem notícia da semana")
+            continue
+        audio = voz.sintetizar(roteiro)
+        if not audio:
+            linhas.append(f"• {rotulo}: a voz falhou")
+            continue
+        send_whatsapp(phone, f"🎧 *{rotulo}* — amostra")
+        res = wasender.falar_audio(phone, audio, user_id=user["id"])
+        if res.get("enviado"):
+            ok += 1
+            linhas.append(f"• {rotulo}: {podcast.duracao_estimada_s(roteiro)}s"
+                          f" · {len(roteiro.split())} palavras")
+        else:
+            linhas.append(f"• {rotulo}: não saiu ({res.get('motivo')})")
+
+    return (f"Amostra pronta: *{ok} de {len(podcast.NICHOS)}* nichos. 🎙️\n\n"
+            + "\n".join(linhas)
+            + "\n\n_Nada foi marcado como enviado — isso é inspeção, não "
+              "entrega._")
+
+
 def _mandar_podcast(user: dict, phone: str) -> str:
     """Gera e manda o episódio. Devolve o texto que fecha a conversa.
 
@@ -2512,9 +2567,21 @@ def _mandar_podcast(user: dict, phone: str) -> str:
     # de novo pelo caminho de "primeira vez".
     if not user.get("podcast_convite_em"):
         db.podcast_marcar_convite(user["id"])
+    # O COMBINADO VAI NO FECHO, sem gastar mensagem nova.
+    #
+    # Aqui era o lugar da pergunta "que dia você prefere?". Ela saiu quando o
+    # dia deixou de ser regra (o dia fixo fazia a pessoa perder a semana
+    # inteira se não abrisse o WhatsApp naquele dia). Perguntar um dia que a
+    # gente não honra é pior que não perguntar.
+    #
+    # O que sobrou é o que importa: a frequência e a saída. E vai de carona
+    # numa mensagem que já ia sair — a resposta ao toque é reativa, não gasta
+    # o teto proativo dela nem entra na razão de ritmo.
     return (f"Pronto! 🎧 Seu resumo de "
             f"*{podcast.rotulo(nicho).lower()}* está aí em cima.\n\n"
-            f"_Fontes: {', '.join(f[0] for f in podcast.fontes(nicho))}._")
+            f"_Fontes: {', '.join(f[0] for f in podcast.fontes(nicho))}._\n\n"
+            f"Mando um desses *uma vez por semana*. Pra parar, é só dizer "
+            f"_não quero mais o podcast_.")
 
 
 def _resgatar_pendencia(user: dict, phone: str) -> str:
@@ -5296,10 +5363,13 @@ PODERES = [
              "online — cada um com 3 fontes de RSS conferidas, citadas no "
              "fim do áudio. A notícia vem do feed, nunca da cabeça do "
              "modelo; se ele citar fonte de fora, o roteiro é recusado. "
-             "O bot NUNCA manda sozinho: pergunta \"quer ouvir?\" com botão, "
-             "manda só no toque, e 10 min depois pergunta que dia você "
-             "prefere. Sem novidade na semana, ele diz isso em vez de "
-             "inventar episódio. Custa ~US$ 0,03 por áudio."},
+             "O bot NUNCA manda sozinho: pergunta \"quer ouvir?\" com botão "
+             "e manda só no toque. Uma vez por semana, no primeiro dia em "
+             "que a pessoa aparecer — não num dia fixo, senão quem não "
+             "abre o WhatsApp naquele dia perde a semana. Sem novidade "
+             "na semana, ele diz isso em vez de inventar episódio. "
+             "Custa ~US$ 0,03 por áudio. Você testa com "
+             "_amostra do podcast_."},
     {"grupo": "Sai aviso", "titulo": "Arquivamento com aviso",
      "desc": "Item parado 15 dias sai da lista, mas só DEPOIS que o aviso "
              "comprovadamente saiu. Nunca some calado."},
