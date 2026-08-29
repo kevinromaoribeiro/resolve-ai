@@ -2592,6 +2592,19 @@ def atualizar_item(item_id: int, **campos) -> bool:
         limpos["categoria"] = "Outros"
     if not limpos:
         return False
+    # DESCRIÇÃO NOVA, ANTECEDÊNCIA NOVA (auditoria M3.9, P2-6).
+    #
+    # A derivação só rodava no `add_item`, então quem CORRIGIA a descrição
+    # ficava com a antecedência do texto antigo: "comprar pão" virado em
+    # "renovar CNH" não ganhava o D-60 (a promessa da landing), e o caminho
+    # inverso mantinha um D-60 que não fazia mais sentido. Corrigir a
+    # descrição é justamente o que o bot OFERECE quando erra a leitura.
+    #
+    # Só quando não veio explícito: quem passa `avisar_dias` manda.
+    if "descricao" in limpos and "avisar_dias" not in campos:
+        limpos["avisar_dias"] = _avisar_dias_final(None, limpos["descricao"])
+    elif campos.get("avisar_dias") is not None:
+        limpos["avisar_dias"] = _avisar_dias_limpo(campos["avisar_dias"])
     sets = ", ".join(f"{k}=?" for k in limpos)
     try:
         with get_conn() as conn:
@@ -2599,6 +2612,9 @@ def atualizar_item(item_id: int, **campos) -> bool:
                          (*limpos.values(), int(item_id)))
         return True
     except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[db] falha ao atualizar item %s", item_id, exc_info=True)
         return False
 
 

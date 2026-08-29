@@ -322,12 +322,33 @@ _POR_DESCRICAO = (
                 r"carteirinha\s+de\s+vacina")),
 )
 
+# COMPRA, AULA E PARCELA NÃO SÃO DOCUMENTO QUE VENCE (auditoria M3.9, P1-5).
+#
+# As palavras acima aparecem em coisas que não têm nada a ver com validade:
+# "comprar vacina pro gato" é uma compra, "curso de habilitação" é uma aula,
+# "pagar CNH parcela 3" é um boleto. Todos ganhavam D-60 ou D-7 e viravam
+# 3-4 mensagens em vez de 2 — o dobro de proativas por item, no número que já
+# foi restringido duas vezes. Aviso cedo demais é o ruído que faz a pessoa
+# silenciar o bot inteiro.
+#
+# Na dúvida, política padrão: a véspera nunca é perdida (o `scheduler` faz
+# união, não substituição), então errar aqui só custa a antecedência extra.
+_NAO_E_VALIDADE_RE = re.compile(
+    r"\b(comprar|compra|comprei|pagar|paguei|pago|boleto|conta|fatura|"
+    r"parcela|presta[çc][ãa]o|mensalidade|aula|aulas|curso|autoescola|"
+    r"auto\s+escola|pre[çc]o|custo|or[çc]amento|levar|buscar)\b"
+    # Preço colado na descrição também é sinal de compra: carteirinha de
+    # vacinação e CNH não vêm com valor escrito ao lado.
+    r"|R\$", re.I)
+
 
 def tipo_por_descricao(descricao: Optional[str]) -> Optional[str]:
     """"minha CNH vence em março" -> "documento". None quando não é claro."""
     if not descricao:
         return None
     texto = str(descricao)
+    if _NAO_E_VALIDADE_RE.search(texto):
+        return None
     for tipo, marcas in _POR_DESCRICAO:
         if any(re.search(m, texto, re.I) for m in marcas):
             return tipo

@@ -53,7 +53,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v25.6-m39-copiar-codigo-e-cnh-por-texto-2026-08-29"
+BUILD = "v25.7-m40-auditoria-p0-corrigida-e-podcast-2026-08-29"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -736,25 +736,55 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     # do banco aceita. Serve principalmente quando o lembrete já rolou pra
     # cima e procurar a mensagem do código dá trabalho.
     if _COPIAR_CODIGO_RE.match(text):
-        _item = db.item_com_codigo_mais_recente(user["id"])
+        # O ITEM É O DO ÚLTIMO LEMBRETE, não "o que vence primeiro"
+        # (auditoria M3.9, P1-3). O botão vai junto com UM lembrete
+        # específico, e com D-60/D-30 e IPVA em D-30 o aviso de hoje pode ser
+        # de um boleto que vence daqui a dois meses. Devolver o código de
+        # outro item é entregar o boleto errado pra quem está pagando agora.
+        _item = None
+        _lembrado = ULTIMO_COBRADO.get(phone)
+        if _lembrado:
+            _cand = db.get_item(_lembrado)
+            if (_cand and _cand.get("user_id") == user["id"]
+                    and _cand.get("status") == "pendente"
+                    and (_cand.get("codigo_pagamento") or "").strip()):
+                _item = _cand
         if not _item:
-            return ("Não tenho código de pagamento guardado agora. 🤔\n\n"
-                    "Me manda a foto ou o PDF do boleto que eu leio o código "
-                    "e te devolvo pronto pra colar.")
-        _cod = {"tipo": _item.get("codigo_tipo"),
-                "colavel": _item.get("codigo_pagamento")}
-        _nome = boleto.nome_do_codigo(_cod)
+            _item = db.item_com_codigo_mais_recente(user["id"])
+
+        _cod = ({"tipo": _item.get("codigo_tipo"),
+                 "colavel": _item.get("codigo_pagamento")} if _item else None)
         _so = boleto.mensagem_so_do_codigo(_cod)
         if not _so:
             return ("Não tenho código de pagamento guardado agora. 🤔\n\n"
-                    "Me manda a foto do boleto que eu leio pra você.")
-        # Duas mensagens: a explicação e o código puro. Juntas, o
-        # toque-e-copia levaria a explicação junto pro campo do banco.
-        send_whatsapp(phone,
-                      f"Aqui vai o *{_nome}* de *{_item['descricao']}* — "
-                      f"é só segurar na próxima mensagem e tocar em "
-                      f"*Copiar*. 👇")
-        return _so
+                    "Me manda a foto ou o PDF do boleto que eu leio o código "
+                    "e te devolvo pronto pra colar.")
+
+        # O CÓDIGO SAI POR AQUI, NÃO PELO `return` (auditoria M3.9, P0-2).
+        #
+        # O que o `_handle_commands` devolve ainda passa por pós-processadores
+        # que COLAM texto na resposta — a oferta de kit (que dispara pra quem
+        # tem 1 item, ou seja, justamente quem acabou de mandar o primeiro
+        # boleto) e o aviso de reconsentimento da base antiga. Qualquer um
+        # deles desfazia o motivo desta mensagem existir: a pessoa segurava,
+        # copiava, e colava "🧠 Esse foi o primeiro..." junto no campo do
+        # banco — e o banco recusa.
+        #
+        # Mandando daqui, o código vai puro. O `return` leva só o fecho, que
+        # pode ser decorado à vontade.
+        _nome = boleto.nome_do_codigo(_cod)
+        if not send_whatsapp(
+                phone, f"Aqui vai o *{_nome}* de *{_item['descricao']}* 👇"):
+            # EXPLICAÇÃO NÃO SAIU: o código também não vai (P1-4). Quarenta e
+            # quatro dígitos chegando sem uma palavra antes parece invasão,
+            # não serviço.
+            return ("Não consegui te mandar o código agora. 😕 Tenta de novo "
+                    "daqui a pouco.")
+        if not send_whatsapp(phone, _so):
+            return ("Mandei a mensagem mas o código não foi. 😕 Responde "
+                    "*copiar código* que eu tento de novo.")
+        return ("Pronto! 👆 É só segurar na mensagem do código e tocar em "
+                "*Copiar*.")
 
     # --- a pessoa está DIZENDO a data que o bot pediu -----------------------
     #
@@ -1530,13 +1560,30 @@ _COMECAR_RE = re.compile(
 # corta em 20 caracteres, e botão cortado no meio parece defeito.
 BOTAO_COPIAR = "Copiar código"
 
+# QUAL ITEM O ULTIMO LEMBRETE COBROU, por telefone (auditoria M3.9, P1-3).
+#
+# O botao do WhatsApp devolve so o TITULO, entao o clique nao diz de qual
+# lembrete veio. Sem esta memoria, "Copiar codigo" caia no "o que vence
+# primeiro" — e com IPVA em D-30 e documento em D-60 o lembrete de hoje pode
+# ser de um boleto de dois meses adiante. A pessoa pediria um e receberia
+# outro.
+#
+# Estado de processo, como o PENDING: some no restart, e ai o codigo volta a
+# ser o do proximo vencimento, que e um palpite razoavel.
+ULTIMO_COBRADO: dict[str, int] = {}
+
 # O clique no botão chega como TEXTO (`button_reply.title`), então quem
 # atende é a mesma regra que atende quem digita. Aceita as duas grafias e o
 # jeito que a pessoa escreveria sem o botão.
+# "me manda o codigo" e "codigo de barras" SAIRAM (auditoria M3.9, P2-8):
+# codigo pode ser de rastreio, de cupom, do portao, do medico — e responder
+# com a linha digitavel de um boleto pra quem perguntou outra coisa e o bot
+# mostrando que nao entendeu. Fica so o que e inequivoco: o titulo do botao,
+# suas variacoes diretas, e "copia e cola", que no Brasil so significa PIX.
 _COPIAR_CODIGO_RE = re.compile(
-    r"^\s*(copiar\s+c[óo]digo|copiar\s+o\s+c[óo]digo|"
-    r"me\s+manda\s+o\s+c[óo]digo|manda\s+o\s+c[óo]digo|"
-    r"c[óo]digo\s+de\s+barras|copia\s+e\s+cola)\s*[.!?]?\s*$", re.I)
+    r"^\s*(copiar\s+(o\s+)?c[óo]digo(\s+de\s+barras)?|"
+    r"copiar\s+pix|copia\s+e\s+cola(\s+do\s+pix)?)"
+    r"\s*[.!?]?\s*$", re.I)
 
 BOTOES_POR_KIND = {
     "vencimento": ["Paguei", "Adiar", "Ver tudo"],
@@ -5056,6 +5103,13 @@ PODERES = [
      "desc": "Horas depois de você dar baixa em unha, dentista ou "
              "sobrancelha, pergunta se já guarda o próximo — com a data "
              "calculada. Conta de luz não ganha essa pergunta."},
+    {"grupo": "Sai aviso", "titulo": "Mini podcast semanal (estrutura pronta)",
+     "desc": "Áudio de 3 minutos, um nicho por pessoa, no máximo 1x por "
+             "semana. Cinco nichos: futebol, games, IA, moda e varejo "
+             "online — cada um com 3 fontes fixas, citadas no fim do áudio. "
+             "O bot NUNCA manda sozinho: pergunta \"quer ouvir?\" com botão, "
+             "e 10 min depois pergunta que dia você prefere. Falta só a "
+             "geração de voz, que depende do seu teste."},
     {"grupo": "Sai aviso", "titulo": "Arquivamento com aviso",
      "desc": "Item parado 15 dias sai da lista, mas só DEPOIS que o aviso "
              "comprovadamente saiu. Nunca some calado."},
@@ -5578,6 +5632,11 @@ def dispatch_proactive() -> int:
                  ("OK via " + (res.get("via") or "?")) if ok
                  else f"NAO ENVIADO ({res.get('motivo')})")
         cabeca_ok[(d.get("user_id"), d.get("kind"))] = bool(ok)
+        # SO QUANDO O LEMBRETE SAIU: se ele nao chegou, nao existe botao
+        # esperando clique, e a memoria apontaria pra um item que a pessoa
+        # nao viu.
+        if ok and d.get("tem_codigo") and d.get("item_id"):
+            ULTIMO_COBRADO[number] = d["item_id"]
         # A OFERTA DE REMARCAR PRECISA DEIXAR CONTEXTO PRA RESPOSTA.
         #
         # Sem isto a feature nao funcionava de ponta a ponta: a pergunta saia,
@@ -5745,6 +5804,10 @@ try:
                         f"{k} -> {t}" for k, t in _faltando],
                 }
             except Exception:
+                # O /health existe pra dizer o que esta mudo; se ELE
+                # emudecer, tem que sobrar rastro (auditoria M3.9, P2-7).
+                logging.getLogger("resolveai").warning(
+                    "[health] nao consegui ler os templates", exc_info=True)
                 body["templates"] = "nao consegui ler"
         if wa in ("close", "closed", "disconnected", "removed"):
             from fastapi.responses import JSONResponse
@@ -6075,10 +6138,18 @@ try:
                               "Wasender — cheque credencial/rate limit)",
                               reply["number"], content)
             try:
-                db.log_message(None, reply["number"], "out" if ok else "out_falhou",
-                               "texto", reply["text"])
+                # O CODIGO DE PAGAMENTO NAO ENTRA NO LOG (auditoria M3.9,
+                # P0-1). O guardrail ja valia no caminho proativo; este
+                # commit criou o PRIMEIRO caminho em que um codigo de
+                # pagamento vira `reply["text"]` — e ele passava direto.
+                # A linha digitavel ficaria em claro no banco, no painel e
+                # em todo backup, sem a pessoa saber.
+                db.log_message(None, reply["number"],
+                               "out" if ok else "out_falhou", "texto",
+                               boleto.sem_codigo_de_pagamento(reply["text"]))
             except Exception:
-                pass
+                logging.getLogger("resolveai").warning(
+                    "[webhook] falha ao logar resposta", exc_info=True)
         return {"ok": True}
 
     @app.post("/cron/proactive")
@@ -6999,9 +7070,11 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
             try:
                 db.log_message(None, reply["number"],
                                "out" if enviado else "out_falhou",
-                               "texto", reply["text"])
+                               "texto",
+                               boleto.sem_codigo_de_pagamento(reply["text"]))
             except Exception:
-                pass
+                logging.getLogger("resolveai").warning(
+                    "[painel] falha ao logar resposta", exc_info=True)
             return JSONResponse({"ok": True, "enviado": bool(enviado),
                                  "resposta": reply["text"]})
         except Exception as e:

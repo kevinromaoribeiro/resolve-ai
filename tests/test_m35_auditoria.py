@@ -757,3 +757,39 @@ def test_cnh_digitada_avisa_mesmo_em_d60(usuario, horario_util):
     saidas = scheduler.check_due_items(ref=hoje)
     assert any("CNH" in d.get("message", "") for d in saidas), (
         "digitou em vez de fotografar e nao foi avisado: %r" % saidas)
+
+
+def test_compra_e_aula_nao_ganham_antecedencia_de_documento(usuario):
+    """P1-5 da auditoria M3.9.
+
+    "comprar vacina pro gato" e uma COMPRA, "curso de habilitacao" e uma
+    AULA, "pagar CNH parcela 3" e um BOLETO. Todos ganhavam D-60 ou D-7 e
+    viravam 3-4 mensagens em vez de 2 — o dobro de proativas por item, no
+    numero que ja foi restringido duas vezes.
+    """
+    for desc in ("comprar vacina pro gato", "levar o Rex pra vacina",
+                 "pagar a vacina da gripe", "curso de habilitacao",
+                 "aula de habilitacao segunda 14h", "pagar CNH parcela 3",
+                 "boleto da habilitacao do meu filho", "conta da autoescola"):
+        iid = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                          categoria="Outros", descricao=desc,
+                          data_vencimento="2027-03-12", status="pendente")
+        assert db.get_item(iid)["avisar_dias"] is None, desc
+
+
+def test_corrigir_a_descricao_recalcula_a_antecedencia(usuario):
+    """P2-6: corrigir a descricao e justamente o que o bot OFERECE.
+
+    Quem troca "comprar pao" por "renovar CNH" tem que ganhar o D-60 que a
+    landing promete; e quem faz o contrario nao pode ficar com um D-60 que
+    nao faz mais sentido.
+    """
+    iid = db.add_item(user_id=usuario["id"], tipo="lembrete",
+                      categoria="Outros", descricao="comprar pao",
+                      data_vencimento="2027-03-12", status="pendente")
+    assert db.get_item(iid)["avisar_dias"] is None
+    db.atualizar_item(iid, descricao="renovar CNH")
+    assert db.get_item(iid)["avisar_dias"] == "60,30", db.get_item(iid)
+
+    db.atualizar_item(iid, descricao="comprar pao")
+    assert db.get_item(iid)["avisar_dias"] is None, db.get_item(iid)

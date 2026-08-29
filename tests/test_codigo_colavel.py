@@ -16,6 +16,10 @@ import pytest
 
 import boleto
 import db
+from conftest import TELEFONE
+import itertools
+
+_SEQ = itertools.count(1)
 
 
 # linha digitavel de boleto bancario (47 digitos) e de concessionaria (48)
@@ -344,19 +348,108 @@ def test_item_sem_codigo_mantem_os_botoes_de_sempre(usuario, horario_util):
     assert "Ver tudo" in bts and wa_bot.BOTAO_COPIAR not in bts, bts
 
 
-def test_tocar_em_copiar_devolve_o_codigo_sozinho(usuario, limpo):
-    """A resposta do botao tem que ser COLAVEL, nao explicada.
+def _toque_no_botao(texto="Copiar código", telefone=None):
+    """Aperta o botao pelo /webhook INTEIRO, nao pelo `_handle_commands`.
 
-    Se o codigo vier junto com "aqui vai o codigo", o toque-e-segura leva a
-    frase pro campo do banco e o banco recusa.
+    A auditoria M3.9 provou por que isto importa: o teste anterior chamava a
+    funcao direto e ficava verde enquanto a PESSOA recebia o codigo com
+    "🧠 Esse foi o primeiro..." colado atras — os pos-processadores que colam
+    texto moram na ROTA, nao no handler. Teste que pula a rota nao vê nada
+    disso.
+    """
+    from fastapi.testclient import TestClient
+    import wa_bot
+    tel = telefone or TELEFONE
+    # Formato CRU da Wasender (o que a rota realmente recebe), nao o formato
+    # ja traduzido: passar o traduzido faria a rota devolver {"ignored": True}
+    # e o teste mediria nada.
+    payload = {"event": "messages.received",
+               "data": {"messages": {
+                   "key": {"remoteJid": f"{tel}@s.whatsapp.net",
+                           "fromMe": False,
+                           # id UNICO por chamada: o `_ja_processada` dedupa
+                           # por msg_id, e um id fixo fazia o segundo teste
+                           # do arquivo receber ZERO mensagem e "provar" o
+                           # contrario do que mede.
+                           "id": f"BTN{next(_SEQ)}"},
+                   "pushName": "Kevin",
+                   "message": {"conversation": texto}}}}
+    return TestClient(wa_bot.app).post("/webhook", json=payload)
+
+
+def test_tocar_em_copiar_manda_o_codigo_puro_pelo_webhook(usuario, limpo):
+    """A mensagem que chega na pessoa tem que ser COLAVEL.
+
+    Se vier com qualquer texto colado — oferta de kit, aviso de LGPD —, o
+    toque-e-segura leva aquilo junto pro campo do banco e o banco recusa. E
+    a oferta de kit dispara para quem tem UM item, que e exatamente quem
+    acabou de mandar o primeiro boleto.
+    """
+    _conta_com_codigo(usuario)
+    r = _toque_no_botao()
+    assert r.status_code == 200, r.text
+
+    textos = [t for _n, t in limpo]
+    assert LINHA_LUZ in textos, (
+        "nenhuma mensagem e SO o codigo: %r" % textos)
+    # e nenhuma mensagem pode carregar o codigo junto com outra coisa
+    sujas = [t for t in textos if LINHA_LUZ in t and t.strip() != LINHA_LUZ]
+    assert not sujas, ("o codigo saiu com texto colado: %r" % sujas)
+
+
+def test_o_codigo_nunca_entra_no_log(usuario, limpo, monkeypatch):
+    """Guardrail escrito: codigo de pagamento nao entra em log.
+
+    O teste FORCA uma resposta com codigo dentro, em vez de torcer pra que
+    nenhum caminho produza uma. Hoje o botao manda o codigo direto e nao
+    passa por `reply["text"]` — entao medir so o caminho feliz deixaria a
+    blindagem do log sem teste nenhum, e o proximo caminho que devolvesse um
+    codigo gravaria a linha digitavel em claro no banco, no painel e em todo
+    backup. Foi assim que o P0-1 nasceu.
+    """
+    import wa_bot
+    monkeypatch.setattr(
+        wa_bot, "_handle_commands",
+        lambda user, phone, text: "Segue: " + LINHA_LUZ)
+    _conta_com_codigo(usuario)
+    _toque_no_botao()
+    with db.get_conn() as c:
+        linhas = [r["preview"] or "" for r in
+                  c.execute("SELECT preview FROM msg_log").fetchall()]
+    vazou = [l for l in linhas if LINHA_LUZ in l]
+    assert not vazou, ("codigo de pagamento gravado no log: %r" % vazou)
+
+
+def test_a_explicacao_vem_antes_e_nomeia_o_item(usuario, limpo):
+    _conta_com_codigo(usuario)
+    _toque_no_botao()
+    textos = [t for _n, t in limpo]
+    idx_cod = textos.index(LINHA_LUZ)
+    antes = " ".join(textos[:idx_cod])
+    assert "conta de luz" in antes.lower(), textos
+    assert "barras" in antes.lower(), textos
+
+
+def test_se_a_explicacao_falhar_o_codigo_nao_sai_sozinho(usuario, monkeypatch):
+    """44 digitos sem uma palavra antes parecem invasao, nao servico.
+
+    Mede o que foi TENTADO enviar, nao o texto do retorno: com a explicacao
+    falhando, a versao anterior deste teste ficava verde mesmo quando o bot
+    seguia em frente e tentava mandar o codigo assim mesmo.
     """
     import wa_bot
     _conta_com_codigo(usuario)
+    tentou = []
+
+    def _falha(n, t):
+        tentou.append(t)
+        return False
+
+    monkeypatch.setattr(wa_bot, "send_whatsapp", _falha)
     r = wa_bot._handle_commands(usuario, usuario["telefone"], "Copiar código")
-    assert r == LINHA_LUZ, (
-        "a resposta do botao nao e o codigo puro: %r" % r)
-    # a explicacao vai numa mensagem separada, ANTES
-    assert any("Copiar" in t for _n, t in limpo), limpo
+    assert LINHA_LUZ not in tentou, (
+        "tentou mandar o codigo mesmo sem a explicacao ter saido: %r" % tentou)
+    assert r and LINHA_LUZ not in r, r
 
 
 def test_copiar_sem_codigo_guardado_nao_mente(usuario):
@@ -367,13 +460,50 @@ def test_copiar_sem_codigo_guardado_nao_mente(usuario):
     assert LINHA_LUZ not in (r or "")
 
 
-def test_copiar_pega_o_que_vence_primeiro(usuario):
-    """Quem pede o codigo esta pagando AGORA: e o que vence primeiro."""
+def test_copiar_pega_o_boleto_DO_LEMBRETE_e_nao_o_proximo(usuario, limpo):
+    """P1-3 da auditoria M3.9.
+
+    O botao vai junto com UM lembrete. Com IPVA em D-30 e documento em D-60,
+    o aviso de hoje pode ser de um boleto que vence daqui a dois meses —
+    devolver "o que vence primeiro" entrega o boleto errado pra quem esta
+    pagando agora.
+    """
+    import wa_bot
+    perto = _conta_com_codigo(usuario, colavel="1" * 44, dias=2)
+    longe = _conta_com_codigo(usuario, colavel="2" * 44, dias=40)
+    assert perto and longe
+    # o lembrete que saiu foi o do item que vence LONGE (D-30 de veiculo)
+    wa_bot.ULTIMO_COBRADO[usuario["telefone"]] = longe
+
+    _toque_no_botao(telefone=usuario["telefone"])
+    textos = [t for _n, t in limpo]
+    assert "2" * 44 in textos, (
+        "devolveu o codigo de outro boleto: %r" % textos)
+
+
+def test_sem_memoria_do_lembrete_cai_no_que_vence_primeiro(usuario, limpo):
+    """Se o processo reiniciou, o proximo vencimento e o palpite razoavel."""
     import wa_bot
     _conta_com_codigo(usuario, colavel="1" * 44, dias=20)
     _conta_com_codigo(usuario, colavel="2" * 44, dias=2)
-    r = wa_bot._handle_commands(usuario, usuario["telefone"], "Copiar código")
-    assert r == "2" * 44, r
+    wa_bot.ULTIMO_COBRADO.pop(usuario["telefone"], None)
+    _toque_no_botao(telefone=usuario["telefone"])
+    assert "2" * 44 in [t for _n, t in limpo]
+
+
+def test_memoria_nao_cruza_usuario(usuario, limpo):
+    """Item de outra pessoa NUNCA pode sair, nem com a memoria apontando."""
+    import wa_bot
+    outro = db.create_user(nome="Bruno", telefone="5511977776666")
+    alheio = db.add_item(user_id=outro, tipo="despesa", categoria="Contas",
+                         descricao="conta do Bruno", status="pendente",
+                         codigo_pagamento="9" * 44, codigo_tipo="boleto")
+    _conta_com_codigo(usuario, colavel="1" * 44, dias=3)
+    wa_bot.ULTIMO_COBRADO[usuario["telefone"]] = alheio
+    _toque_no_botao(telefone=usuario["telefone"])
+    textos = [t for _n, t in limpo]
+    assert "9" * 44 not in textos, ("vazou item de outro usuario: %r" % textos)
+    assert "1" * 44 in textos, textos
 
 
 def test_pix_tambem_sai_sozinho(usuario, horario_util):
