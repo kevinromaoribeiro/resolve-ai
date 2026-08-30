@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v27.2-m66-motivo-do-slot-2026-08-30"
+BUILD = "v27.3-m67-fila-destravada-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6220,7 +6220,24 @@ def dispatch_proactive() -> int:
                      "mensagem de produto neste ciclo",
                      _antes_cortesia - len(all_dispatches))
 
-    for d in all_dispatches[:DISPATCH_MAX_PER_CYCLE]:
+    # BLOQUEIO DE CABECA DE FILA (M6.7).
+    #
+    # Era `all_dispatches[:DISPATCH_MAX_PER_CYCLE]`: a fatia saia ANTES do
+    # laco, sempre os mesmos primeiros. Como o carimbo (`log_dispatch`) so
+    # acontece no SUCESSO, um disparo recusado volta identico no ciclo
+    # seguinte — e ocupa a mesma vaga, para sempre. Dois disparos travados na
+    # frente da fila param o motor proativo INTEIRO, em silencio: o /health
+    # mostrava 17 candidatos, enviados 0, nenhuma excecao e nenhum descarte.
+    #
+    # Agora o teto e de ENVIOS, nao de tentativas: quem falha cede o lugar
+    # pro proximo. O teto de tentativas existe pra que um ciclo nao vire uma
+    # varredura da fila inteira quando tudo esta falhando.
+    _tentativas = 0
+    _max_tentativas = max(DISPATCH_MAX_PER_CYCLE * 3, 6)
+    for d in all_dispatches:
+        if sent >= DISPATCH_MAX_PER_CYCLE or _tentativas >= _max_tentativas:
+            break
+        _tentativas += 1
         number = re.sub(r"\D", "", d["telefone"])
         if not number:
             log.warning("[cron] disparo sem número: %s", d.get("message", "")[:40])
@@ -6287,9 +6304,13 @@ def dispatch_proactive() -> int:
                              template=_tpl, variaveis=_vars,
                              botoes=_botoes_do_disparo(d))
         ok = res.get("enviado")
-        if not ok and (d.get("kind") or "") == "reativacao":
+        if not ok:
+            # QUALQUER kind, nao so a reativacao (M6.7). Foi justamente uma
+            # recusa de OUTRO kind que travou a fila inteira, e ela era
+            # invisivel porque este registro so olhava a reativacao.
             ULTIMA_RECUSA_REATIVACAO.clear()
             ULTIMA_RECUSA_REATIVACAO.update({
+                "kind": str(d.get("kind") or "?")[:24],
                 "motivo": str(res.get("motivo") or "sem motivo")[:60],
                 "quando": tempo.agora().strftime("%d/%m %H:%M")})
         log.info("[cron] envio p/ ...%s (%s): %s", number[-4:],
@@ -6407,6 +6428,7 @@ def dispatch_proactive() -> int:
                             exc_info=True)
     try:
         ULTIMO_CICLO["enviados"] = sent
+        ULTIMO_CICLO["tentativas"] = _tentativas
         if _pulados:
             ULTIMO_CICLO["pulados"] = dict(_pulados)
     except Exception:

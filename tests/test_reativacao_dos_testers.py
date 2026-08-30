@@ -552,3 +552,102 @@ def test_a_excecao_do_ciclo_aparece_no_health(usuario, monkeypatch):
                                                   str(e)[:120])
     assert "ValueError" in wa_bot.ULTIMO_CICLO["erro"]
     assert TELEFONE not in str(wa_bot.ULTIMO_CICLO)
+
+
+# ---------------------------------------------------------------------------
+# 9. bloqueio de cabeca de fila (M6.7) — o defeito de produto que a
+#    investigacao da reativacao acabou revelando
+# ---------------------------------------------------------------------------
+
+def test_disparo_recusado_nao_tranca_a_fila_pra_sempre(usuario, ligada,
+                                                       monkeypatch):
+    """O DEFEITO QUE PARAVA O MOTOR INTEIRO.
+
+    A fatia `all_dispatches[:DISPATCH_MAX_PER_CYCLE]` saia ANTES do laco, e
+    o carimbo so acontece no SUCESSO. Entao um disparo recusado voltava
+    identico no ciclo seguinte e ocupava a mesma vaga — para sempre. Dois
+    deles na frente da fila e NENHUMA proativa sai mais, em silencio.
+    """
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    monkeypatch.setattr(wa_bot, "DISPATCH_MAX_PER_CYCLE", 2)
+
+    enviados = []
+
+    def _falar(tel, txt, **kw):
+        # os dois primeiros SEMPRE falham, como em producao
+        if "travado" in (txt or ""):
+            return {"enviado": False, "via": None, "motivo": "seja_o_que_for"}
+        enviados.append(kw.get("template") or "livre")
+        return {"enviado": True, "via": "t", "motivo": ""}
+
+    monkeypatch.setattr(wa_bot.wasender, "falar", _falar)
+
+    def _d(kind, msg, uid=None):
+        return {"user_id": uid or usuario["id"], "user_nome": "Kevin",
+                "telefone": TELEFONE, "item_id": None, "kind": kind,
+                "message": msg, "quando": "31/08"}
+
+    # PESSOAS DIFERENTES, como em producao: os travados sao de outros, e a
+    # reativacao e de um tester. Com o mesmo user_id o filtro de cortesia
+    # removeria o convite e o teste mediria aquilo, nao o bloqueio de fila.
+    fria = db.create_user(nome="Fria", telefone="5511966660000")
+    db.update_user_fields(fria, status="trial", trial_base=None)
+    monkeypatch.setattr(
+        scheduler, "run_proactive_engine",
+        lambda **k: {"executed_at": "x", "total": 3,
+                     "due_dispatches": [_d("vencimento", "travado 1"),
+                                        _d("vencimento", "travado 2")],
+                     "reativacao_dispatches": [
+                         dict(_d("reativacao", "oi, volta"), user_id=fria,
+                              telefone="5511966660000", user_nome="Fria")]})
+    db.log_message(None, TELEFONE, "in", "texto", "oi")
+
+    try:
+        wa_bot.dispatch_proactive()
+    finally:
+        db.delete_user(fria)
+    assert enviados, ("dois recusados na frente travaram a fila inteira: "
+                      "%s" % wa_bot.ULTIMO_CICLO)
+
+
+def test_o_ciclo_nao_varre_a_fila_inteira_quando_tudo_falha(usuario, ligada,
+                                                            monkeypatch):
+    """O teto de tentativas: ceder o lugar nao pode virar varredura."""
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    monkeypatch.setattr(wa_bot, "DISPATCH_MAX_PER_CYCLE", 2)
+    monkeypatch.setattr(
+        wa_bot.wasender, "falar",
+        lambda tel, txt, **kw: {"enviado": False, "via": None, "motivo": "x"})
+    muitos = [{"user_id": usuario["id"], "user_nome": "Kevin",
+               "telefone": TELEFONE, "item_id": None, "kind": "vencimento",
+               "message": "m%d" % i, "quando": "31/08"} for i in range(40)]
+    monkeypatch.setattr(scheduler, "run_proactive_engine",
+                        lambda **k: {"executed_at": "x", "total": 40,
+                                     "due_dispatches": muitos})
+    db.log_message(None, TELEFONE, "in", "texto", "oi")
+    wa_bot.dispatch_proactive()
+    assert wa_bot.ULTIMO_CICLO["tentativas"] <= 6, wa_bot.ULTIMO_CICLO
+
+
+def test_a_recusa_de_qualquer_kind_fica_visivel(usuario, ligada, monkeypatch):
+    """Foi uma recusa de OUTRO kind que travou a fila — e ela era invisivel
+    porque o registro so olhava a reativacao."""
+    wa_bot.ULTIMA_RECUSA_REATIVACAO.clear()
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    monkeypatch.setattr(
+        wa_bot.wasender, "falar",
+        lambda tel, txt, **kw: {"enviado": False, "via": None,
+                                "motivo": "fora_da_janela"})
+    d = {"user_id": usuario["id"], "user_nome": "Kevin", "telefone": TELEFONE,
+         "item_id": None, "kind": "vencimento", "message": "oi",
+         "quando": "31/08"}
+    monkeypatch.setattr(scheduler, "run_proactive_engine",
+                        lambda **k: {"executed_at": "x", "total": 1,
+                                     "due_dispatches": [d]})
+    db.log_message(None, TELEFONE, "in", "texto", "oi")
+    wa_bot.dispatch_proactive()
+    assert wa_bot.ULTIMA_RECUSA_REATIVACAO.get("kind") == "vencimento"
+    assert wa_bot.ULTIMA_RECUSA_REATIVACAO.get("motivo") == "fora_da_janela"
