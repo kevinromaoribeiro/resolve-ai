@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v26.8-m62-cortesia-depois-da-poda-2026-08-30"
+BUILD = "v26.9-m63-motivo-da-recusa-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -126,6 +126,15 @@ _SEM_CONFIRM = object()
 # phone -> (user_id, n_itens_antes, [demandas]). Conferido no webhook depois
 # que a resposta saiu: as demandas guardadas viraram item MESMO?
 CONFERIR_FILA: dict = {}
+
+# POR QUE A REATIVACAO NAO SAIU (M6.3).
+#
+# O `canal.falar` devolve `motivo` em toda recusa, e isso ia so pro log — que
+# so se le com acesso a VPS. Sem isso aqui, a unica saida era adivinhar, e
+# adivinhar em cima de mensagem que vai pra gente de verdade e o jeito errado.
+#
+# SO A STRING DO MOTIVO E A HORA. Nenhum telefone, nome ou id.
+ULTIMA_RECUSA_REATIVACAO: dict = {}
 
 # ---------------------------------------------------------------------------
 # M1.3 — KITS DE ROTINA
@@ -6250,6 +6259,11 @@ def dispatch_proactive() -> int:
                              template=_tpl, variaveis=_vars,
                              botoes=_botoes_do_disparo(d))
         ok = res.get("enviado")
+        if not ok and (d.get("kind") or "") == "reativacao":
+            ULTIMA_RECUSA_REATIVACAO.clear()
+            ULTIMA_RECUSA_REATIVACAO.update({
+                "motivo": str(res.get("motivo") or "sem motivo")[:60],
+                "quando": tempo.agora().strftime("%d/%m %H:%M")})
         log.info("[cron] envio p/ ...%s (%s): %s", number[-4:],
                  d.get("kind", "?"),
                  ("OK via " + (res.get("via") or "?")) if ok
@@ -6456,7 +6470,10 @@ try:
                 # token do painel, que e segredo. O `/health` e publico, e
                 # este bloco e estritamente menos sensivel do que o
                 # `usuario_mais_notificado` que ja estava aqui.
-                "reativacao": scheduler.reativacao_diagnostico(),
+                "reativacao": dict(scheduler.reativacao_diagnostico(),
+                                   **({"ultima_recusa":
+                                       ULTIMA_RECUSA_REATIVACAO}
+                                      if ULTIMA_RECUSA_REATIVACAO else {})),
                 "painel": "protegido" if PAINEL_TOKEN else "SEM TOKEN",
                 "alerta_dono": "armado" if ADMIN_PHONE else "SEM ADMIN_PHONE"}
         # o diagnóstico do v8 carrega trecho de mensagem de usuário —

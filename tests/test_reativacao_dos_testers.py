@@ -463,3 +463,45 @@ def test_disparo_que_nao_vai_sair_nao_toma_a_vez_da_reativacao(usuario,
     wa_bot.dispatch_proactive()
     assert "reativar_boas_vindas" in enviados, (
         "o disparo descartado tomou a vez da reativacao: %s" % enviados)
+
+
+def test_a_recusa_do_envio_aparece_no_diagnostico(usuario, ligada,
+                                                  monkeypatch):
+    """Sem isto, a unica saida era adivinhar — e eu adivinhei errado duas
+    vezes seguidas em cima de mensagem que vai pra gente de verdade."""
+    wa_bot.ULTIMA_RECUSA_REATIVACAO.clear()
+    monkeypatch.setattr(
+        wa_bot.wasender, "falar",
+        lambda tel, txt, **kw: {"enviado": False, "via": "",
+                                "motivo": "template_nao_aprovado"})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    d = {"user_id": usuario["id"], "user_nome": "Kevin",
+         "telefone": TELEFONE, "item_id": None, "kind": "reativacao",
+         "message": "oi, volta", "quando": "31/08"}
+    monkeypatch.setattr(scheduler, "run_proactive_engine",
+                        lambda **k: {"executed_at": "x", "total": 1,
+                                     "reativacao_dispatches": [d]})
+    wa_bot.dispatch_proactive()
+    assert wa_bot.ULTIMA_RECUSA_REATIVACAO.get("motivo") == \
+        "template_nao_aprovado", wa_bot.ULTIMA_RECUSA_REATIVACAO
+
+
+def test_a_recusa_registrada_nao_leva_dado_pessoal(usuario, ligada,
+                                                   monkeypatch):
+    """O `/health` e publico."""
+    wa_bot.ULTIMA_RECUSA_REATIVACAO.clear()
+    monkeypatch.setattr(
+        wa_bot.wasender, "falar",
+        lambda tel, txt, **kw: {"enviado": False, "motivo": "x", "via": ""})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    d = {"user_id": usuario["id"], "user_nome": "Kevin",
+         "telefone": TELEFONE, "item_id": None, "kind": "reativacao",
+         "message": "oi", "quando": "31/08"}
+    monkeypatch.setattr(scheduler, "run_proactive_engine",
+                        lambda **k: {"executed_at": "x", "total": 1,
+                                     "reativacao_dispatches": [d]})
+    wa_bot.dispatch_proactive()
+    texto = str(wa_bot.ULTIMA_RECUSA_REATIVACAO)
+    assert TELEFONE not in texto and "Kevin" not in texto, texto
