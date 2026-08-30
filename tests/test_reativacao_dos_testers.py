@@ -297,12 +297,28 @@ def test_a_ordem_se_esgota_e_para_de_varrer_a_base(usuario, ligada,
     assert not tocou, "varreu a base com a ordem ja cumprida"
 
 
-def test_a_cortesia_espera_um_dia_depois_de_outra_proativa(usuario, ligada):
-    """Reativacao e pra quem ESFRIOU. Quem recebeu lembrete hoje nao
-    esfriou — e duas vibracoes do mesmo numero e o que a Meta pune."""
-    assert _ate_achar(usuario["id"], ciclos=1) or True   # so pra aquecer
+def test_a_cortesia_espera_algumas_horas_depois_de_outra_proativa(usuario,
+                                                                  ligada):
+    """Reativacao e pra quem ESFRIOU. Quem acabou de receber um lembrete nao
+    esfriou — e duas vibracoes coladas e o que a Meta pune."""
     db.log_dispatch(usuario["id"], "vencimento")
     assert _ate_achar(usuario["id"]) is None
+
+
+def test_ceder_a_vez_nao_pode_virar_inanicao(usuario, ligada, monkeypatch):
+    """MEDIDO EM PRODUCAO (M6.8).
+
+    A primeira versao cedia a vez pelo DIA inteiro. Todo tester recebia um
+    lembrete, entrava em "adiado", e a ordem nunca executava — com lembrete
+    todo dia, nunca executaria. Isso nao e ceder a vez, e inanicao.
+    """
+    db.log_dispatch(usuario["id"], "vencimento")
+    assert _ate_achar(usuario["id"]) is None
+
+    depois = tempo.agora() + _dt.timedelta(hours=5)
+    monkeypatch.setattr(tempo, "agora", lambda a=depois: a)
+    monkeypatch.setattr(tempo, "hoje", lambda a=depois: a.date())
+    assert _ate_achar(usuario["id"]), "a ordem morreu de fome na fila"
 
 
 def test_o_convite_nunca_toma_a_vaga_do_lembrete(usuario, ligada,

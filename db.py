@@ -1039,20 +1039,28 @@ def dispatched_within(kind: str, user_id: int, days: int) -> bool:
         ).fetchone() is not None
 
 
-def teve_proativa_hoje(user_id: int) -> bool:
-    """Esta pessoa ja recebeu alguma mensagem que o bot iniciou hoje?
+def teve_proativa_hoje(user_id: int, horas: int = 4) -> bool:
+    """Esta pessoa recebeu alguma mensagem que o bot iniciou nas ultimas N h?
 
     Serve pra uma coisa so: mensagem de cortesia cede a vez pra mensagem de
-    produto. Na duvida devolve True — o erro seguro e adiar a cortesia, nunca
-    empilhar duas vibracoes no mesmo numero.
+    produto, pra as duas nao chegarem coladas. Na duvida devolve True — o
+    erro seguro e adiar a cortesia, nunca empilhar duas vibracoes no mesmo
+    numero.
+
+    JANELA DE HORAS, NAO O DIA (M6.8). A primeira versao olhava o dia
+    inteiro, e isso nao e ceder a vez: e inanicao. Medido em producao — todo
+    tester recebia um lembrete, entrava em "adiado" e a ordem de reativacao
+    nunca executava; com lembrete todo dia, nunca executaria. Quatro horas
+    separam as duas mensagens sem deixar a segunda morrer na fila.
     """
     import logging   # LOCAL: `db.py` nao importa logging no topo.
     try:
         with get_conn() as conn:
+            corte = (tempo.agora() - timedelta(hours=max(1, horas))
+                     ).strftime("%Y-%m-%d %H:%M:%S")
             r = conn.execute(
-                "SELECT 1 FROM dispatches WHERE user_id=? "
-                "AND substr(sent_at,1,10)=? LIMIT 1",
-                (user_id, tempo.hoje().isoformat())).fetchone()
+                "SELECT 1 FROM dispatches WHERE user_id=? AND sent_at>=? "
+                "LIMIT 1", (user_id, corte)).fetchone()
         return r is not None
     except Exception:
         logging.getLogger("resolveai").warning(
