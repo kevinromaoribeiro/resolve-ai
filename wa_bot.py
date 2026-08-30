@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v26.9-m63-motivo-da-recusa-2026-08-30"
+BUILD = "v27.0-m64-ciclo-e-allowlist-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -135,6 +135,16 @@ CONFERIR_FILA: dict = {}
 #
 # SO A STRING DO MOTIVO E A HORA. Nenhum telefone, nome ou id.
 ULTIMA_RECUSA_REATIVACAO: dict = {}
+
+# O MOTOR PROATIVO ESTA VIVO? (M6.4)
+#
+# A pergunta anterior a todas as outras. Sem ela eu investiguei duas
+# hipoteses erradas sobre POR QUE a fila nao andava, quando a possibilidade
+# de o ciclo nem estar rodando nunca foi descartada — e a unica prova disso
+# era um log que exige acesso a VPS.
+#
+# So contagens e hora.
+ULTIMO_CICLO: dict = {}
 
 # ---------------------------------------------------------------------------
 # M1.3 — KITS DE ROTINA
@@ -6120,6 +6130,12 @@ def dispatch_proactive() -> int:
     n_resumo = len(result.get("resumo_dispatches", []))
     log.info("[cron] motor rodou: %d alarme(s) de hora, %d resumo(s), "
              "%d total pra enviar", n_alarm, n_resumo, len(all_dispatches))
+    ULTIMO_CICLO.clear()
+    ULTIMO_CICLO.update({
+        "quando": tempo.agora().strftime("%d/%m %H:%M:%S"),
+        "candidatos": len(all_dispatches),
+        "reativacao": sum(1 for _d in all_dispatches
+                          if (_d.get("kind") or "") == "reativacao")})
     import random
     import time
     primeiro = True
@@ -6377,6 +6393,10 @@ def dispatch_proactive() -> int:
             except Exception:
                 log.warning("[cron] falha ao registrar a nao-entrega",
                             exc_info=True)
+    try:
+        ULTIMO_CICLO["enviados"] = sent
+    except Exception:
+        pass          # diagnostico nunca derruba o ciclo de verdade
     return sent
 
 
@@ -6474,6 +6494,16 @@ try:
                                    **({"ultima_recusa":
                                        ULTIMA_RECUSA_REATIVACAO}
                                       if ULTIMA_RECUSA_REATIVACAO else {})),
+                "ciclo": dict(ULTIMO_CICLO) or "AINDA NAO RODOU",
+                # O NOME DO TEMPLATE NAO E SEGREDO (M6.4). `TEMPLATES_APROVADOS`
+                # e uma allowlist fail-closed: se o nome nao estiver la, o
+                # `canal` recusa o envio e a fila fica parada pra sempre, sem
+                # nada visivel de fora. Isto responde "ja posso mandar?" sem
+                # precisar abrir o EasyPanel.
+                "template_reativacao_liberado":
+                    "reativar_boas_vindas" in (
+                        (os.environ.get("TEMPLATES_APROVADOS", "") or "")
+                        .replace(" ", "").split(",")),
                 "painel": "protegido" if PAINEL_TOKEN else "SEM TOKEN",
                 "alerta_dono": "armado" if ADMIN_PHONE else "SEM ADMIN_PHONE"}
         # o diagnóstico do v8 carrega trecho de mensagem de usuário —

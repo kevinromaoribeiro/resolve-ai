@@ -505,3 +505,35 @@ def test_a_recusa_registrada_nao_leva_dado_pessoal(usuario, ligada,
     wa_bot.dispatch_proactive()
     texto = str(wa_bot.ULTIMA_RECUSA_REATIVACAO)
     assert TELEFONE not in texto and "Kevin" not in texto, texto
+
+
+def test_o_health_diz_se_o_template_esta_liberado(usuario, monkeypatch):
+    """`TEMPLATES_APROVADOS` e allowlist fail-closed: sem o nome la, o canal
+    recusa e a fila fica parada pra sempre, sem nada visivel de fora. Foi
+    exatamente o que aconteceu em producao em 30/08."""
+    from fastapi.testclient import TestClient
+    c = TestClient(wa_bot.app)
+
+    monkeypatch.setenv("TEMPLATES_APROVADOS", "outro_qualquer")
+    assert c.get("/health").json()["template_reativacao_liberado"] is False
+
+    monkeypatch.setenv("TEMPLATES_APROVADOS",
+                       "outro_qualquer, reativar_boas_vindas")
+    assert c.get("/health").json()["template_reativacao_liberado"] is True
+
+
+def test_o_ciclo_proativo_aparece_no_health(usuario, ligada, monkeypatch):
+    """A pergunta anterior a todas: o motor esta rodando? Sem isto eu
+    investiguei duas hipoteses erradas sem nunca descartar a possibilidade
+    de o ciclo nem estar acontecendo."""
+    from fastapi.testclient import TestClient
+    wa_bot.ULTIMO_CICLO.clear()
+    c = TestClient(wa_bot.app)
+    assert c.get("/health").json()["ciclo"] == "AINDA NAO RODOU"
+
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    wa_bot.dispatch_proactive()
+    ciclo = c.get("/health").json()["ciclo"]
+    assert "quando" in ciclo and "candidatos" in ciclo, ciclo
+    assert isinstance(ciclo.get("enviados"), int), ciclo
