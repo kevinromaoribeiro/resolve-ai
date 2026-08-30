@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v27.1-m65-excecao-visivel-2026-08-30"
+BUILD = "v27.2-m66-motivo-do-slot-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6130,6 +6130,13 @@ def dispatch_proactive() -> int:
     n_resumo = len(result.get("resumo_dispatches", []))
     log.info("[cron] motor rodou: %d alarme(s) de hora, %d resumo(s), "
              "%d total pra enviar", n_alarm, n_resumo, len(all_dispatches))
+    # POR QUE OS SLOTS DO CICLO FORAM GASTOS SEM ENVIAR NADA (M6.6).
+    #
+    # O teto e `DISPATCH_MAX_PER_CYCLE` e a fatia e tirada ANTES do laco:
+    # todo `continue` la dentro queima uma vaga sem mandar mensagem. Com
+    # `enviados: 0` e nenhum erro, esta era a unica pergunta que restava —
+    # e ela nao tinha resposta visivel de fora.
+    _pulados: dict = {}
     ULTIMO_CICLO.clear()
     ULTIMO_CICLO.update({
         "quando": tempo.agora().strftime("%d/%m %H:%M:%S"),
@@ -6217,6 +6224,7 @@ def dispatch_proactive() -> int:
         number = re.sub(r"\D", "", d["telefone"])
         if not number:
             log.warning("[cron] disparo sem número: %s", d.get("message", "")[:40])
+            _pulados["sem_numero"] = _pulados.get("sem_numero", 0) + 1
             continue
         # Disparo SEM texto é só registro de dedup (vários itens vencidos
         # agrupados numa mensagem só: um carrega o texto, os irmãos carregam
@@ -6233,12 +6241,15 @@ def dispatch_proactive() -> int:
                 log.info("[cron] grupo %s do user %s nao saiu — irmao %s "
                          "NAO marcado (volta no proximo ciclo)",
                          d.get("kind"), d.get("user_id"), d.get("item_id"))
+                _pulados["irmao_sem_cabeca"] = _pulados.get(
+                    "irmao_sem_cabeca", 0) + 1
                 continue
             try:
                 db.log_dispatch(d["user_id"], d.get("kind", "outro"),
                                 d.get("item_id"))
             except Exception:
                 log.warning("[cron] falhei ao registrar dedup", exc_info=True)
+            _pulados["so_dedup"] = _pulados.get("so_dedup", 0) + 1
             continue
 
         # FREIO 3: teto diário por usuário.
@@ -6248,6 +6259,7 @@ def dispatch_proactive() -> int:
         if _proativas_hoje(d["user_id"]) >= MAX_PROATIVAS_POR_USUARIO_DIA:
             log.info("[cron] teto diário atingido p/ user %s — adiado",
                      d["user_id"])
+            _pulados["teto_diario"] = _pulados.get("teto_diario", 0) + 1
             continue
 
         # FREIO 2: espaçamento com variação.
@@ -6395,6 +6407,8 @@ def dispatch_proactive() -> int:
                             exc_info=True)
     try:
         ULTIMO_CICLO["enviados"] = sent
+        if _pulados:
+            ULTIMO_CICLO["pulados"] = dict(_pulados)
     except Exception:
         pass          # diagnostico nunca derruba o ciclo de verdade
     return sent
