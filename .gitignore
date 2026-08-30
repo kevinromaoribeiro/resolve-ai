@@ -12,3 +12,4 @@ __pycache__/
 # arquivos de inspecao de producao (nao versionar)
 painel_tmp.html
 pulso_tmp.json
+_*.py
