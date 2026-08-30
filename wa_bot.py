@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v27.0-m64-ciclo-e-allowlist-2026-08-30"
+BUILD = "v27.1-m65-excecao-visivel-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6955,7 +6955,23 @@ try:
                     log.info("[cron-interno] %d disparo(s)", enviados)
                 await asyncio.to_thread(maybe_admin_report)
                 await asyncio.to_thread(relatorio_matinal)
-            except Exception:
+            except Exception as e:
+                # A EXCECAO PRECISA SER VISIVEL DE FORA (M6.5).
+                #
+                # Este `except` engole o ciclo inteiro e escreve num log que
+                # so se le com acesso a VPS. Em 30/08 ele escondeu, por
+                # horas, um motor proativo que quebrava TODO ciclo — e o
+                # sintoma visivel era so "a fila nao anda".
+                #
+                # So o tipo e a mensagem da excecao, truncados. Nada de
+                # telefone, nome ou conteudo de mensagem.
+                try:
+                    ULTIMO_CICLO["erro"] = "%s: %s" % (
+                        type(e).__name__, str(e)[:120])
+                    ULTIMO_CICLO["erro_em"] = tempo.agora().strftime(
+                        "%d/%m %H:%M:%S")
+                except Exception:
+                    pass
                 log.warning("[cron-interno] ciclo falhou", exc_info=True)
             await asyncio.sleep(CRON_INTERNO_SEGUNDOS)
 

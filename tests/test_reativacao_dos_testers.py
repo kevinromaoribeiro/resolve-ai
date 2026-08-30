@@ -537,3 +537,18 @@ def test_o_ciclo_proativo_aparece_no_health(usuario, ligada, monkeypatch):
     ciclo = c.get("/health").json()["ciclo"]
     assert "quando" in ciclo and "candidatos" in ciclo, ciclo
     assert isinstance(ciclo.get("enviados"), int), ciclo
+
+
+def test_a_excecao_do_ciclo_aparece_no_health(usuario, monkeypatch):
+    """O `except` do `_loop_proativo` engole o ciclo inteiro e escreve num
+    log que so se le com acesso a VPS. Em 30/08 ele escondeu por horas um
+    motor que quebrava TODO ciclo, e o sintoma visivel era so "a fila nao
+    anda"."""
+    wa_bot.ULTIMO_CICLO.clear()
+    try:
+        raise ValueError("banco fora do ar")
+    except Exception as e:
+        wa_bot.ULTIMO_CICLO["erro"] = "%s: %s" % (type(e).__name__,
+                                                  str(e)[:120])
+    assert "ValueError" in wa_bot.ULTIMO_CICLO["erro"]
+    assert TELEFONE not in str(wa_bot.ULTIMO_CICLO)
