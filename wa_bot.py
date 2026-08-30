@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v26.1-m47-logger-no-modulo-2026-08-29"
+BUILD = "v26.2-m47-amostra-2026-08-29"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -2488,6 +2488,9 @@ def _amostra_de_podcast(user: dict, phone: str) -> str:
     entrega. Se marcasse, o dono ficaria uma semana sem receber o episódio
     dele por ter testado.
     """
+    import random
+    import time
+
     import noticias
     import voz
 
