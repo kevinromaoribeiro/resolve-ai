@@ -1236,3 +1236,46 @@ def test_o_ultimo_dia_de_teste_nao_fala_1_dias(usuario, monkeypatch):
     db.update_user_fields(usuario["id"], status="trial")
     r = responder("bora")
     assert "(1 dia)" in r, r
+
+
+# ---------------------------------------------------------------------------
+# 19. o contrato com a landing OFICIAL (resolveai.ia.br)
+# ---------------------------------------------------------------------------
+# O formulario de https://resolveai.ia.br manda, na primeira mensagem, a
+# frase "E quero o resumo semanal de <assunto>." — e o `_NICHO_DA_LANDING_RE`
+# le dali. Sao dois repositorios diferentes (o site vive em
+# `kevinromaoribeiro/resolveai-site`), entao nada avisa quando um dos lados
+# muda. Este teste e o aviso.
+#
+# Ja pegou um defeito real: com o valor "ia" (2 letras) a frase NAO casava o
+# regex, que exige 3+, e o assunto escolhido se perdia em silencio.
+
+_OPCOES_DA_LANDING = ("futebol", "games", "inteligência artificial",
+                      "moda", "varejo online")
+
+
+@pytest.mark.parametrize("escolha", _OPCOES_DA_LANDING)
+def test_o_assunto_escolhido_na_landing_chega_no_bot(usuario, escolha):
+    frase = ("Oi! Quero começar meus 14 dias grátis do Resolve AI 🚀\n\n"
+             "E quero o resumo semanal de %s." % escolha)
+    m = wa_bot._NICHO_DA_LANDING_RE.search(frase)
+    assert m, "a frase da landing nao casa o parser: %r" % escolha
+    assert podcast.nicho_valido(m.group(1).strip()), escolha
+
+
+def test_toda_opcao_da_landing_e_um_nicho_que_existe(usuario):
+    """Opcao no site que o bot nao conhece vira pessoa sem assunto, calada."""
+    for escolha in _OPCOES_DA_LANDING:
+        assert podcast.nicho_valido(escolha), escolha
+    # e os cinco nichos do produto estao todos oferecidos no site
+    oferecidos = {podcast.nicho_valido(o) for o in _OPCOES_DA_LANDING}
+    assert oferecidos == set(podcast.NICHOS), (oferecidos, set(podcast.NICHOS))
+
+
+def test_quem_escolheu_na_landing_nao_e_perguntado_de_novo(usuario, com_voz):
+    """A ida e volta a mais no primeiro minuto e onde as pessoas desistem."""
+    responder("Oi! Quero começar meus 14 dias grátis do Resolve AI 🚀\n\n"
+              "E quero o resumo semanal de games.")
+    assert db.get_user(usuario["id"])["podcast_nicho"] == "games"
+    r = responder("quero o áudio")
+    assert "é um destes" not in r.lower(), r
