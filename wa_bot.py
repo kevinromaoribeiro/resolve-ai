@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v26.5-m52-podcast-no-ar-2026-08-30"
+BUILD = "v26.6-m60-reativacao-e-landing-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6081,9 +6081,20 @@ def dispatch_proactive() -> int:
     _ordem = ("alarm_dispatches", "resumo_dispatches", "overdue_dispatches",
               "due_dispatches", "churn_dispatches", "trial_dispatches",
               "guided_dispatches", "gastos_dispatches")
+    #
+    # E TEM CAUDA, pelo mesmo motivo que tem cabeca. O teto e de
+    # `DISPATCH_MAX_PER_CYCLE` por ciclo: o que entra na frente ocupa a vaga
+    # do que vem atras. A reativacao e convite, nao promessa — se ela passar
+    # na frente do "sua conta vence amanha", o produto deixou de cumprir o
+    # que vendeu pra caber uma mensagem de cortesia. Descoberto assim: um
+    # teste de 2025 (`test_lembrete_de_vencimento_sai_com_botao`) ficou
+    # vermelho no minuto em que a reativacao entrou no motor.
+    _por_ultimo = ("reativacao_dispatches",)
     _chaves = list(_ordem) + sorted(
         k for k in result
-        if k.endswith("_dispatches") and k not in _ordem)
+        if k.endswith("_dispatches") and k not in _ordem
+        and k not in _por_ultimo) + [
+        k for k in _por_ultimo if k in result]
     all_dispatches = []
     for _k in _chaves:
         _v = result.get(_k) or []
@@ -6139,6 +6150,30 @@ def dispatch_proactive() -> int:
             _janela_cache[_chave] = db.dentro_da_janela(
                 user_id=_chave[0], telefone=_chave[1])
         return _janela_cache[_chave]
+
+    # A CORTESIA CEDE A VEZ, DENTRO DO MESMO CICLO.
+    #
+    # `db.teve_proativa_hoje` ja segura isto ENTRE ciclos, mas nao dentro de
+    # um: quando o `check_reativacao` roda, o lembrete de vencimento do mesmo
+    # ciclo ainda nao foi carimbado, porque o carimbo e do envio. Aqui os
+    # dois estao lado a lado e da pra ver.
+    #
+    # Duas razoes, e a segunda e a que importa: o teto e de
+    # `DISPATCH_MAX_PER_CYCLE`, entao o convite ocuparia a vaga do "sua conta
+    # vence amanha"; e reativacao existe pra quem ESFRIOU — quem esta
+    # recebendo lembrete nao esfriou. Ela volta no proximo ciclo.
+    _servidos = {d.get("user_id") for d in all_dispatches
+                 if (d.get("kind") or "") != "reativacao"}
+    if _servidos:
+        _antes_cortesia = len(all_dispatches)
+        all_dispatches = [
+            d for d in all_dispatches
+            if (d.get("kind") or "") != "reativacao"
+            or d.get("user_id") not in _servidos]
+        if len(all_dispatches) != _antes_cortesia:
+            log.info("[cron] %d reativacao(oes) adiada(s): a pessoa ja tem "
+                     "mensagem de produto neste ciclo",
+                     _antes_cortesia - len(all_dispatches))
 
     _antes_poda = len(all_dispatches)
     all_dispatches = [d for d in all_dispatches if _tem_como_sair(d)]
@@ -6354,6 +6389,31 @@ try:
 
     app = FastAPI(title="Resolve AI · WhatsApp Gateway",
                   docs_url=None, redoc_url=None, openapi_url=None)
+
+    # A LANDING E SERVIDA PELO PROPRIO APP (M5.8).
+    #
+    # Ela ja viajava na imagem (`COPY . .` no Dockerfile) e nunca teve rota:
+    # "por no ar" dependia de um segundo servico que nunca existiu. Servir
+    # daqui resolve hoje, no IP, e continua valendo no dia em que um dominio
+    # apontar pro EasyPanel — nao muda nada no codigo.
+    #
+    # LIDA DO DISCO A CADA PEDIDO, de proposito: a landing muda mais que o
+    # bot, e cache em memoria significaria subir a imagem toda pra trocar uma
+    # frase. Sao 26 KB e o trafego e de dezenas por dia, nao milhares.
+    @app.get("/")
+    async def landing():
+        from fastapi.responses import HTMLResponse, JSONResponse
+        try:
+            with open(os.path.join(os.path.dirname(
+                    os.path.abspath(__file__)), "landing.html"),
+                    encoding="utf-8") as f:
+                return HTMLResponse(f.read())
+        except Exception:
+            # A landing sumir NAO pode derrubar o webhook: o bot atende 11
+            # pessoas e a pagina e vitrine. Falha visivel, servico de pe.
+            log.warning("[landing] nao consegui ler o arquivo", exc_info=True)
+            return JSONResponse({"erro": "landing indisponivel"},
+                                status_code=503)
 
     @app.get("/health")
     async def health(request: Request):

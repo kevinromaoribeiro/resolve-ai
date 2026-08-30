@@ -557,7 +557,13 @@ def para_disparo(d: dict) -> tuple[Optional[str], list]:
         return None, []
 
     primeiro = _primeiro_nome(d)
-    if nome == "resolveai_lembrete_hora":
+    if nome == "reativar_boas_vindas":
+        # Uma variavel so, o primeiro nome. O corpo inteiro e fixo e ja
+        # aprovado — inclusive a frase "seus 14 dias gratis estao intactos,
+        # valendo a partir de agora", que e verdade porque o
+        # `check_reativacao` devolve o trial ANTES de emitir o disparo.
+        variaveis = [primeiro]
+    elif nome == "resolveai_lembrete_hora":
         desc = _descricao_do_item(d.get("item_id"))
         variaveis = [desc or "seu compromisso"]
     elif nome == "resolveai_item_vencido":

@@ -23,6 +23,21 @@ from typing import Optional
 
 import db
 
+import logging
+import re
+
+log = logging.getLogger("resolveai")
+
+TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "14"))
+ADMIN_PHONE = re.sub(r"\D", "", os.environ.get("ADMIN_PHONE", ""))
+
+# A ORDEM DE 30/08/2026 pode ser cancelada sem deploy, como toda proativa
+# deste projeto. Fail-closed na digitacao, igual ao `PODCAST_ATIVO`: valor
+# que a gente nao reconhece DESLIGA, porque essa variavel so e tocada com
+# pressa e sob pressao.
+REATIVAR_TESTERS = (os.environ.get("REATIVAR_TESTERS", "") or "").strip(
+    ).lower() in ("", "1", "true", "sim", "on", "yes")
+
 CHURN_THRESHOLD_DAYS = 10
 CHURN_COOLDOWN_DAYS = 7          # anti-churn no máx. 1x por semana
 # SÓ D-1. Avisar em D-3, D-1 e no dia é três mensagens pelo mesmo boleto —
@@ -101,6 +116,8 @@ PODCAST_ATIVO = (os.environ.get("PODCAST_ATIVO", "") or "").strip().lower() \
 KINDS_PROATIVOS = {
     "vencimento", "1-click-buy", "anti-churn", "trial-ending", "arquivado",
     "vencido", "hora", "resumo", "winback", "gastos", "retorno", "podcast", "podcast-convite", "podcast-dia",
+    # M5.9: a reativacao dos testers. Kind declarado, template ja aprovado.
+    "reativacao",
 } | {f"trial_d{n}" for n in range(1, 13)}
 
 
@@ -1123,6 +1140,10 @@ def run_proactive_engine(
     roll_recurring(ref=ref_date)          # recorrentes rolam ANTES de tudo
     rodar_purga_se_for_o_dia(now)         # M1.6 (seco por padrao)
     alarms = check_time_alarms(ref=now)
+    # DEFINIDA NOS DOIS RAMOS. Um `UnboundLocalError` aqui derruba o motor
+    # inteiro das 21h as 8h, alarmes com hora inclusos — ja aconteceu com
+    # `podcast_conv` (auditoria M4.4).
+    reativacao: list[dict] = []
     if _in_quiet_hours(now):
         # TODA CHECAGEM PRECISA DE VALOR NOS DOIS RAMOS (auditoria M4.2).
         #
@@ -1148,6 +1169,7 @@ def run_proactive_engine(
         # MINI-PODCAST (M4.2). So o CONVITE sai daqui; o audio nunca e
         # proativo — ele vai como resposta ao toque no botao, dentro da
         # conversa que a pessoa acabou de abrir.
+        reativacao = check_reativacao(ref=now)
         podcast_conv = check_podcast(ref=now)
         podcast_dia = check_podcast_dia(ref=now)
         try:
@@ -1167,11 +1189,13 @@ def run_proactive_engine(
         "trial_dispatches": trial,
         "guided_dispatches": guided,
         "retorno_dispatches": retorno,
+        "reativacao_dispatches": reativacao,
         "podcast_dispatches": podcast_conv,
         "podcast_dia_dispatches": podcast_dia,
         "total": (len(alarms) + len(resumo) + len(overdue) + len(due)
                   + len(churn) + len(trial) + len(guided) + len(gastos)
-                  + len(retorno) + len(podcast_conv) + len(podcast_dia)),
+                  + len(retorno) + len(podcast_conv) + len(podcast_dia)
+                  + len(reativacao)),
     }
 
 
@@ -1189,6 +1213,126 @@ _DIAS_PT = ("Segunda", "Terça", "Quarta", "Quinta", "Sexta",
 def _sem_acento(t: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", t or "")
                    if unicodedata.category(c) != "Mn").lower()
+
+
+# A ORDEM DO DONO, CUMPRIDA UMA VEZ. NAO E COMPORTAMENTO DO BOT.
+#
+# O `KIND_TEMPLATE` diz, com todas as letras, que `reativacao` nao tem
+# checagem no scheduler de proposito: "automatizar isso seria o bot decidindo
+# sozinho reabrir janela com a base inteira — o caminho mais curto pra
+# terceira restricao". A regra continua valendo e nao foi afrouxada.
+#
+# O que mudou nao foi a regra, foi QUEM DECIDIU. Em 30/08/2026 o Kevin deu a
+# ordem explicita: "reative todos com o trial de 14 dias e mande a novidade
+# dos audios... resolva isso sem mim". Ele nao conseguia usar o painel na
+# hora. Entao isto aqui e o botao do painel, apertado por escrito — nao uma
+# politica nova.
+#
+# E por ser ordem, e nao politica, ela se esgota:
+#
+#   * uma vez POR PESSOA, para sempre (`db.ja_recebeu_acao`). Nao e "1x por
+#     dia": e 1x na vida. Mandar o mesmo template duas vezes pro mesmo numero
+#     e como se chega na terceira restricao.
+#   * o carimbo vai ANTES do envio. Se o envio falhar, a pessoa fica sem a
+#     mensagem e isso aparece no log. Perder uma e ruim; mandar duas e pior,
+#     e num numero ja restringido duas vezes a escolha nao e dificil.
+#   * `REATIVACAO_POR_CICLO` = 2, o mesmo ritmo do freio que ja existe. Onze
+#     templates de uma vez num numero morno e exatamente o padrao que a Meta
+#     pune.
+#   * nao ressuscita ninguem: `db.resetar_trial` ja recusa quem cancelou,
+#     quem foi bloqueado e quem nao esta em trial, e aqui so entra quem ELE
+#     efetivamente resetou.
+#
+# NENHUMA PORTA NOVA: isto roda dentro do motor, no servidor. Nao existe rota,
+# parametro nem header que dispare — de fora do servidor nao da pra chamar.
+ACAO_REATIVACAO = "reativacao_lote_2026_08"
+REATIVACAO_POR_CICLO = 2
+
+
+def check_reativacao(ref: Optional[datetime] = None) -> list[dict]:
+    """Devolve os disparos de reativacao ainda devidos. Ver o bloco acima."""
+    if not REATIVAR_TESTERS:
+        return []
+
+    agora = ref or tempo.agora()
+    saida: list[dict] = []
+
+    try:
+        _dono = re.sub(r"\D", "", ADMIN_PHONE or "")
+        _todos = db.list_users()
+
+        # 0. AINDA FALTA ALGUEM? A ordem se ESGOTA.
+        #
+        # Sem esta pergunta o `resetar_trial` varria a base inteira a cada 60
+        # segundos pra sempre, muito depois de o ultimo tester ja ter
+        # recebido. Idempotente nao e o mesmo que terminado — e uma ordem que
+        # nunca termina virou, na pratica, a politica que o `KIND_TEMPLATE`
+        # proibe.
+        _faltam = [u for u in _todos
+                   if re.sub(r"\D", "", u.get("telefone") or "") != _dono
+                   and (u.get("status") or "trial") == "trial"
+                   and not db.dispatched_ever("reativacao", u["id"])]
+        if not _faltam:
+            return []
+
+        # 1. DEVOLVE O TRIAL PRIMEIRO. O template diz "seus 14 dias gratis
+        #    estao intactos, valendo a partir de agora" — mandar antes de
+        #    resetar tornaria a propria mensagem mentira. Idempotente por
+        #    dia, entao rodar de novo nao vira 28 dias.
+        db.resetar_trial([u["id"] for u in _faltam],
+                         por="ordem-do-dono-30/08")
+    except Exception:
+        log.warning("[reativacao] falhei ao devolver o trial", exc_info=True)
+        return []
+
+    # 2. E SO ENTAO AVISA, no ritmo do freio.
+    for u in db.list_users():
+        if len(saida) >= REATIVACAO_POR_CICLO:
+            break
+        if re.sub(r"\D", "", u.get("telefone") or "") == _dono:
+            continue
+        if (u.get("status") or "trial") != "trial":
+            continue          # cancelado/bloqueado/ativo nao entra
+        # UMA VEZ NA VIDA, carimbado pelo ENVIO e nao por esta checagem.
+        #
+        # A primeira versao gravava em `admin_acoes` aqui, antes de o disparo
+        # chegar no `dispatch_proactive`. Com o freio adiando o envio, a
+        # pessoa ficava marcada e nunca recebia nada. `dispatched_ever` e
+        # escrito so quando o envio sai de verdade: quem nao recebeu volta no
+        # proximo ciclo, quem recebeu nunca mais entra.
+        if db.dispatched_ever("reativacao", u["id"]):
+            continue
+        if not db.user_can_receive(u, TRIAL_DAYS):
+            continue          # o reset falhou pra esta pessoa: nao promete
+        # CEDE A VEZ PRA MENSAGEM DE PRODUTO.
+        #
+        # Quem ja recebeu proativa hoje esta sendo servido — nao esfriou, e
+        # nao e o publico disto. Alem do merito, o teto e de 5 disparos por
+        # ciclo: o convite ocupando a vaga do "sua conta vence amanha" e o
+        # produto deixando de cumprir o que vendeu pra caber uma cortesia.
+        # Ela volta amanha, e ate la a novidade ja viaja na conversa normal.
+        if db.teve_proativa_hoje(u["id"]):
+            continue
+        saida.append({
+            "user_id": u["id"], "user_nome": u.get("nome") or "",
+            "telefone": u.get("telefone"), "item_id": None,
+            # TEXTO OBRIGATORIO. Disparo com `message` vazia e tratado
+            # pelo `dispatch_proactive` como registro de dedup de um grupo e
+            # NAO SAI — o envio teria falhado em silencio. Dentro da janela
+            # de 24h vale este texto; fora dela, o template aprovado.
+            "kind": "reativacao",
+            "message": (
+                f"Oi, {(u.get('nome') or 'tudo bem').split()[0]}! 👋\n\n"
+                f"Seus *{TRIAL_DAYS} dias* de teste estão valendo de novo, "
+                f"a partir de agora.\n\n"
+                f"Me manda uma coisa que você não pode esquecer — "
+                f"_\"luz 187 vence dia 20\"_ — que eu te aviso antes.\n\n"
+                f"🎧 E tem novidade: toda semana eu posso te mandar um "
+                f"resumo em áudio das notícias do assunto que você escolher. "
+                f"É só responder *quero o áudio*."),
+            "quando": _fmt_br(agora.date().isoformat()),
+        })
+    return saida
 
 
 def check_podcast(ref: Optional[datetime] = None) -> list[dict]:

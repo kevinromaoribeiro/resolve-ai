@@ -542,6 +542,31 @@ def registrar_acao_admin(acao: str, alvo=None, por: str = "",
              None if alvo is None else str(alvo), por or "", detalhe or ""))
 
 
+def ja_recebeu_acao(acao: str, alvo) -> bool:
+    """Esta pessoa ja foi alvo desta acao administrativa alguma vez?
+
+    Existe pra uma ordem que so pode ser cumprida UMA vez por pessoa. O
+    numero deste projeto ja foi restringido duas vezes; mandar o mesmo
+    template duas vezes pra mesma pessoa e o caminho mais curto pra
+    terceira. Na duvida (banco fora, coluna estranha) devolve True — o erro
+    seguro aqui e NAO mandar.
+    """
+    import logging   # LOCAL: `db.py` nao importa logging no topo (ver
+                    # `_avisar_dias_limpo`) e um NameError no ramo de erro
+                    # derrubaria a checagem inteira.
+    try:
+        with get_conn() as conn:
+            r = conn.execute(
+                "SELECT 1 FROM admin_acoes WHERE acao=? AND alvo=? LIMIT 1",
+                (acao, str(alvo))).fetchone()
+        return r is not None
+    except Exception:
+        logging.getLogger("resolveai").warning(
+            "[admin] nao consegui checar a acao %r do alvo %r", acao, alvo,
+            exc_info=True)
+        return True
+
+
 def acoes_administrativas(acao: Optional[str] = None,
                           limite: int = 200) -> list[dict]:
     with get_conn() as conn:
@@ -1012,6 +1037,28 @@ def dispatched_within(kind: str, user_id: int, days: int) -> bool:
             "SELECT 1 FROM dispatches WHERE user_id=? AND kind=? "
             "AND sent_at >= ? LIMIT 1", (user_id, kind, cutoff)
         ).fetchone() is not None
+
+
+def teve_proativa_hoje(user_id: int) -> bool:
+    """Esta pessoa ja recebeu alguma mensagem que o bot iniciou hoje?
+
+    Serve pra uma coisa so: mensagem de cortesia cede a vez pra mensagem de
+    produto. Na duvida devolve True — o erro seguro e adiar a cortesia, nunca
+    empilhar duas vibracoes no mesmo numero.
+    """
+    import logging   # LOCAL: `db.py` nao importa logging no topo.
+    try:
+        with get_conn() as conn:
+            r = conn.execute(
+                "SELECT 1 FROM dispatches WHERE user_id=? "
+                "AND substr(sent_at,1,10)=? LIMIT 1",
+                (user_id, tempo.hoje().isoformat())).fetchone()
+        return r is not None
+    except Exception:
+        logging.getLogger("resolveai").warning(
+            "[dispatch] nao consegui contar as proativas de hoje do user %s",
+            user_id, exc_info=True)
+        return True
 
 
 def dispatched_ever(kind: str, user_id: int) -> bool:
