@@ -1335,6 +1335,37 @@ def check_reativacao(ref: Optional[datetime] = None) -> list[dict]:
     return saida
 
 
+def reativacao_diagnostico() -> dict:
+    """Por que a fila da reativacao esta do tamanho que esta.
+
+    Existe porque a alternativa era adivinhar. Devolve SO CONTAGENS: sem
+    nome, telefone, id ou qualquer coisa que identifique alguem.
+    """
+    d = {"ativa": bool(REATIVAR_TESTERS), "total": 0, "dono": 0,
+         "fora_do_trial": 0, "ja_receberam": 0, "sem_acesso": 0,
+         "adiados_hoje": 0, "na_fila": 0}
+    try:
+        _dono = re.sub(r"\D", "", ADMIN_PHONE or "")
+        for u in db.list_users():
+            d["total"] += 1
+            if re.sub(r"\D", "", u.get("telefone") or "") == _dono:
+                d["dono"] += 1
+            elif (u.get("status") or "trial") != "trial":
+                d["fora_do_trial"] += 1
+            elif db.dispatched_ever("reativacao", u["id"]):
+                d["ja_receberam"] += 1
+            elif not db.user_can_receive(u, TRIAL_DAYS):
+                d["sem_acesso"] += 1
+            elif db.teve_proativa_hoje(u["id"]):
+                d["adiados_hoje"] += 1
+            else:
+                d["na_fila"] += 1
+    except Exception:
+        log.warning("[reativacao] diagnostico falhou", exc_info=True)
+        d["erro"] = True
+    return d
+
+
 def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
     """Checagem: quem recebe o CONVITE do mini-podcast hoje.
 

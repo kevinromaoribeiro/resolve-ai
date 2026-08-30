@@ -383,3 +383,39 @@ def test_o_convite_vai_depois_das_chaves_nao_ordenadas(usuario, ligada,
         assert enviados and "reativar_boas_vindas" not in enviados, enviados
     finally:
         db.delete_user(fria)
+
+
+# ---------------------------------------------------------------------------
+# 8. o diagnostico (M6.1)
+# ---------------------------------------------------------------------------
+
+def test_o_diagnostico_conta_todo_mundo_uma_vez_so(usuario, ligada, extras):
+    for i in range(3):
+        extras("T%d" % i, "551190000%04d" % i)
+    d = scheduler.reativacao_diagnostico()
+    partes = ("dono", "fora_do_trial", "ja_receberam", "sem_acesso",
+              "adiados_hoje", "na_fila")
+    assert sum(d[k] for k in partes) == d["total"], d
+
+
+def test_o_diagnostico_explica_a_fila_vazia(usuario, ligada):
+    assert scheduler.reativacao_diagnostico()["na_fila"] >= 1
+    db.log_dispatch(usuario["id"], "reativacao")
+    d = scheduler.reativacao_diagnostico()
+    assert d["ja_receberam"] >= 1
+
+
+def test_o_diagnostico_nao_vaza_dado_pessoal(usuario, ligada):
+    """O `/health` e publico. Contagem e diagnostico; nome e telefone
+    seriam vazamento."""
+    d = scheduler.reativacao_diagnostico()
+    for chave, valor in d.items():
+        assert isinstance(valor, (int, bool)), (chave, valor)
+
+
+def test_o_diagnostico_nao_derruba_o_health(usuario, ligada, monkeypatch):
+    def explode(*a, **k):
+        raise RuntimeError("banco fora")
+    monkeypatch.setattr(db, "list_users", explode)
+    d = scheduler.reativacao_diagnostico()
+    assert d.get("erro") is True

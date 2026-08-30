@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v26.6-m60-reativacao-e-landing-2026-08-30"
+BUILD = "v26.7-m61-diagnostico-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6445,6 +6445,12 @@ try:
                           "max_por_usuario_dia": MAX_PROATIVAS_POR_USUARIO_DIA},
                 "memoria": hasattr(db, "lembrar_fato"),
                 "contexto": hasattr(db, "conversa_recente"),
+                # SO CONTAGENS (M6.1). Nenhum nome, telefone ou id: serve pra
+                # responder "por que a fila da reativacao esta vazia?" sem o
+                # token do painel, que e segredo. O `/health` e publico, e
+                # este bloco e estritamente menos sensivel do que o
+                # `usuario_mais_notificado` que ja estava aqui.
+                "reativacao": scheduler.reativacao_diagnostico(),
                 "painel": "protegido" if PAINEL_TOKEN else "SEM TOKEN",
                 "alerta_dono": "armado" if ADMIN_PHONE else "SEM ADMIN_PHONE"}
         # o diagnóstico do v8 carrega trecho de mensagem de usuário —
