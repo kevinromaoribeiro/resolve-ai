@@ -531,11 +531,11 @@ def test_o_health_diz_se_o_template_esta_liberado(usuario, monkeypatch):
     c = TestClient(wa_bot.app)
 
     monkeypatch.setenv("TEMPLATES_APROVADOS", "outro_qualquer")
-    assert c.get("/health").json()["template_reativacao_liberado"] is False
+    assert "reativacao" in c.get("/health").json()["templates"]["faltando"]
 
     monkeypatch.setenv("TEMPLATES_APROVADOS",
                        "outro_qualquer, reativar_boas_vindas")
-    assert c.get("/health").json()["template_reativacao_liberado"] is True
+    assert "reativacao" in c.get("/health").json()["templates"]["liberados"]
 
 
 def test_o_ciclo_proativo_aparece_no_health(usuario, ligada, monkeypatch):
@@ -781,3 +781,24 @@ def test_o_que_o_anti_churn_gera_tem_como_sair(usuario, monkeypatch):
         tpl, variaveis = _cat2.para_disparo(d)
         assert tpl, "disparo emitido que o catalogo recusa: %s" % d["kind"]
         assert all(str(v).strip() for v in variaveis), variaveis
+
+
+def test_o_health_diz_quais_kinds_alcancam_quem_esta_frio(usuario,
+                                                          monkeypatch):
+    """Antes de escalar, esta e a pergunta que decide quais promessas o
+    produto consegue cumprir com cliente que ficou quieto. Sem o nome em
+    `TEMPLATES_APROVADOS` o canal recusa, e isso e invisivel — a mensagem
+    apenas nao chega."""
+    monkeypatch.setenv("TEMPLATES_APROVADOS", "resolveai_conta_a_vencer")
+    e = wa_bot._estado_dos_templates()
+    assert "vencimento" in e["liberados"], e
+    assert "podcast" in e["faltando"], e
+    # todo kind com template mapeado aparece de um lado ou do outro
+    import templates as _c
+    assert (set(e["liberados"]) | set(e["faltando"])) == set(_c.KIND_TEMPLATE)
+
+
+def test_o_estado_dos_templates_nao_derruba_o_health(monkeypatch):
+    import templates as _c
+    monkeypatch.delattr(_c, "KIND_TEMPLATE", raising=False)
+    assert wa_bot._estado_dos_templates().get("erro") is True

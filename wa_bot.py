@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v27.6-m70-sem-entulho-2026-08-30"
+BUILD = "v27.7-m71-estado-dos-templates-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6450,6 +6450,27 @@ def dispatch_proactive() -> int:
     return sent
 
 
+def _estado_dos_templates() -> dict:
+    """Quais kinds proativos conseguem falar com quem esta FORA da janela.
+
+    Fail-closed: sem o nome em `TEMPLATES_APROVADOS`, o `canal` recusa e a
+    promessa daquele kind so vale pra quem respondeu nas ultimas 24h.
+    """
+    try:
+        import templates as _cat
+        aprovados = {p.strip() for p in
+                     (os.environ.get("TEMPLATES_APROVADOS", "") or "").split(",")
+                     if p.strip()}
+        liberados, faltando = [], []
+        for kind, nome in sorted(_cat.KIND_TEMPLATE.items()):
+            (liberados if nome in aprovados else faltando).append(kind)
+        return {"liberados": liberados, "faltando": faltando,
+                "sem_template_por_decisao": sorted(_cat.KINDS_SEM_TEMPLATE)}
+    except Exception:
+        log.warning("[templates] nao consegui montar o estado", exc_info=True)
+        return {"erro": True}
+
+
 def _proativas_hoje(user_id: int) -> int:
     """Quantas mensagens PROATIVAS este usuário já recebeu hoje.
 
@@ -6550,10 +6571,18 @@ try:
                 # `canal` recusa o envio e a fila fica parada pra sempre, sem
                 # nada visivel de fora. Isto responde "ja posso mandar?" sem
                 # precisar abrir o EasyPanel.
-                "template_reativacao_liberado":
-                    "reativar_boas_vindas" in (
-                        (os.environ.get("TEMPLATES_APROVADOS", "") or "")
-                        .replace(" ", "").split(",")),
+                # QUAIS TEMPLATES ESTAO LIBERADOS (M7.1).
+                #
+                # `TEMPLATES_APROVADOS` e allowlist fail-closed: kind cujo
+                # template nao esta la simplesmente NAO ALCANCA quem esta
+                # fora da janela de 24h — e isso e invisivel, porque a
+                # mensagem apenas nao chega. Antes de escalar, esta e a
+                # pergunta que decide quais promessas o produto consegue
+                # cumprir com cliente que ficou quieto.
+                #
+                # Nome de template nao e segredo. O valor das credenciais
+                # continua fora daqui.
+                "templates": _estado_dos_templates(),
                 "painel": "protegido" if PAINEL_TOKEN else "SEM TOKEN",
                 "alerta_dono": "armado" if ADMIN_PHONE else "SEM ADMIN_PHONE"}
         # o diagnóstico do v8 carrega trecho de mensagem de usuário —
