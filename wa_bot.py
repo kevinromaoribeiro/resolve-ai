@@ -54,7 +54,17 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v26.0-m47-dia-com-template-2026-08-29"
+BUILD = "v26.1-m47-logger-no-modulo-2026-08-29"
+
+# LOGGER NO MODULO, nao so dentro de cada funcao.
+#
+# `log` era definido localmente em umas cinco funcoes, e todo bloco novo
+# que escrevia `log.warning` fora delas estourava NameError — tres vezes
+# so nesta semana, sempre num caminho de ERRO, que e onde ninguem olha
+# ate quebrar. As definicoes locais continuam la e apenas sombreiam esta;
+# o que muda e que agora existe uma pra quem esquecer.
+import logging
+log = logging.getLogger("resolveai")
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
