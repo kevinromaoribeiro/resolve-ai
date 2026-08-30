@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v27.4-m68-sem-inanicao-2026-08-30"
+BUILD = "v27.5-m69-cede-a-quem-recebeu-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6201,24 +6201,19 @@ def dispatch_proactive() -> int:
                  "— voltam quando a pessoa responder",
                  _antes_poda - len(all_dispatches))
 
-    # DEPOIS DA PODA, e nao antes (M6.2). A ordem inversa custou um dia de
-    # envio: `_servidos` marcava a pessoa como atendida por um disparo que o
-    # `_tem_como_sair` descartava na linha seguinte. Como os testers estao
-    # TODOS fora da janela de 24h — e por isso que a reativacao existe —,
-    # todo ciclo a fila inteira era zerada por mensagens que nunca sairiam.
-    # Ceder a vez pra quem nao vai falar nao e cortesia, e bloqueio.
-    _servidos = {d.get("user_id") for d in all_dispatches
-                 if (d.get("kind") or "") != "reativacao"}
-    if _servidos:
-        _antes_cortesia = len(all_dispatches)
-        all_dispatches = [
-            d for d in all_dispatches
-            if (d.get("kind") or "") != "reativacao"
-            or d.get("user_id") not in _servidos]
-        if len(all_dispatches) != _antes_cortesia:
-            log.info("[cron] %d reativacao(oes) adiada(s): a pessoa ja tem "
-                     "mensagem de produto neste ciclo",
-                     _antes_cortesia - len(all_dispatches))
+    # O `_servidos` SAIU (M6.9), e nao por descuido.
+    #
+    # Ele removia a reativacao de quem tivesse OUTRO disparo no mesmo ciclo.
+    # Medido em producao: os disparos de `anti-churn` ficam na fila e sao
+    # recusados so no `falar` ("fora_da_janela_sem_template"), mas ja tinham
+    # marcado a pessoa como atendida — entao a reativacao era removida todo
+    # ciclo, para sempre. Mesma inanicao da M6.8, por outra porta.
+    #
+    # O que protege o produto e a ORDEM, nao este filtro: a reativacao e a
+    # ultima da fila, entao lembrete, alarme e resumo pegam as vagas antes.
+    # E pra as duas nao chegarem coladas ja existem a janela de 4h do
+    # `check_reativacao`, o espacamento de 60-120s entre envios e o teto de
+    # 6 proativas por usuario por dia.
 
     # BLOQUEIO DE CABECA DE FILA (M6.7).
     #
@@ -6234,10 +6229,27 @@ def dispatch_proactive() -> int:
     # varredura da fila inteira quando tudo esta falhando.
     _tentativas = 0
     _max_tentativas = max(DISPATCH_MAX_PER_CYCLE * 3, 6)
+    # QUEM JA RECEBEU NESTE CICLO — de verdade, nao na fila (M6.9).
+    #
+    # O filtro antigo olhava a FILA e por isso morria de fome: um
+    # `anti-churn` que so seria recusado la no `falar` ja marcava a pessoa
+    # como atendida, e a reativacao era removida todo ciclo, para sempre.
+    # Aqui so entra quem o `falar` aceitou.
+    _ja_falei_com: set = set()
     for d in all_dispatches:
         if sent >= DISPATCH_MAX_PER_CYCLE or _tentativas >= _max_tentativas:
             break
         _tentativas += 1
+        # A CORTESIA NAO CHEGA COLADA NA MENSAGEM DE PRODUTO.
+        # O espacamento e de 60-120s; duas vibracoes seguidas do mesmo
+        # numero e o padrao que a Meta pune. A reativacao volta no proximo
+        # ciclo — e agora ela VOLTA mesmo, porque so cede a vez pra quem
+        # recebeu de verdade.
+        if ((d.get("kind") or "") == "reativacao"
+                and d.get("user_id") in _ja_falei_com):
+            _pulados["cortesia_adiada"] = _pulados.get(
+                "cortesia_adiada", 0) + 1
+            continue
         number = re.sub(r"\D", "", d["telefone"])
         if not number:
             log.warning("[cron] disparo sem número: %s", d.get("message", "")[:40])
@@ -6304,6 +6316,8 @@ def dispatch_proactive() -> int:
                              template=_tpl, variaveis=_vars,
                              botoes=_botoes_do_disparo(d))
         ok = res.get("enviado")
+        if ok and d.get("user_id"):
+            _ja_falei_com.add(d["user_id"])
         if not ok:
             # QUALQUER kind, nao so a reativacao (M6.7). Foi justamente uma
             # recusa de OUTRO kind que travou a fila inteira, e ela era

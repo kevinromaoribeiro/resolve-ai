@@ -667,3 +667,68 @@ def test_a_recusa_de_qualquer_kind_fica_visivel(usuario, ligada, monkeypatch):
     wa_bot.dispatch_proactive()
     assert wa_bot.ULTIMA_RECUSA_REATIVACAO.get("kind") == "vencimento"
     assert wa_bot.ULTIMA_RECUSA_REATIVACAO.get("motivo") == "fora_da_janela"
+
+
+def test_a_cortesia_cede_a_vez_a_quem_RECEBEU_nao_a_quem_esta_na_fila(
+        usuario, ligada, monkeypatch):
+    """A INANICAO POR OUTRA PORTA (M6.9).
+
+    O filtro antigo olhava a FILA: um `anti-churn` que so seria recusado la
+    no `falar` ja marcava a pessoa como atendida, e a reativacao era
+    removida todo ciclo, para sempre. Medido em producao — `ja_receberam`
+    ficou em 0 enquanto a fila andava sozinha.
+    """
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    monkeypatch.setattr(wa_bot, "DISPATCH_MAX_PER_CYCLE", 5)
+    enviados = []
+
+    def _falar(tel, txt, **kw):
+        if "recusado" in (txt or ""):
+            return {"enviado": False, "via": None,
+                    "motivo": "fora_da_janela_sem_template"}
+        enviados.append(kw.get("template") or "livre")
+        return {"enviado": True, "via": "t", "motivo": ""}
+
+    monkeypatch.setattr(wa_bot.wasender, "falar", _falar)
+    base = {"user_id": usuario["id"], "user_nome": "Kevin",
+            "telefone": TELEFONE, "item_id": None, "quando": "31/08"}
+    monkeypatch.setattr(
+        scheduler, "run_proactive_engine",
+        lambda **k: {"executed_at": "x", "total": 2,
+                     "churn_dispatches": [
+                         dict(base, kind="anti-churn",
+                              message="recusado sempre")],
+                     "reativacao_dispatches": [
+                         dict(base, kind="reativacao", message="oi, volta")]})
+    db.log_message(None, TELEFONE, "in", "texto", "oi")
+    wa_bot.dispatch_proactive()
+    assert "reativar_boas_vindas" in enviados, (
+        "disparo recusado ainda toma a vez da reativacao: %s" % enviados)
+
+
+def test_mas_cede_a_vez_de_verdade_quando_a_mensagem_SAI(usuario, ligada,
+                                                         monkeypatch):
+    """Duas vibracoes seguidas do mesmo numero e o padrao que a Meta pune."""
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+    monkeypatch.setattr(wa_bot, "DISPATCH_MAX_PER_CYCLE", 5)
+    enviados = []
+    monkeypatch.setattr(
+        wa_bot.wasender, "falar",
+        lambda tel, txt, **kw: enviados.append(kw.get("template") or "livre")
+        or {"enviado": True, "via": "t", "motivo": ""})
+    base = {"user_id": usuario["id"], "user_nome": "Kevin",
+            "telefone": TELEFONE, "item_id": None, "quando": "31/08"}
+    monkeypatch.setattr(
+        scheduler, "run_proactive_engine",
+        lambda **k: {"executed_at": "x", "total": 2,
+                     "due_dispatches": [
+                         dict(base, kind="vencimento",
+                              message="sua conta vence amanha")],
+                     "reativacao_dispatches": [
+                         dict(base, kind="reativacao", message="oi, volta")]})
+    db.log_message(None, TELEFONE, "in", "texto", "oi")
+    wa_bot.dispatch_proactive()
+    assert "reativar_boas_vindas" not in enviados, enviados
+    assert wa_bot.ULTIMO_CICLO["pulados"]["cortesia_adiada"] == 1
