@@ -732,3 +732,52 @@ def test_mas_cede_a_vez_de_verdade_quando_a_mensagem_SAI(usuario, ligada,
     wa_bot.dispatch_proactive()
     assert "reativar_boas_vindas" not in enviados, enviados
     assert wa_bot.ULTIMO_CICLO["pulados"]["cortesia_adiada"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 10. anti-churn: nao gerar o que nunca vai sair (M7.0)
+# ---------------------------------------------------------------------------
+
+def test_anti_churn_nao_dispara_sem_item_pendente(usuario, monkeypatch):
+    """MEDIDO EM PRODUCAO. O `ultima_recusa` do /health mostrava, ciclo apos
+    ciclo, `anti-churn / fora_da_janela_sem_template`.
+
+    O template fala em itens pendentes e o `para_disparo` recusa quem nao tem
+    nenhum. Fora da janela vira recusa; como o carimbo so acontece no envio,
+    o disparo voltava todo ciclo, para sempre. Com 100 clientes, cada inativo
+    sem pendencia vira entulho permanente no motor.
+    """
+    import datetime as _d2
+    monkeypatch.setattr(
+        db, "inactive_users",
+        lambda *a, **k: [dict(db.get_user(usuario["id"]))])
+
+    for i in db.list_items(usuario["id"]):
+        db.concluir_item(i["id"]) if hasattr(db, "concluir_item") else None
+    with db.get_conn() as c:
+        c.execute("DELETE FROM items WHERE user_id=?", (usuario["id"],))
+    assert scheduler.check_churn() == [], "gerou disparo sem ter o que dizer"
+
+    db.add_item(user_id=usuario["id"], tipo="despesa", categoria="Contas",
+                descricao="luz", valor_reais=120.0,
+                data_vencimento=(tempo.hoje() + _d2.timedelta(days=3)
+                                 ).isoformat(), status="pendente")
+    assert scheduler.check_churn(), "com pendencia real, deveria disparar"
+
+
+def test_o_que_o_anti_churn_gera_tem_como_sair(usuario, monkeypatch):
+    """Contrato: todo disparo emitido tem que ter template montavel. Gerar o
+    que o catalogo recusa e criar entulho que volta pra sempre."""
+    import datetime as _d2
+    import templates as _cat2
+    db.add_item(user_id=usuario["id"], tipo="despesa", categoria="Contas",
+                descricao="agua", valor_reais=90.0,
+                data_vencimento=(tempo.hoje() + _d2.timedelta(days=3)
+                                 ).isoformat(), status="pendente")
+    monkeypatch.setattr(
+        db, "inactive_users",
+        lambda *a, **k: [dict(db.get_user(usuario["id"]))])
+    for d in scheduler.check_churn():
+        tpl, variaveis = _cat2.para_disparo(d)
+        assert tpl, "disparo emitido que o catalogo recusa: %s" % d["kind"]
+        assert all(str(v).strip() for v in variaveis), variaveis

@@ -360,6 +360,20 @@ def check_churn(ref: Optional[datetime] = None) -> list[dict]:
             continue
         if db.dispatch_count("anti-churn", user["id"]) >= CHURN_MAX_ATTEMPTS:
             continue  # desiste com elegância após 3 tentativas
+        # SEM PENDENCIA, SEM MENSAGEM (M7.0).
+        #
+        # O template fala em itens pendentes e o `para_disparo` recusa quem
+        # nao tem nenhum — "voce tem 0 itens" e mensagem sem servico. Fora da
+        # janela isso vira recusa, e o carimbo so acontece no envio: o mesmo
+        # disparo voltava TODO ciclo, para sempre. A pergunta tem que ser
+        # feita AQUI, por quem gera, e nao virar entulho na fila de envio.
+        try:
+            if not db.list_items(user["id"], status="pendente"):
+                continue
+        except Exception:
+            log.warning("[churn] nao consegui ver as pendencias do user %s",
+                        user.get("id"), exc_info=True)
+            continue
         first_name = user["nome"].split()[0]
         msg = (
             f"Opa, {first_name}! Vi que sua semana foi corrida. Que tal "
