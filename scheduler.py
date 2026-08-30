@@ -1142,7 +1142,7 @@ def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
 
     Dois grupos entram:
       1. quem escolheu nicho na landing e passou das 6h do cadastro (uma vez);
-      2. quem ja ouviu, escolheu dia da semana, e faz 7 dias do ultimo.
+      2. quem ja ouviu e faz 7 dias do ultimo convite ou episodio.
 
     O `kind` e "podcast" e ele esta em `KINDS_SEM_TEMPLATE`: fora da janela
     de 24h o convite nao sai, e esta certo. Nao ha template de podcast e nao
@@ -1182,6 +1182,14 @@ def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
         if db.dispatched_today("podcast", u["id"]):
             return
         if not _pod.pode_enviar(u.get("podcast_ultimo"), agora=agora):
+            return
+        # O TETO OLHA O CONVITE TAMBEM (auditoria M4.5, P0). Quem recebeu e
+        # nao tocou ficava com `podcast_ultimo` parado, e o convite renascia
+        # todo dia — 14 numa quinzena. E cada um comia uma vaga do teto
+        # diario, que e compartilhado com o alarme de hora marcada.
+        if db.podcast_convite_recente(u["id"],
+                                      dias=_pod.DIAS_ENTRE_EPISODIOS,
+                                      ref=agora):
             return
         convite = _pod.convite(u.get("podcast_nicho"), nome=u.get("nome") or "")
         if not convite:

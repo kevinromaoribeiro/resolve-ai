@@ -1649,9 +1649,6 @@ _AMOSTRA_PODCAST_RE = re.compile(
     r"^\s*(amostra\s+do\s+podcast|testar\s+o\s+podcast|"
     r"podcast\s+de\s+teste)\s*[.!?]?\s*$", re.I)
 
-_DIA_DA_SEMANA_RE = re.compile(
-    r"^\s*(segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo)"
-    r"(\s*-?\s*feira)?\s*[.!?]?\s*$", re.I)
 
 
 # O botão que reenvia o código sozinho. Título curto de propósito: a Meta
@@ -2454,7 +2451,7 @@ def _amostra_de_podcast(user: dict, phone: str) -> str:
                 "Falta a chave da OpenAI (ou `VOZ_PROVEDOR`) no ambiente — "
                 "sem ela o podcast nem é oferecido pros clientes.")
 
-    linhas, ok = [], 0
+    linhas, ok, enviados_ate_agora = [], 0, 0
     for chave in podcast.NICHOS:
         rotulo = podcast.rotulo(chave)
         try:
@@ -2472,6 +2469,15 @@ def _amostra_de_podcast(user: dict, phone: str) -> str:
         if not audio:
             linhas.append(f"• {rotulo}: a voz falhou")
             continue
+        # ESPACAMENTO, como em todo envio em lote desta casa. Cinco nichos
+        # sao ate dez mensagens; manda-las de enfiada e a assinatura de
+        # ritmo que ja rendeu 3h de restricao neste numero (ver o comentario
+        # do FREIO 2). O `sleep` aqui e seguro: isto roda no handler, que ja
+        # esta em thread propria.
+        if enviados_ate_agora:
+            time.sleep(random.uniform(ENVIO_INTERVALO_MIN,
+                                      ENVIO_INTERVALO_MAX))
+        enviados_ate_agora += 1
         send_whatsapp(phone, f"🎧 *{rotulo}* — amostra")
         res = wasender.falar_audio(phone, audio, user_id=user["id"])
         if res.get("enviado"):
@@ -2520,9 +2526,18 @@ def _mandar_podcast(user: dict, phone: str) -> str:
     if _ultimo and not podcast.data_legivel(_ultimo):
         import logging
         logging.getLogger("resolveai").warning(
-            "[podcast] podcast_ultimo ilegivel (%r) no user %s — limpando",
+            "[podcast] podcast_ultimo ilegivel (%r) no user %s — ignorado",
             _ultimo, user["id"])
-        db.update_user_fields(user["id"], podcast_ultimo=None)
+        # IGNORA AQUI, NAO APAGA NO BANCO (auditoria M4.5, P2-6).
+        #
+        # Apagar antes de tentar enviar tirava a pessoa das DUAS filas se
+        # o envio falhasse depois: a semanal exige `podcast_ultimo`
+        # preenchido, a de primeira vez exige `podcast_convite_em` vazio.
+        # Ela ficava sem convite nenhum, pra sempre.
+        #
+        # O valor podre e so ignorado NESTA decisao. Quem o substitui e o
+        # `podcast_marcar_envio` la embaixo — e ele so roda quando o audio
+        # comprovadamente saiu.
         _ultimo = None
     if podcast.nicho_valido(nicho) and not podcast.pode_enviar(_ultimo):
         return ("Você já ouviu o episódio desta semana. 🎧\n\n"
@@ -5916,11 +5931,8 @@ def dispatch_proactive() -> int:
         # junto quem estava atras na fila — e o `_loop_proativo` engole
         # com "ciclo falhou", que foi o silencio que escondeu o P0-1.
         try:
-            if ok and d.get("user_id"):
-                if d.get("kind") == "podcast":
-                    db.podcast_marcar_convite(d["user_id"])
-                elif d.get("kind") == "podcast-dia":
-                    db.podcast_marcar_pergunta_do_dia(d["user_id"])
+            if ok and d.get("kind") == "podcast" and d.get("user_id"):
+                db.podcast_marcar_convite(d["user_id"])
         except Exception:
             log.warning("[cron] falhei ao carimbar o podcast",
                         exc_info=True)

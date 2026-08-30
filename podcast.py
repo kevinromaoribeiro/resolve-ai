@@ -606,11 +606,23 @@ def conferir_locucao(texto: Optional[str], nicho: Optional[str],
     #     modulo pede isso
     #   - 1 ate BLOCOS: a numeracao que o proprio formato cria
     #   - o ano corrente e o proximo
+    #
+    # O QUE ELA NAO COBRE, e vale dizer em voz alta: numero REUSADO em
+    # outra relacao. Se a fonte diz "2 a 1" e "3 semanas", o roteiro pode
+    # dizer "3 a 2" que passa — os dois numeros existem na materia, so
+    # nao naquela combinacao. Verificar relacao exigiria entender a
+    # frase, que e o problema que a checagem existe pra nao depender.
+    #
+    # Entao: esta camada pega numero que NAO EXISTE na fonte (valor de
+    # transferencia, publico, ano fora da janela, goleada). Nao pega
+    # placar plausivel remontado. Quem cobre esse resto e o proprio
+    # prompt e o fato de o roteiro citar as fontes — a pessoa pode
+    # conferir.
     if materia is not None:
         fonte = _valores(materia)
         ano = (hoje or tempo.hoje()).year
-        for valor, cru in _valores(texto, com_texto=True):
-            if not _autorizado(valor, fonte, ano):
+        for valor, cru, numeracao in _valores(texto, com_texto=True):
+            if not _autorizado(valor, fonte, ano, numeracao):
                 return "numero %r nao veio das fontes" % cru.rstrip(".,")
     return None
 
@@ -654,13 +666,31 @@ def _valores(texto: str, com_texto: bool = False) -> list:
             if re.match(r"\s*(?:de\s+)?(?:%s)" % padrao, depois):
                 valor *= mult
                 break
-        saida.append((valor, m.group(0)) if com_texto else valor)
+        if com_texto:
+            # "numeracao" = o numero ABRE a linha e vem seguido de ponto.
+            antes = texto[:m.start()]
+            inicio_de_linha = (not antes.strip()
+                               or antes.rstrip(" ").endswith(chr(10)))
+            saida.append((valor, m.group(0),
+                          bool(inicio_de_linha
+                               and texto[m.end():m.end() + 1] == ".")))
+        else:
+            saida.append(valor)
     return saida
 
 
-def _autorizado(valor: float, fonte: list, ano: int) -> bool:
-    if 0 <= valor <= BLOCOS and float(valor).is_integer():
-        return True                        # numeracao de bloco / "primeiro"
+def _autorizado(valor: float, fonte: list, ano: int,
+                numeracao: bool = False) -> bool:
+    # A NUMERACAO DE BLOCO SO VALE QUANDO E NUMERACAO (auditoria M4.5, P1-4).
+    #
+    # Liberar todo inteiro de 0 a BLOCOS deixava passar praticamente TODO
+    # placar de futebol que existe: "3 a 2", "2 a 0", "1 a 0". O caso do
+    # auditor ("7 a 0") era pego e a versao realista dele nao.
+    #
+    # Agora so entra por aqui o numero que abre linha seguido de ponto —
+    # "1." "2." "3." —, que e a forma que o formato cria e o modelo copia.
+    if numeracao and 1 <= valor <= BLOCOS and float(valor).is_integer():
+        return True
     if valor in (ano, ano + 1):
         return True
     for f in fonte:

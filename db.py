@@ -2782,6 +2782,43 @@ def podcast_assinantes(limite: int = 200) -> list[dict]:
                 ORDER BY id ASC LIMIT ?""", (limite,)).fetchall()]
 
 
+def podcast_convite_recente(user_id: int, dias: int = 7, ref=None) -> bool:
+    """Ja convidamos esta pessoa nos ultimos N dias?
+
+    O TETO DE 1X POR SEMANA TEM QUE OLHAR O CONVITE, NAO SO O EPISODIO
+    (auditoria M4.5, P0).
+
+    `podcast_ultimo` so muda quando a pessoa TOCA no botao. Quem recebeu o
+    convite e nao respondeu ficava com o campo parado — e, sem dia fixo
+    segurando, o convite renascia TODO DIA, pra sempre. Medido: 14 convites
+    por pessoa em 14 dias. Isso e assinatura de ritmo, que e o que ja rendeu
+    duas restricoes neste numero.
+
+    `podcast_convite_em` e carimbado por QUEM ENVIA, entao convite que nao
+    saiu nao conta.
+    """
+    quando = None
+    with get_conn() as conn:
+        r = conn.execute("SELECT podcast_convite_em FROM users WHERE id=?",
+                         (int(user_id),)).fetchone()
+        if r:
+            quando = r["podcast_convite_em"]
+    if not quando:
+        return False
+    try:
+        marcado = datetime.strptime(str(quando)[:19].replace("T", " "),
+                                    "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        # Carimbo ilegivel conta como RECENTE: o erro seguro aqui e convidar
+        # de menos.
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[podcast] podcast_convite_em ilegivel (%r) no user %s",
+            quando, user_id)
+        return True
+    return (ref or tempo.agora()) - marcado < timedelta(days=dias)
+
+
 def podcast_marcar_envio(user_id: int, quando=None) -> None:
     """Carimba o episodio que saiu. E o que segura o teto de 1x por semana."""
     q = (quando or tempo.agora()).strftime("%Y-%m-%d %H:%M:%S")

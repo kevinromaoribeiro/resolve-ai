@@ -265,7 +265,8 @@ def test_o_episodio_semanal_alcanca_quem_ja_ouviu(usuario, horario_util,
     _com_nicho(usuario)
     db.podcast_marcar_envio(
         usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
-    db.podcast_marcar_convite(usuario["id"])
+    db.podcast_marcar_convite(
+        usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
     d = scheduler.check_podcast()
     assert len(d) == 1, ("quem ja ouviu ficou de fora: %r" % d)
 
@@ -279,7 +280,8 @@ def test_qualquer_dia_da_semana_serve(usuario, com_voz, monkeypatch, dia):
     _com_nicho(usuario)
     db.podcast_marcar_envio(
         usuario["id"], quando=base - _dt.timedelta(days=8))
-    db.podcast_marcar_convite(usuario["id"])
+    db.podcast_marcar_convite(
+        usuario["id"], quando=base - _dt.timedelta(days=8))
     assert scheduler.check_podcast(), ("nao alcancou no dia %d" % dia)
 
 
@@ -287,7 +289,8 @@ def test_o_teto_de_uma_por_semana_continua_valendo(usuario, horario_util,
                                                    com_voz):
     """"Mais alcance" nao pode virar "mais ruido": e o teto que segura."""
     _com_nicho(usuario)
-    db.podcast_marcar_convite(usuario["id"])
+    db.podcast_marcar_convite(
+        usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
     for dias, esperado in ((8, True), (6, False), (1, False)):
         db.podcast_marcar_envio(
             usuario["id"], quando=tempo.agora() - _dt.timedelta(days=dias))
@@ -465,7 +468,8 @@ def test_o_convite_SEMANAL_nao_se_repete_no_ciclo_seguinte(
     db.update_user_fields(usuario["id"], podcast_dia="Terça")
     db.podcast_marcar_envio(
         usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
-    db.podcast_marcar_convite(usuario["id"])
+    db.podcast_marcar_convite(
+        usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
     saiu = _cron_pronto(monkeypatch, usuario)
 
     for _ in range(5):
@@ -542,3 +546,78 @@ def test_o_convite_nao_promete_minutagem(usuario):
     c = podcast.convite("futebol", nome="Kevin")
     assert "3 minutos" not in c["texto"], c["texto"]
     assert "minuto" not in c["texto"].lower(), c["texto"]
+
+
+# ---------------------------------------------------------------------------
+# 9. auditoria M4.5: o buraco ENTRE DIAS
+# ---------------------------------------------------------------------------
+# O M4.4 fechou a repeticao dentro do dia (`dispatched_today`) e o M4.5 abriu
+# a repeticao entre dias, no mesmo commit em que tirou o dia fixo. Nenhum
+# teste avancava o calendario — por isso passou.
+
+def test_o_convite_nao_volta_todO_dia_pra_quem_nao_toca(usuario, com_voz,
+                                                        monkeypatch):
+    """O defeito media 14 convites por pessoa em 14 dias.
+
+    `podcast_ultimo` so muda quando a pessoa TOCA no botao. Quem recebeu e
+    nao respondeu ficava com o campo parado, e sem dia fixo segurando o
+    convite renascia todo dia — assinatura de ritmo, que e o que ja rendeu
+    duas restricoes neste numero.
+    """
+    base = _dt.datetime(2026, 8, 18, 10, 0, 0)
+    monkeypatch.setattr(tempo, "agora", lambda: base)
+    monkeypatch.setattr(tempo, "hoje", lambda: base.date())
+    _com_nicho(usuario)
+    db.podcast_marcar_envio(usuario["id"], quando=base - _dt.timedelta(days=8))
+    db.podcast_marcar_convite(usuario["id"],
+                              quando=base - _dt.timedelta(days=8))
+    saiu = _cron_pronto(monkeypatch, usuario)
+
+    convites = 0
+    for dia in range(14):
+        agora = base + _dt.timedelta(days=dia)
+        monkeypatch.setattr(tempo, "agora", lambda a=agora: a)
+        monkeypatch.setattr(tempo, "hoje", lambda a=agora: a.date())
+        with db.get_conn() as c:      # janela de 24h aberta todo dia
+            c.execute("DELETE FROM dispatches")
+        db.log_message(None, usuario["telefone"], "in", "texto", "oi")
+        antes = len(saiu)
+        wa_bot.dispatch_proactive()
+        convites += len([t for t in saiu[antes:] if "podcast" in t.lower()])
+
+    assert convites <= 2, (
+        "o convite voltou %d vezes em 14 dias (o teto e 1 por semana)"
+        % convites)
+
+
+def test_a_amostra_e_so_do_dono(usuario, monkeypatch):
+    """Cinco audios + cinco chamadas pagas de LLM e TTS por invocacao.
+
+    Liberar isso pra qualquer um dos 11 clientes nao quebrava um unico teste
+    (auditoria M4.5, placebo P8).
+    """
+    import voz
+    chamou = []
+    monkeypatch.setattr(voz, "disponivel",
+                        lambda: chamou.append("voz") or True)
+    monkeypatch.setattr(wa_bot, "ADMIN_PHONE", "5511999998888")
+
+    r = wa_bot._handle_commands(usuario, usuario["telefone"],
+                                "amostra do podcast")
+    assert not chamou, "cliente comum disparou a amostra do dono"
+    assert r is None or "amostra" not in (r or "").lower(), r
+
+    monkeypatch.setattr(wa_bot, "ADMIN_PHONE", "")
+    chamou.clear()
+    wa_bot._handle_commands(usuario, usuario["telefone"],
+                            "amostra do podcast")
+    assert not chamou, "sem ADMIN_PHONE tem que ficar fechado, nao aberto"
+
+
+def test_a_amostra_espaca_os_envios(monkeypatch):
+    """Cinco nichos sao ate dez mensagens; de enfiada e a assinatura de
+    ritmo que ja rendeu 3h de restricao neste numero."""
+    import inspect
+    fonte = inspect.getsource(wa_bot._amostra_de_podcast)
+    assert "time.sleep" in fonte, (
+        "a amostra manda em rajada, sem o freio de espacamento")
