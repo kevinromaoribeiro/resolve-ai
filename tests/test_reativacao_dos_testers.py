@@ -419,3 +419,47 @@ def test_o_diagnostico_nao_derruba_o_health(usuario, ligada, monkeypatch):
     monkeypatch.setattr(db, "list_users", explode)
     d = scheduler.reativacao_diagnostico()
     assert d.get("erro") is True
+
+
+def test_disparo_que_nao_vai_sair_nao_toma_a_vez_da_reativacao(usuario,
+                                                               ligada,
+                                                               monkeypatch):
+    """O BUG QUE CUSTOU UM DIA DE ENVIO (M6.2).
+
+    `_servidos` marcava a pessoa como atendida ANTES de o `_tem_como_sair`
+    descartar o disparo que a atenderia. Como os testers estao TODOS fora da
+    janela de 24h — e por isso que a reativacao existe —, todo ciclo a fila
+    inteira era zerada por mensagens que nunca sairiam. Em silencio: o
+    diagnostico dizia "10 na fila" e o contador de envios nao mexia.
+    """
+    enviados = []
+    monkeypatch.setattr(
+        wa_bot.wasender, "falar",
+        lambda tel, txt, **kw: enviados.append(kw.get("template") or "livre")
+        or {"enviado": True, "via": "t", "motivo": ""})
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
+
+    # a pessoa esta FORA da janela: nenhuma entrada dela nas ultimas 24h
+    with db.get_conn() as c:
+        c.execute("DELETE FROM msg_log")
+
+    # um disparo de kind SEM template — ele nao tem como sair fora da janela
+    sem_template = sorted(_cat.KINDS_SEM_TEMPLATE)[0]
+    d_fantasma = {"user_id": usuario["id"], "user_nome": "Kevin",
+                  "telefone": TELEFONE, "item_id": None,
+                  "kind": sem_template, "message": "isso nao vai sair",
+                  "quando": "31/08"}
+    d_convite = {"user_id": usuario["id"], "user_nome": "Kevin",
+                 "telefone": TELEFONE, "item_id": None,
+                 "kind": "reativacao", "message": "oi, volta",
+                 "quando": "31/08"}
+    monkeypatch.setattr(
+        scheduler, "run_proactive_engine",
+        lambda **k: {"executed_at": "x", "total": 2,
+                     "churn_dispatches": [d_fantasma],
+                     "reativacao_dispatches": [d_convite]})
+
+    wa_bot.dispatch_proactive()
+    assert "reativar_boas_vindas" in enviados, (
+        "o disparo descartado tomou a vez da reativacao: %s" % enviados)

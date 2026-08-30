@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v26.7-m61-diagnostico-2026-08-30"
+BUILD = "v26.8-m62-cortesia-depois-da-poda-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6162,6 +6162,19 @@ def dispatch_proactive() -> int:
     # `DISPATCH_MAX_PER_CYCLE`, entao o convite ocuparia a vaga do "sua conta
     # vence amanha"; e reativacao existe pra quem ESFRIOU — quem esta
     # recebendo lembrete nao esfriou. Ela volta no proximo ciclo.
+    _antes_poda = len(all_dispatches)
+    all_dispatches = [d for d in all_dispatches if _tem_como_sair(d)]
+    if len(all_dispatches) != _antes_poda:
+        log.info("[cron] %d disparo(s) sem template e fora da janela adiados "
+                 "— voltam quando a pessoa responder",
+                 _antes_poda - len(all_dispatches))
+
+    # DEPOIS DA PODA, e nao antes (M6.2). A ordem inversa custou um dia de
+    # envio: `_servidos` marcava a pessoa como atendida por um disparo que o
+    # `_tem_como_sair` descartava na linha seguinte. Como os testers estao
+    # TODOS fora da janela de 24h — e por isso que a reativacao existe —,
+    # todo ciclo a fila inteira era zerada por mensagens que nunca sairiam.
+    # Ceder a vez pra quem nao vai falar nao e cortesia, e bloqueio.
     _servidos = {d.get("user_id") for d in all_dispatches
                  if (d.get("kind") or "") != "reativacao"}
     if _servidos:
@@ -6174,13 +6187,6 @@ def dispatch_proactive() -> int:
             log.info("[cron] %d reativacao(oes) adiada(s): a pessoa ja tem "
                      "mensagem de produto neste ciclo",
                      _antes_cortesia - len(all_dispatches))
-
-    _antes_poda = len(all_dispatches)
-    all_dispatches = [d for d in all_dispatches if _tem_como_sair(d)]
-    if len(all_dispatches) != _antes_poda:
-        log.info("[cron] %d disparo(s) sem template e fora da janela adiados "
-                 "— voltam quando a pessoa responder",
-                 _antes_poda - len(all_dispatches))
 
     for d in all_dispatches[:DISPATCH_MAX_PER_CYCLE]:
         number = re.sub(r"\D", "", d["telefone"])
