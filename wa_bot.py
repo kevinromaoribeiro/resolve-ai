@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v26.3-m50-duas-vozes-2026-08-29"
+BUILD = "v26.4-m51-elevenlabs-pronto-2026-08-29"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -2477,7 +2477,8 @@ _PENDENCIAS_DE_CONVERSA = frozenset({
 })
 
 
-def _amostra_de_podcast(user: dict, phone: str) -> str:
+def _amostra_de_podcast(user: dict, phone: str, nicho: str = "",
+                        provedor: str = "") -> str:
     """Um episódio de cada nicho, pro dono julgar antes de soltar.
 
     Roda o caminho REAL — feed, roteiro, locução, voz, envio — cinco vezes.
@@ -2499,8 +2500,12 @@ def _amostra_de_podcast(user: dict, phone: str) -> str:
                 "Falta a chave da OpenAI (ou `VOZ_PROVEDOR`) no ambiente — "
                 "sem ela o podcast nem é oferecido pros clientes.")
 
+    # UM NICHO SO, quando pedido: serve pra comparar dois provedores de voz
+    # no MESMO conteudo, que e a unica comparacao que diz alguma coisa.
+    alvos = ([podcast.nicho_valido(nicho)] if podcast.nicho_valido(nicho)
+             else list(podcast.NICHOS))
     linhas, ok, enviados_ate_agora = [], 0, 0
-    for chave in podcast.NICHOS:
+    for chave in alvos:
         rotulo = podcast.rotulo(chave)
         try:
             itens = noticias.buscar(chave)
@@ -2513,7 +2518,7 @@ def _amostra_de_podcast(user: dict, phone: str) -> str:
         if not roteiro:
             linhas.append(f"• {rotulo}: sem notícia da semana")
             continue
-        audio = voz.sintetizar(roteiro)
+        audio = voz.sintetizar(roteiro, provedor=provedor or None)
         if not audio:
             linhas.append(f"• {rotulo}: a voz falhou")
             continue
@@ -2535,7 +2540,8 @@ def _amostra_de_podcast(user: dict, phone: str) -> str:
         else:
             linhas.append(f"• {rotulo}: não saiu ({res.get('motivo')})")
 
-    return (f"Amostra pronta: *{ok} de {len(podcast.NICHOS)}* nichos. 🎙️\n\n"
+    return (f"Amostra pronta: *{ok} de {len(alvos)}* nicho(s)"
+            f"{(' — voz: ' + provedor) if provedor else ''}. 🎙️\n\n"
             + "\n".join(linhas)
             + "\n\n_Nada foi marcado como enviado — isso é inspeção, não "
               "entrega._")
@@ -7530,7 +7536,10 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
                         {"ok": False,
                          "erro": "numero nao cadastrado: %s" % _alvo})
                 try:
-                    _txt = _amostra_de_podcast(_u, _alvo)
+                    _txt = _amostra_de_podcast(
+                        _u, _alvo,
+                        nicho=str(body.get("nicho") or ""),
+                        provedor=str(body.get("provedor") or ""))
                 except Exception as e:
                     log.warning("[painel] amostra do podcast falhou",
                                 exc_info=True)

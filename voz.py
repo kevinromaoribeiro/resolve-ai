@@ -96,12 +96,25 @@ def provedor_configurado() -> Optional[str]:
     return None
 
 
+def _tem_chave(prov: Optional[str]) -> bool:
+    """Existe chave pro provedor pedido? Só a EXISTÊNCIA, nunca o valor."""
+    if prov == "openai":
+        return bool(os.environ.get("OPENAI_API_KEY"))
+    if prov == "elevenlabs":
+        return bool(os.environ.get("ELEVENLABS_API_KEY"))
+    if prov == "gemini":
+        return bool(os.environ.get("GEMINI_API_KEY")
+                    or os.environ.get("GOOGLE_API_KEY"))
+    return False
+
+
 def disponivel() -> bool:
     """Dá pra gerar áudio hoje? O podcast só é oferecido quando sim."""
     return provedor_configurado() is not None
 
 
-def sintetizar(texto: Optional[str]) -> Optional[bytes]:
+def sintetizar(texto: Optional[str],
+               provedor: Optional[str] = None) -> Optional[bytes]:
     """Texto -> bytes de áudio (OGG/Opus). None quando não deu.
 
     None NÃO É ERRO SILENCIOSO: quem chama trata como "não tem episódio hoje"
@@ -116,7 +129,13 @@ def sintetizar(texto: Optional[str]) -> Optional[bytes]:
                     len(t), MAX_CARACTERES)
         return None
 
-    prov = provedor_configurado()
+    # PROVEDOR PEDIDO NA HORA, pra comparar um contra o outro sem trocar o
+    # default de todo mundo. Só vale se a chave dele existir — pedir um
+    # provedor sem chave é pedir o que não dá pra entregar.
+    prov = (provedor or "").strip().lower() or provedor_configurado()
+    if provedor and not _tem_chave(prov):
+        log.warning("[voz] provedor %r pedido mas sem chave", prov)
+        return None
     if not prov:
         log.info("[voz] nenhum provedor de voz configurado")
         return None
@@ -127,7 +146,7 @@ def sintetizar(texto: Optional[str]) -> Optional[bytes]:
         if not falas:
             # Texto sem diálogo: uma voz só. Continua servindo pra qualquer
             # outro uso e é o caminho do roteiro determinístico antigo.
-            return _uma_voz(prov, t, VOZ_MULHER)
+            return _uma_voz(prov, t, "mulher")
         return _dialogo(prov, falas)
     except Exception:
         log.warning("[voz] %s falhou ao sintetizar", prov, exc_info=True)
@@ -146,8 +165,7 @@ def _dialogo(prov: str, falas: list) -> Optional[bytes]:
 
     def _um(par):
         quem, texto = par
-        return _uma_voz(prov, texto,
-                        VOZ_HOMEM if quem == "homem" else VOZ_MULHER)
+        return _uma_voz(prov, texto, quem)
 
     with cf.ThreadPoolExecutor(max_workers=4) as ex:
         pedacos = list(ex.map(_um, falas))
@@ -165,13 +183,16 @@ def _dialogo(prov: str, falas: list) -> Optional[bytes]:
     return _colar_mp3(bons)
 
 
-def _uma_voz(prov: str, texto: str, voz: str) -> Optional[bytes]:
+def _uma_voz(prov: str, texto: str, quem: str) -> Optional[bytes]:
+    """`quem` e "mulher" ou "homem"; cada provedor tem o seu par de vozes."""
     if prov == "openai":
-        return _openai(texto, voz)
+        return _openai(texto,
+                       VOZ_MULHER if quem == "mulher" else VOZ_HOMEM)
+    if prov == "elevenlabs":
+        return _elevenlabs(texto,
+                           VOZ_11_MULHER if quem == "mulher" else VOZ_11_HOMEM)
     if prov == "gemini":
         return _gemini(texto)
-    if prov == "elevenlabs":
-        return _elevenlabs(texto)
     return None
 
 
@@ -241,15 +262,33 @@ def _gemini(texto: str) -> Optional[bytes]:
     return None
 
 
-def _elevenlabs(texto: str) -> Optional[bytes]:
+# Vozes da ElevenLabs. Os ids são das vozes prontas do catálogo e podem
+# mudar com o tempo — por isso são variáveis de ambiente, e não constantes:
+# trocar de voz não pode exigir deploy.
+VOZ_11_MULHER = os.environ.get("VOZ_ELEVENLABS_MULHER") or "21m00Tcm4TlvDq8ikWAM"
+VOZ_11_HOMEM = os.environ.get("VOZ_ELEVENLABS_HOMEM") or "pNInz6obpgDQGcFmaJgB"
+MODELO_11 = os.environ.get("VOZ_MODELO_ELEVENLABS") or "eleven_multilingual_v2"
+
+
+def _elevenlabs(texto: str, voz: Optional[str] = None) -> Optional[bytes]:
+    """MP3, e não Opus: o diálogo precisa ser COLADO fala a fala.
+
+    A `stability` baixa e o `style` alto são o que dá variação de entonação —
+    é justamente o "robótico" que o Kevin apontou na primeira amostra. Voz
+    estável demais lê igual do começo ao fim, e conversa não é assim.
+    """
     import httpx
-    voz = os.environ.get("VOZ_ELEVENLABS") or "21m00Tcm4TlvDq8ikWAM"
+    escolhida = voz or VOZ_11_MULHER
     r = httpx.post(
-        "https://api.elevenlabs.io/v1/text-to-speech/%s" % voz,
+        "https://api.elevenlabs.io/v1/text-to-speech/%s" % escolhida,
         headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"],
                  "Content-Type": "application/json"},
-        json={"text": texto, "model_id": "eleven_multilingual_v2",
-              "output_format": "opus_48000_64"},
+        params={"output_format": "mp3_44100_128"},
+        json={"text": texto, "model_id": MODELO_11,
+              "voice_settings": {"stability": 0.38,
+                                 "similarity_boost": 0.80,
+                                 "style": 0.55,
+                                 "use_speaker_boost": True}},
         timeout=TIMEOUT_S)
     r.raise_for_status()
     return r.content or None
