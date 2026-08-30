@@ -48,7 +48,11 @@ def limpo(monkeypatch):
                  "RECEM_APAGADOS", "CONFERIR_FILA", "AUDIO_ESPERADO",
                  "SILENCIOU_AGORA", "PRE_ACEITE", "KIT_ETAPA",
                  "KIT_JA_OFERECIDO", "KIT_CONVITE", "ULTIMO_AVISO_LGPD",
-                 "CANCELADO_AVISO", "PASSADO_AVISADO", "_ALERTAS_ENVIADOS"):
+                 "CANCELADO_AVISO", "PASSADO_AVISADO", "_ALERTAS_ENVIADOS",
+                 # M5.4: a pergunta do nicho tem slot proprio, fora do
+                 # PENDING. Fora desta lista ela vazava de um teste pro
+                 # outro e o seguinte media a pergunta do anterior.
+                 "PODCAST_PERGUNTA"):
         alvo = getattr(wa_bot, nome, None)
         if isinstance(alvo, dict):
             alvo.clear()
@@ -146,6 +150,11 @@ def usuario():
                           podcast_nicho=None, podcast_dia=None,
                           podcast_ultimo=None, podcast_convite_em=None,
                           podcast_dia_perguntado=None,
+                          # M5.4, mesmo motivo: um teste que cancela o
+                          # podcast deixava todos os seguintes medindo a
+                          # recusa do anterior — e o sintoma era o convite
+                          # "nao sair", que parece defeito de producao.
+                          podcast_recusado_em=None,
                           dia_resumo="Segunda-feira",
                           lgpd_aceite_em=tempo.agora().isoformat())
     # `data_criacao` DE VOLTA PRA AGORA. A linha de `users` sobrevive entre

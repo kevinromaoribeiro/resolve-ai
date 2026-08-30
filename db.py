@@ -237,8 +237,14 @@ def init_db() -> None:
         # da semana que ela pediz, e quando saiu o ultimo episodio (que e o
         # que segura o teto de 1x por semana).
         _ucols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+        # M5.4 (auditoria, P1-5): `podcast_recusado_em`. Antes, cancelar
+        # so zerava `podcast_nicho` — e "nunca escolheu" ficava igual a
+        # "disse nao". O resultado era re-oferecer o audio pra quem tinha
+        # acabado de recusar, que e o que a regua da Meta pune num numero
+        # ja restringido duas vezes.
         for _c in ("podcast_nicho", "podcast_dia", "podcast_ultimo",
-                   "podcast_convite_em", "podcast_dia_perguntado"):
+                   "podcast_convite_em", "podcast_dia_perguntado",
+                   "podcast_recusado_em"):
             if _c not in _ucols:
                 conn.execute("ALTER TABLE users ADD COLUMN %s TEXT" % _c)
         # v6.5: CHECK antigo de status não conhece 'vencido' -> rebuild
@@ -397,7 +403,8 @@ def update_user_fields(user_id: int, **fields) -> None:
                # a pessoa pediu, quando saiu o último episódio e quando o
                # convite foi feito.
                "podcast_nicho", "podcast_dia", "podcast_ultimo",
-               "podcast_convite_em", "podcast_dia_perguntado"}
+               "podcast_convite_em", "podcast_dia_perguntado",
+               "podcast_recusado_em"}
     cols = {k: v for k, v in fields.items() if k in allowed}
     # DESCARTE SILENCIOSO ERA UMA ARMADILHA. Coluna nova no banco e esquecida
     # aqui vira UPDATE que não acontece, sem erro e sem log: o chamador acha
@@ -2753,6 +2760,7 @@ def podcast_a_convidar(ref=None, horas: int = 6, limite: int = 20) -> list[dict]
                 WHERE podcast_nicho IS NOT NULL
                   AND TRIM(podcast_nicho) <> ''
                   AND podcast_convite_em IS NULL
+                  AND podcast_recusado_em IS NULL
                   AND data_criacao <= ?
                 ORDER BY data_criacao ASC LIMIT ?""",
             (corte, limite)).fetchall()

@@ -48,11 +48,11 @@ def _feed_falso(agora=None):
 
 @pytest.fixture
 def com_voz(monkeypatch):
-    """Voz configurada, sintese dublada, e a feature LIGADA.
+    """Voz configurada e sintese dublada.
 
-    `PODCAST_ATIVO` e falso por default de proposito (o dono liga quando
-    aprovar). Sem ligar aqui, todo teste de podcast mediria a trava em vez
-    de medir o comportamento.
+    `PODCAST_ATIVO` hoje ja e verdadeiro por default (o Kevin aprovou em
+    30/08/2026), mas a fixture continua fixando o valor: assim um teste de
+    comportamento nao vira, sem querer, um teste da variavel de ambiente.
     """
     monkeypatch.setattr(voz, "disponivel", lambda: True)
     monkeypatch.setattr(voz, "sintetizar", lambda t: b"OggS-audio-falso")
@@ -105,6 +105,18 @@ def test_a_captura_nao_engole_a_mensagem(usuario, monkeypatch):
 # ---------------------------------------------------------------------------
 # 2. o convite: 6h depois, uma vez, com botao
 # ---------------------------------------------------------------------------
+
+def _pending_de_documento():
+    """O payload EXATO que a foto de documento arma em producao.
+
+    Sem a chave `quando`, `_proposta_viva` e fail-closed e a mensagem cai
+    noutro handler — um teste montado assim mede um caminho que nao existe.
+    """
+    return {"tipo": "confirmar_documento",
+            "doc": {"descricao": "energia", "valor": 187.0,
+                    "vencimento": "2026-09-20"},
+            "quando": tempo.agora()}
+
 
 def _com_nicho(usuario, nicho="futebol", horas_atras=7):
     db.update_user_fields(usuario["id"], podcast_nicho=nicho)
@@ -699,3 +711,528 @@ def test_o_audio_nunca_sai_junto_com_o_lembrete(usuario, com_voz):
     assert "audio" not in d, d
     assert isinstance(d.get("message"), str) and d["message"]
     assert d["botoes"][0] == "Quero ouvir"
+
+
+# ---------------------------------------------------------------------------
+# 10. os 11 testers: escolher o assunto DENTRO da conversa
+# ---------------------------------------------------------------------------
+# Eles se cadastraram antes de a landing ter selecao de nicho, entao nenhum
+# tem assunto guardado. Alcanca-los fora da janela exigiria template novo, e
+# o Kevin foi direto: "se precisar usar templates, use os aprovados".
+# Entao a novidade chega quando eles voltam a falar com o bot.
+
+def test_quem_nao_tem_assunto_e_perguntado_em_vez_de_adivinhado(usuario,
+                                                                com_voz):
+    """Escolher por eles seria mandar audio de um tema que ninguem pediu."""
+    r = responder("quero o áudio")
+    assert "futebol" in r.lower() and "games" in r.lower(), r
+    # slot proprio, nao `PENDING`: a pergunta nao pode atropelar decisao viva
+    assert TELEFONE in wa_bot.PODCAST_PERGUNTA
+    assert not wa_bot.PENDING.get(TELEFONE)
+
+
+def test_a_resposta_com_o_assunto_guarda_o_nicho(usuario, com_voz):
+    responder("quero o áudio")
+    r = responder("games")
+    assert db.get_user(usuario["id"])["podcast_nicho"] == "games", r
+    assert "games" in r.lower()
+
+
+def test_assunto_solto_sem_a_pergunta_nao_vira_assinatura(usuario):
+    """"futebol" numa conversa qualquer nao pode virar assinatura de audio."""
+    responder("futebol")
+    assert not db.get_user(usuario["id"])["podcast_nicho"]
+
+
+def test_assunto_que_nao_existe_segue_pro_motor_normal(usuario, com_voz):
+    """SEM catch-all (auditoria M5.4, P0-1). O que nao e assunto conhecido
+    cai fora do bloco e o resto do bot responde — a alternativa era uma
+    jaula de 24h que engolia lembrete, baixa e ate o botao de reativacao."""
+    responder("quero o áudio")
+    responder("criptomoeda")
+    assert not db.get_user(usuario["id"])["podcast_nicho"]
+    # a pergunta continua de pe: ela pode responder certo na sequencia
+    responder("moda")
+    assert db.get_user(usuario["id"])["podcast_nicho"] == "moda"
+
+
+def test_numero_solto_nunca_vira_assinatura_de_podcast(usuario, com_voz):
+    """O menu 1/2 custou a FASE 1 inteira. Um digito e resposta de MENU —
+    do menu de baixa, do menu de confirmacao — e nunca do podcast. A lista
+    de assuntos nem numera as opcoes; o caminho numerico so tinha downside."""
+    responder("quero o áudio")
+    for digito in ("1", "2", "3", "4", "5"):
+        responder(digito)
+        assert not db.get_user(usuario["id"])["podcast_nicho"], digito
+
+
+def test_recusa_na_escolha_nao_mexe_nos_lembretes(usuario, com_voz):
+    responder("quero o áudio")
+    r = responder("não quero")
+    assert "lembretes continuam" in r.lower(), r
+    assert not db.get_user(usuario["id"])["podcast_nicho"]
+
+
+def test_a_novidade_vai_junto_na_resposta_de_reativacao(usuario):
+    """Sem gastar mensagem nova e sem esperar template: a noticia viaja na
+    resposta que o botao do `reativar_boas_vindas` ja provocava."""
+    r = responder("Quero comecar")
+    # as tres partes: que existe, o que e, e como pedir. Faltando qualquer
+    # uma, o tester le a mensagem e nao sabe o que fazer com ela.
+    assert "novidade" in r.lower(), r
+    assert "resumo em áudio" in r.lower(), r
+    assert "quero o áudio" in r.lower(), r
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# 11. "pra renovar, mande que renovou"
+# ---------------------------------------------------------------------------
+# `resolveai_trial_estendido` ainda esta em analise na Meta, entao o aviso
+# proprio nao sai. Mas o botao do `reativar_boas_vindas` (aprovado) abre a
+# janela de 24h — e dentro dela texto livre passa.
+
+def test_a_reativacao_diz_quantos_dias_de_teste_sobraram(usuario):
+    db.update_user_fields(usuario["id"], status="trial")
+    r = responder("Quero comecar")
+    assert "valendo até" in r.lower(), r
+    # o numero tem que ser o REAL, nao um chute bonito
+    esperado = db.trial_days_left(db.get_user(usuario["id"]))
+    assert ("(%d dias)" % esperado) in r, (esperado, r)
+
+
+def test_quem_ja_paga_nao_ouve_falar_de_teste(usuario):
+    """Dizer "renovei seu teste" pra quem assinou e desfazer a venda."""
+    db.update_user_fields(usuario["id"], status="ativo")
+    r = responder("Quero comecar")
+    assert "teste" not in r.lower().split("🎧")[0], r
+    # mas a novidade do audio continua indo pra ele
+    assert "novidade" in r.lower(), r
+
+
+def test_trial_vencido_nao_promete_dia_nenhum(usuario, monkeypatch):
+    """Sem dias de verdade, a linha some — mentir seria pior que calar."""
+    db.update_user_fields(usuario["id"], status="trial")
+    monkeypatch.setattr(db, "trial_days_left", lambda u, *a, **k: 0)
+    r = responder("Quero comecar")
+    assert "renovei" not in r.lower(), r
+    assert "novidade" in r.lower(), r
+
+
+def test_falha_ao_ler_o_trial_nao_derruba_a_reativacao(usuario, monkeypatch):
+    """A pessoa voltou depois de semanas: essa resposta nao pode morrer."""
+    def explode(*a, **k):
+        raise RuntimeError("banco fora")
+    monkeypatch.setattr(db, "trial_days_left", explode)
+    r = responder("Quero comecar")
+    assert "luz 187" in r, r
+    assert "renovei" not in r.lower(), r
+
+
+# ---------------------------------------------------------------------------
+# 12. AUDITORIA M5.2 — a pergunta do nicho nao pode virar jaula
+# ---------------------------------------------------------------------------
+# O auditor mediu: com a pergunta de pe, "luz 187 vence dia 20" respondia
+# "Nao peguei o assunto" e o lembrete sumia calado, por 24h. E o mesmo modo
+# de falha que o bloco de BAIXA chama de "o pior bug do produto".
+
+def test_pergunta_do_nicho_nao_engole_lembrete(usuario, com_voz):
+    responder("quero o áudio")
+    antes = len(db.list_items(usuario["id"]))
+    r = responder("luz 187 vence dia 20")
+    assert len(db.list_items(usuario["id"])) == antes + 1, r
+    assert "não peguei o assunto" not in r.lower(), r
+
+
+def test_pergunta_do_nicho_nao_engole_baixa(usuario, com_voz):
+    """DOIS itens de proposito: com um so, "paguei a luz" da baixa direta e
+    o teste nunca chega no menu numerado — que e onde o defeito mora."""
+    responder("luz 187 vence dia 20")
+    responder("agua 90 vence dia 22")
+    responder("quero o áudio")
+    r = responder("paguei a conta")
+    assert "não peguei o assunto" not in r.lower(), r
+    # o menu numerado tem que ser DO BOT, nao do podcast
+    if "1" in r and "2" in r:
+        r2 = responder("2")
+        assert "🎧" not in r2, ("o numero do menu de baixa virou "
+                                "assinatura de podcast: %s" % r2)
+    pagos = [i for i in db.list_items(usuario["id"])
+             if (i.get("status") or "") != "pendente"]
+    assert pagos, "a baixa sumiu dentro da pergunta do nicho"
+
+
+def test_pergunta_do_nicho_nao_engole_o_botao_de_reativacao(usuario, com_voz):
+    responder("quero o áudio")
+    r = responder("Quero comecar")
+    assert "luz 187" in r, r
+
+
+def test_pergunta_do_nicho_nao_sequestra_pedido_de_cancelar(usuario, com_voz):
+    """`_RECUSA_RE` casa "cancela": sem porta de saida, "cancela o lembrete
+    da luz" respondia "seus lembretes continuam normais" e nao cancelava."""
+    responder("luz 187 vence dia 20")
+    responder("quero o áudio")
+    r = responder("cancela o lembrete da luz")
+    assert "lembretes continuam normais" not in r.lower(), r
+
+
+def test_pergunta_do_nicho_expira_em_20_min_nao_em_24h(usuario, com_voz,
+                                                       monkeypatch):
+    """Pergunta aberta usa `AJUSTE_TTL_S`. 24h e jaula."""
+    responder("quero o áudio")
+    depois = tempo.agora() + _dt.timedelta(minutes=25)
+    monkeypatch.setattr(tempo, "agora", lambda a=depois: a)
+    monkeypatch.setattr(tempo, "hoje", lambda a=depois: a.date())
+    responder("games")
+    assert not db.get_user(usuario["id"])["podcast_nicho"], \
+        "pendencia de 25 min atras ainda respondeu"
+
+
+def test_a_pergunta_do_nicho_nao_atropela_pendencia_viva(usuario, com_voz):
+    """O `doc` do boleto fotografado nao pode evaporar porque a pessoa
+    tocou "Quero ouvir" no meio."""
+    wa_bot._armar_pending(TELEFONE, _pending_de_documento())
+    responder("quero o áudio")
+    guardado = wa_bot.PENDING.get(TELEFONE) or {}
+    assert guardado.get("tipo") == "confirmar_documento", guardado
+
+
+def test_a_pergunta_do_nicho_e_armada_com_carimbo(usuario, com_voz):
+    """Sem hora, decisao sem prazo vira jaula — a licao do `_armar_pending`
+    vale igual pro slot proprio."""
+    responder("quero o áudio")
+    assert wa_bot.PODCAST_PERGUNTA.get(TELEFONE) is not None
+
+
+# ---------------------------------------------------------------------------
+# 13. AUDITORIA M5.2 — a chave de emergencia tem que desligar TUDO
+# ---------------------------------------------------------------------------
+
+def _pronto_pra_pergunta_do_dia(usuario):
+    """Estado EXATO em que a pergunta do dia dispara: ouviu o primeiro
+    episodio ha 20 min e ainda nao escolheu dia."""
+    _com_nicho(usuario)
+    db.update_user_fields(
+        usuario["id"], podcast_dia=None, podcast_dia_perguntado=None,
+        podcast_ultimo=(tempo.agora() - _dt.timedelta(minutes=20)
+                        ).strftime("%Y-%m-%d %H:%M:%S"))
+
+
+def test_desligar_a_chave_cala_tambem_a_pergunta_do_dia(usuario, monkeypatch):
+    monkeypatch.setattr(voz, "disponivel", lambda: True)
+    _pronto_pra_pergunta_do_dia(usuario)
+    # primeiro a prova de que a fila NAO esta vazia por outro motivo
+    monkeypatch.setattr(scheduler, "PODCAST_ATIVO", True)
+    assert scheduler.check_podcast_dia(), "a fila ja estava vazia sozinha"
+
+    monkeypatch.setattr(scheduler, "PODCAST_ATIVO", False)
+    assert scheduler.check_podcast_dia() == []
+
+
+def test_desligar_a_chave_cala_o_audio_reativo(usuario, com_voz,
+                                               com_noticia, monkeypatch):
+    """"quero ouvir" com a chave desligada nao pode gerar TTS pago.
+
+    A prova e o CONTADOR de sintese, nao o texto da resposta: sem feed o
+    fluxo ja falha sozinho, e um teste que so olha a resposta ficaria verde
+    com a chave completamente ignorada.
+    """
+    _com_nicho(usuario)
+
+    chamadas = []
+    monkeypatch.setattr(voz, "sintetizar",
+                        lambda *a, **k: chamadas.append(1) or b"audio")
+
+    responder("quero ouvir")
+    assert chamadas, "a chave ligada nao gerou audio — o teste nao mede nada"
+
+    chamadas.clear()
+    monkeypatch.setattr(scheduler, "PODCAST_ATIVO", False)
+    r = responder("quero ouvir")
+    assert not chamadas, "chave desligada e TTS pago rodou assim mesmo"
+    assert "fora do ar" in r.lower(), r
+
+
+def test_valor_estranho_na_chave_desliga_em_vez_de_ligar(monkeypatch):
+    """O Kevin so toca nessa variavel sob pressao. "desligado" digitado as
+    pressas nao pode LIGAR a feature."""
+    import importlib
+    for valor, esperado in (("", True), ("sim", True), ("1", True),
+                            ("0", False), ("nao", False),
+                            ("desligado", False), ("OFF!", False),
+                            ("n", False)):
+        monkeypatch.setenv("PODCAST_ATIVO", valor)
+        assert importlib.reload(scheduler).PODCAST_ATIVO is esperado, valor
+    monkeypatch.delenv("PODCAST_ATIVO", raising=False)
+    assert importlib.reload(scheduler).PODCAST_ATIVO is True
+
+
+# ---------------------------------------------------------------------------
+# 14. AUDITORIA M5.2 — quem disse NAO nao ouve a oferta de novo
+# ---------------------------------------------------------------------------
+# Re-oferta depois de "nao" e exatamente o que a regua da Meta pune num
+# numero ja restringido duas vezes.
+
+def test_quem_cancelou_nao_e_repitchado_na_reativacao(usuario, com_voz):
+    _com_nicho(usuario)
+    responder("não quero mais o podcast")
+    r = responder("Quero comecar")
+    assert "novidade" not in r.lower(), r
+    assert "luz 187" in r, r
+
+
+def test_quem_cancelou_ainda_consegue_voltar_se_pedir(usuario, com_voz):
+    """Recusa nao e banimento: se ELA pedir, o bot atende."""
+    _com_nicho(usuario)
+    responder("não quero mais o podcast")
+    responder("quero o áudio")
+    responder("games")
+    assert db.get_user(usuario["id"])["podcast_nicho"] == "games"
+
+
+def test_recusa_carimbada_tira_da_fila_do_convite_mesmo_com_nicho(usuario):
+    """Contrato da CONSULTA, medido direto.
+
+    Pelo fluxo de hoje cancelar tambem zera o nicho, entao a query ja
+    excluiria a pessoa pelo `podcast_nicho IS NULL` — e um teste pelo fluxo
+    ficaria verde com o filtro de recusa apagado. Aqui o estado e montado na
+    mao: nicho preenchido E recusa carimbada. E o unico jeito de o filtro
+    ser realmente medido, e ele existe pra que nenhum caminho futuro que
+    preserve o nicho consiga re-convidar quem disse nao.
+    """
+    _com_nicho(usuario)
+    assert usuario["id"] in [u["id"] for u in db.podcast_a_convidar()]
+
+    db.update_user_fields(usuario["id"],
+                          podcast_recusado_em=tempo.agora().isoformat())
+    assert usuario["id"] not in [u["id"] for u in db.podcast_a_convidar()]
+
+
+def test_o_slot_da_pergunta_do_nicho_e_limpo_entre_testes():
+    """Estado de processo que sobrevive a um teste vira medida do anterior.
+
+    Ja aconteceu neste arquivo: sem `PODCAST_PERGUNTA` na fixture `limpo`, a
+    pergunta de um teste respondia o texto do seguinte. Nao da pra medir
+    isso de dentro de um teste (a fixture roda antes de cada um), entao o
+    que se mede e o contrato: o dicionario esta na lista de limpeza.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    import conftest
+
+    # Le a LISTA de verdade, via AST: procurar a string no fonte inteiro
+    # ficava verde com o nome escrito num comentario.
+    arvore = ast.parse(textwrap.dedent(inspect.getsource(conftest.limpo)))
+    limpos = {n.value for n in ast.walk(arvore)
+              if isinstance(n, ast.Constant) and isinstance(n.value, str)
+              and not isinstance(getattr(n, "parent", None), ast.Expr)}
+    fonte_sem_comentario = "\n".join(
+        l.split("#")[0] for l in inspect.getsource(conftest.limpo).splitlines())
+    for nome in ("PODCAST_PERGUNTA",):
+        assert nome in limpos and nome in fonte_sem_comentario, (
+            "%s guarda estado por telefone e ficou fora da fixture `limpo`"
+            % nome)
+        assert isinstance(getattr(wa_bot, nome), dict)
+
+
+# ---------------------------------------------------------------------------
+# 15. AUDITORIA M5.5 — o extra nunca passa na frente da decisao
+# ---------------------------------------------------------------------------
+
+def test_botao_esquece_do_documento_nao_vira_cancelamento_de_podcast(usuario,
+                                                                     com_voz):
+    """"Esquece" e titulo de botao do documento E casa `_RECUSA_RE`. Com a
+    pergunta do nicho de pe, o toque virava "cancelei o podcast", o `PENDING`
+    ficava intacto, e 20 min depois o resgate criava o lembrete descartado."""
+    wa_bot._armar_pending(TELEFONE, _pending_de_documento())
+    responder("quero o áudio")
+    r = responder("Esquece")
+    assert "áudio era só um extra" not in r.lower(), r
+    assert not db.get_user(usuario["id"])["podcast_recusado_em"], r
+    # e o documento nao pode ter ficado pendurado esperando resgate
+    assert not wa_bot.PENDING.get(TELEFONE), wa_bot.PENDING
+    # A RESPOSTA TEM QUE SER A DO BOTAO DE DOCUMENTO, nao a de outro handler.
+    # Sem esta linha o teste ficava verde com um `PENDING` sem `quando`, que
+    # `_proposta_viva` recusa — ou seja, medindo um caminho que producao nao
+    # tem. E o mesmo defeito que este arquivo ja pegou duas vezes: teste que
+    # passa pelo estado inicial em vez de passar pelo comportamento.
+    assert "não guardei nada" in r.lower(), r
+
+
+def test_a_pergunta_do_nicho_espera_o_menu_de_baixa(usuario, com_voz):
+    """`BAIXA_ESCOLHA` armado na mao de proposito: o menu ambiguo depende de
+    duas descricoes que empatam no placar, e amarrar o teste a essa
+    heuristica mediria o parser, nao a guarda.
+
+    Contrato desde o M5.6: a baixa que chega no meio DESCARTA a pergunta —
+    deixa-la viva fazia a resposta cair no resgate de pendencia. A pessoa
+    nao fica presa: e so pedir de novo depois de fechar a de cima.
+    """
+    responder("luz 187 vence dia 20")
+    responder("quero o áudio")
+    ids = [i["id"] for i in db.list_items(usuario["id"], status="pendente")]
+    wa_bot.BAIXA_ESCOLHA[TELEFONE] = {"ids": ids, "quando": tempo.agora()}
+    responder("futebol")
+    assert not db.get_user(usuario["id"])["podcast_nicho"]
+
+    wa_bot.BAIXA_ESCOLHA.pop(TELEFONE, None)
+    responder("quero o áudio")
+    responder("futebol")
+    assert db.get_user(usuario["id"])["podcast_nicho"] == "futebol"
+
+
+def test_cancelar_o_podcast_mata_a_pergunta_pendente(usuario, com_voz):
+    """Sem isto, um "games" solto dentro de 20 min re-assinava quem tinha
+    acabado de cancelar E apagava o carimbo da recusa."""
+    responder("quero o áudio")
+    responder("não quero mais o podcast")
+    assert TELEFONE not in wa_bot.PODCAST_PERGUNTA
+    responder("games")
+    u = db.get_user(usuario["id"])
+    assert not u["podcast_nicho"], "re-assinou quem acabou de cancelar"
+    assert u["podcast_recusado_em"], "o carimbo da recusa foi apagado"
+
+
+def test_a_reativacao_diz_o_prazo_e_nao_afirma_ter_renovado(usuario):
+    """`_COMECAR_RE` casa "bora" solto, e quem renova e o painel — nao este
+    caminho. Afirmar "renovei" aqui era mentir pra quem so digitou "bora"."""
+    db.update_user_fields(usuario["id"], status="trial")
+    r = responder("bora")
+    assert "renovei" not in r.lower(), r
+    assert "valendo até" in r.lower(), r
+    esperado = db.trial_days_left(db.get_user(usuario["id"]))
+    assert ("(%d dias)" % esperado) in r, (esperado, r)
+
+
+# ---------------------------------------------------------------------------
+# 16. AUDITORIA M5.6 — nao pergunta o que nao vai poder ouvir
+# ---------------------------------------------------------------------------
+
+def test_nao_pergunta_o_assunto_com_decisao_na_mesa(usuario, com_voz):
+    """Perguntar e depois ignorar a resposta e a mesma jaula com outro nome:
+    medido, a pessoa respondia "futebol" e levava "nao identifiquei conta,
+    data nem valor" — de novo e de novo, por ate 10 min."""
+    responder("luz 187 vence dia 20")
+    ids = [i["id"] for i in db.list_items(usuario["id"], status="pendente")]
+    wa_bot.BAIXA_ESCOLHA[TELEFONE] = {"ids": ids, "quando": tempo.agora()}
+
+    r = responder("quero o áudio")
+    assert "futebol" not in r.lower(), r
+    assert TELEFONE not in wa_bot.PODCAST_PERGUNTA, "perguntou assim mesmo"
+
+    # resolvida a de cima, o pedido volta a funcionar
+    wa_bot.BAIXA_ESCOLHA.pop(TELEFONE, None)
+    r = responder("quero o áudio")
+    assert "futebol" in r.lower(), r
+
+
+def test_decisao_que_chega_depois_descarta_a_pergunta(usuario, com_voz):
+    """A pergunta ficar de pe era pior: a resposta dela caia fora do bloco,
+    chegava no resgate de pendencia e matava a decisao do documento."""
+    responder("quero o áudio")
+    wa_bot._armar_pending(TELEFONE, _pending_de_documento())
+    responder("games")
+    assert not db.get_user(usuario["id"])["podcast_nicho"]
+    assert TELEFONE not in wa_bot.PODCAST_PERGUNTA
+
+
+def test_decisao_vencida_nao_tranca_o_pedido_de_audio(usuario, com_voz,
+                                                      monkeypatch):
+    """VIVA, nao so presente (autoauditoria M5.7).
+
+    A primeira versao da guarda lia presenca crua. Uma decisao ja MORTA —
+    `PENDING` fora do `PENDING_TTL_S`, baixa fora do `BAIXA_ESCOLHA_TTL_S` —
+    continuava trancando a pessoa fora do recurso, sem que existisse
+    pergunta nenhuma na tela dela pra responder.
+    """
+    wa_bot._armar_pending(TELEFONE, _pending_de_documento())
+    ids = [i["id"] for i in db.list_items(usuario["id"], status="pendente")]
+    wa_bot.BAIXA_ESCOLHA[TELEFONE] = {"ids": ids, "quando": tempo.agora()}
+
+    # com os dois vivos, o extra espera
+    r = responder("quero o áudio")
+    assert "só um instante" in r.lower(), r
+
+    # o relogio anda alem dos dois prazos: nada mais esta na mesa
+    depois = tempo.agora() + _dt.timedelta(
+        seconds=max(wa_bot.PENDING_TTL_S, wa_bot.BAIXA_ESCOLHA_TTL_S) + 60)
+    monkeypatch.setattr(tempo, "agora", lambda a=depois: a)
+    monkeypatch.setattr(tempo, "hoje", lambda a=depois: a.date())
+    r = responder("quero o áudio")
+    assert "futebol" in r.lower(), ("decisao morta continuou trancando: %s" % r)
+
+
+def test_carimbo_de_baixa_ilegivel_nao_tranca_a_pessoa(usuario, com_voz):
+    """Na duvida a pessoa NAO fica presa — o mesmo criterio que o
+    `_escolha_de_baixa` ja usa pra tratar carimbo podre como estado morto."""
+    wa_bot.BAIXA_ESCOLHA[TELEFONE] = {"ids": [], "quando": "ontem de manha"}
+    r = responder("quero o áudio")
+    assert "futebol" in r.lower(), r
+
+
+def test_a_guarda_nao_olha_estado_que_nunca_esta_vivo_ali(usuario):
+    """`CONFERIR_FILA` e `AUDIO_ESPERADO` sao armados DEPOIS do
+    `_handle_commands` e esvaziados no mesmo ciclo: na hora em que a guarda
+    le, os dois estao sempre vazios. Incluir os dois nao protegia nada e,
+    como nenhum tem TTL, uma entrada orfa trancaria o recurso pra sempre."""
+    import inspect
+    fonte = inspect.getsource(wa_bot._decisao_de_conversa_viva)
+    corpo = fonte.split('"""')[-1]
+    assert "CONFERIR_FILA" not in corpo, corpo
+    assert "AUDIO_ESPERADO" not in corpo, corpo
+
+
+# ---------------------------------------------------------------------------
+# 17. AUDITORIA M5.6 — quem nao tem acesso nao gasta TTS pago
+# ---------------------------------------------------------------------------
+
+def test_quem_nao_tem_acesso_nao_e_convidado_pro_audio(usuario):
+    for status in ("bloqueado", "cancelado", "vencido"):
+        db.update_user_fields(usuario["id"], status=status)
+        r = responder("Quero comecar")
+        assert "novidade" not in r.lower(), (status, r)
+
+
+def test_quem_nao_tem_acesso_nao_gera_tts_pago(usuario, com_voz, com_noticia,
+                                               monkeypatch):
+    """O envio ja falharia no canal — mas so DEPOIS de a conta paga ser
+    gasta, e a resposta de falha convida a tentar de novo."""
+    _com_nicho(usuario)
+    chamadas = []
+    monkeypatch.setattr(voz, "sintetizar",
+                        lambda *a, **k: chamadas.append(1) or b"audio")
+
+    responder("quero ouvir")
+    assert chamadas, "com acesso nao gerou audio — o teste nao mede nada"
+
+    chamadas.clear()
+    db.update_user_fields(usuario["id"], status="bloqueado")
+    r = responder("quero ouvir")
+    assert not chamadas, "queimou TTS pago pra quem nao tem acesso"
+    assert "teste terminou" in r.lower(), r
+
+
+# ---------------------------------------------------------------------------
+# 18. AUDITORIA M5.6 — a data do trial usa o mesmo prazo do gate de acesso
+# ---------------------------------------------------------------------------
+
+def test_a_data_do_trial_segue_o_trial_days_configurado(usuario, monkeypatch):
+    """`trial_days_left(user)` sem argumento cai no default 14 da funcao.
+    Com `TRIAL_DAYS` diferente, a mensagem prometia uma validade que o gate
+    de acesso nao honra."""
+    monkeypatch.setattr(wa_bot, "TRIAL_DAYS", 7)
+    db.update_user_fields(usuario["id"], status="trial")
+    r = responder("bora")
+    assert "(7 dias)" in r, r
+
+
+def test_o_ultimo_dia_de_teste_nao_fala_1_dias(usuario, monkeypatch):
+    monkeypatch.setattr(db, "trial_days_left", lambda u, *a, **k: 1)
+    db.update_user_fields(usuario["id"], status="trial")
+    r = responder("bora")
+    assert "(1 dia)" in r, r

@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v26.4-m51-elevenlabs-pronto-2026-08-29"
+BUILD = "v26.5-m52-podcast-no-ar-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -772,8 +772,17 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     # 3 min chegando sozinho e a mensagem mais intrusiva que existe no
     # WhatsApp, e este numero ja foi restringido duas vezes.
     if _PODCAST_NAO_QUERO_RE.match(text):
+        # CARIMBA A RECUSA (auditoria M5.4, P1-5). Zerar o nicho deixava
+        # "disse nao" identico a "nunca escolheu", e o convite voltava. A
+        # data fica registrada: recusa nao e banimento, se ELA pedir o bot
+        # atende — mas o bot nunca mais oferece sozinho.
+        # A PERGUNTA PENDENTE MORRE JUNTO (auditoria M5.5, P1-3). Sem isto
+        # ela seguia viva por 20 min: um "games" solto logo depois re-assinava
+        # quem tinha acabado de cancelar E apagava o carimbo da recusa.
+        PODCAST_PERGUNTA.pop(phone, None)
         db.update_user_fields(user["id"], podcast_nicho=None,
-                              podcast_dia=None)
+                              podcast_dia=None,
+                              podcast_recusado_em=tempo.agora().isoformat())
         return ("Beleza, cancelei o mini podcast. 👍\n\n"
                 "Seus lembretes continuam normais — isso aqui era só um "
                 "extra. Se mudar de ideia, é só me dizer o assunto.")
@@ -788,7 +797,82 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                 "Se quiser antes, é só me dizer *quero ouvir*.")
 
     if _PODCAST_QUERO_RE.match(text):
+        # SEM ASSUNTO ESCOLHIDO, PERGUNTA — nao adivinha.
+        #
+        # Os 11 testers vieram antes da landing ter selecao de nicho, entao
+        # ninguem tem assunto guardado. Escolher por eles seria mandar audio
+        # de um tema que a pessoa nao pediu, que e o oposto da regra da casa.
+        if not podcast.nicho_valido(user.get("podcast_nicho")):
+            # NAO PERGUNTA O QUE NAO VAI PODER OUVIR (auditoria M5.6, P1-1).
+            #
+            # A guarda de decisao viva estava so na RESPOSTA. Efeito medido:
+            # com um menu de baixa aberto, o bot perguntava o assunto, a
+            # pessoa respondia "futebol" e levava "nao identifiquei conta,
+            # data nem valor" — de novo e de novo, por ate 10 min. Perguntar
+            # e nao poder ouvir e a mesma jaula com outro nome.
+            if _decisao_de_conversa_viva(phone):
+                return ("Só um instante — me responde a de cima primeiro. 🙂"
+                        "\n\nDepois é só mandar *quero o áudio* de novo.")
+            # SLOT PROPRIO, FORA DO `PENDING` (auditoria M5.4, P0-2).
+            #
+            # Escrever em `PENDING` atropelava decisao viva: quem tinha
+            # fotografado um boleto e tocado "Quero ouvir" perdia o `doc`
+            # inteiro, calado. O podcast e um extra — nao pode passar por
+            # cima da conta que a pessoa acabou de mandar.
+            PODCAST_PERGUNTA[phone] = tempo.agora()
+            return _pergunta_do_nicho()
         return _mandar_podcast(user, phone)
+
+    # A resposta da pergunta acima.
+    #
+    # SEM CATCH-ALL (auditoria M5.4, P0-1). A versao anterior respondia "Nao
+    # peguei o assunto" a QUALQUER coisa e mantinha a pergunta de pe por 24h:
+    # medido pelo auditor, "luz 187 vence dia 20" sumia calado, "paguei a luz"
+    # nao dava baixa, e ate o botao "Quero comecar" ficava inalcancavel. Um
+    # extra opcional nao pode virar jaula em cima do produto.
+    #
+    # Duas saidas e mais nada: o nome exato de um assunto, ou uma recusa
+    # curta. Todo o resto CAI FORA daqui e segue pro motor normal.
+    # O EXTRA NUNCA PASSA NA FRENTE DA DECISAO (auditoria M5.5, P0-1/P1-2).
+    #
+    # Este bloco roda em `_handle_commands`, que vem ANTES do menu de baixa e
+    # dos blocos de confirmacao. Duas coisas quebraram por causa disso:
+    #
+    #   1. numero: "2" respondendo "qual deles eu dou baixa?" virava
+    #      assinatura de podcast e a baixa sumia. (O caminho numerico saiu.)
+    #   2. recusa: "Esquece" e "Nao precisa" sao titulos de botao do
+    #      documento e do retorno. Com a pergunta de pe, o toque virava
+    #      "cancelei o podcast", o `PENDING` ficava intacto, e 20 min depois
+    #      o resgate criava justamente o lembrete que a pessoa descartou.
+    #
+    # A regra que resolve os dois: se existe decisao viva, a pergunta do
+    # assunto espera. Ela e conveniencia; a decisao e o produto.
+    # P1-2 (M5.6): se uma decisao apareceu DEPOIS da pergunta (a pessoa
+    # fotografou um boleto no meio), a pergunta e descartada em vez de ficar
+    # de pe. Deixa-la viva era pior: a resposta dela caia fora deste bloco,
+    # chegava no resgate de pendencia e matava a decisao do documento.
+    if _pergunta_de_nicho_viva(phone) and _decisao_de_conversa_viva(phone):
+        PODCAST_PERGUNTA.pop(phone, None)
+    if _pergunta_de_nicho_viva(phone):
+        _n = podcast.nicho_valido(text)
+        if _n:
+            PODCAST_PERGUNTA.pop(phone, None)
+            db.update_user_fields(user["id"], podcast_nicho=_n,
+                                  podcast_recusado_em=None)
+            user["podcast_nicho"] = _n
+            return (f"Fechado! 🎧 Vou preparar seu resumo de "
+                    f"*{podcast.rotulo(_n).lower()}*.\n\n"
+                    f"Responde *quero ouvir* que eu mando o primeiro agora.")
+        # "cancela o lembrete da luz" casa `_e_recusa` por causa do "cancela".
+        # Sem a guarda de outro assunto, o bot respondia "seus lembretes
+        # continuam normais" e NAO cancelava nada.
+        if _e_recusa(text) and not _e_outro_assunto(text) \
+                and len(text.split()) <= 4:
+            PODCAST_PERGUNTA.pop(phone, None)
+            db.update_user_fields(
+                user["id"], podcast_recusado_em=tempo.agora().isoformat())
+            return ("Tranquilo! 👍 Seus lembretes continuam normais — o "
+                    "áudio era só um extra.")
 
     # A ESCOLHA DO DIA — e ela agora VALE (M4.7).
     #
@@ -1054,13 +1138,71 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     # que ENSINAR com exemplo concreto, não dizer "manda aí" — o template já
     # disse isso, e repetir sem exemplo é onde ela desiste.
     if _COMECAR_RE.match(text):
+        # DIZ O PRAZO. NAO DIZ QUE RENOVOU (auditoria M5.5, P1-4).
+        #
+        # O Kevin pediu "pra renovar, mande que renovou" — e o problema real
+        # dele e verdadeiro: quem ganha dias e nao sabe segue achando que o
+        # teste acabou. Mas quem renova e `db.resetar_trial`, disparado pelo
+        # painel, em outro momento. Este caminho so LE o prazo.
+        #
+        # E `_COMECAR_RE` nao e so o botao do template: casa "bora" e
+        # "comecar" soltos. Afirmar "renovei seu teste" aqui era mentir pra
+        # qualquer um que digitasse "bora" no dia 10 do trial — e pior,
+        # ensinar que a renovacao tinha sido de 4 dias.
+        #
+        # Entao a mensagem diz o que E VERDADE em qualquer um dos casos: ate
+        # quando o acesso vale. Depois do reset no painel, esse numero ja
+        # aparece maior — sem nenhuma frase precisar mudar.
+        _dias_teste = 0
+        try:
+            # `TRIAL_DAYS`, nao o default 14 da funcao: prometer uma data
+            # que o gate de acesso nao honra e o mesmo defeito de data
+            # errada, com outro nome.
+            _dias_teste = int(db.trial_days_left(user, TRIAL_DAYS) or 0)
+        except Exception:
+            log.warning("[reativacao] nao consegui ler os dias de trial",
+                        exc_info=True)
+        # QUEM JA DISSE NAO NAO OUVE A OFERTA DE NOVO (M5.4, P1-5).
+        # SO OFERECE PRA QUEM TEM ACESSO (auditoria M5.6, P1-3).
+        #
+        # Medido: bloqueado, cancelado e vencido recebiam o convite, escolhiam
+        # nicho, e o `_mandar_podcast` buscava noticia, escrevia roteiro e
+        # chamava o TTS PAGO antes de o envio falhar — com a resposta
+        # "responde *quero ouvir* que eu tento de novo", que convida a
+        # queimar de novo. E `podcast_ultimo` nao e carimbado quando o envio
+        # falha, entao o teto de 1x por semana nao segura o laco.
+        _novidade = ""
+        if not user.get("podcast_recusado_em") \
+                and db.user_can_receive(user, TRIAL_DAYS):
+            _novidade = (
+                "🎧 *Novidade:* toda semana eu posso te mandar um resumo em "
+                "áudio das notícias do assunto que você escolher — duas "
+                "pessoas conversando, uns dois minutos. É só responder "
+                "_quero o áudio_.")
+        _linha_trial = ""
+        if _dias_teste > 0 and (user.get("status") or "") == "trial":
+            _ate = (tempo.hoje() + timedelta(days=_dias_teste)).strftime(
+                "%d/%m/%Y")
+            _linha_trial = ("Seu teste está valendo até *%s* "
+                            "(%d dia%s).\n\n"
+                            % (_ate, _dias_teste,
+                               "" if _dias_teste == 1 else "s"))
         return (f"Boa, {first_name}! 🎯\n\n"
+                f"{_linha_trial}"
                 f"Me manda do jeito que você falaria, tudo numa linha só:\n\n"
                 f"• _luz 187 vence dia 20_\n"
                 f"• _dentista dia 15 às 14h_\n"
                 f"• _IPVA em março_\n\n"
                 f"Eu guardo e te aviso *antes* de vencer. Pode mandar áudio "
-                f"também, se for mais fácil.")
+                f"também, se for mais fácil."
+                # A NOVIDADE VIAJA NA MENSAGEM QUE JA IA SAIR.
+                #
+                # Os 11 testers vieram antes de existir escolha de nicho, e
+                # alcanca-los fora da janela exigiria template novo — que
+                # levaria dias de aprovacao. Aqui a noticia chega na hora em
+                # que eles voltam a falar com o bot, sem gastar mensagem
+                # nem esperar a Meta.
+                + (f"\n\n{_novidade}" if _novidade else ""))
 
     # --- admin: reset de trial da base inteira (M2.5) -----------------------
     #
@@ -1666,7 +1808,8 @@ _NICHO_DA_LANDING_RE = re.compile(
 # mandou" não pode virar um episódio de podcast.
 _PODCAST_QUERO_RE = re.compile(
     r"^\s*(quero\s+ouvir|manda\s+o\s+(mini\s+)?podcast|"
-    r"quero\s+o\s+(mini\s+)?podcast|pode\s+mandar\s+o\s+[áa]udio)"
+    r"quero\s+o\s+(mini\s+)?podcast|pode\s+mandar\s+o\s+[áa]udio|"
+    r"quero\s+o\s+[áa]udio)"
     r"\s*[.!?]?\s*$", re.I)
 
 _PODCAST_DEPOIS_RE = re.compile(
@@ -2563,6 +2706,77 @@ def _sem_acento_simples(t: str) -> str:
                    if unicodedata.category(c) != "Mn")
 
 
+# A PERGUNTA DO NICHO MORA AQUI, NAO NO `PENDING` (auditoria M5.4, P0-2).
+#
+# `PENDING` guarda DECISAO — confirmar um boleto, escolher item pra baixa.
+# Escrever aqui atropelava essa decisao e o dado da pessoa evaporava. Este
+# slot e so uma pergunta de conveniencia: se for atropelado, nao se perde
+# nada. TTL curto pelo mesmo motivo do `AJUSTE_TTL_S`: pergunta aberta que
+# dura 24h e jaula.
+PODCAST_PERGUNTA: dict = {}
+
+
+def _decisao_de_conversa_viva(phone: str) -> bool:
+    """Tem alguma coisa esperando resposta desta pessoa AGORA?
+
+    O podcast e um extra. Ele nao pergunta, nao ouve e nao aceita recusa
+    enquanto existir uma decisao de verdade na mesa — porque "esquece",
+    "nao precisa" e "deixa la" pertencem a ELA, nao a nos. Sequestrar uma
+    dessas custa o dado da pessoa E carimba um opt-out permanente.
+
+    VIVA, NAO SO PRESENTE (autoauditoria M5.7). A primeira versao lia
+    presenca crua nos dicionarios. Os dois estados aqui sobrevivem entre
+    mensagens de proposito e os dois tem prazo; estado VENCIDO nao e decisao
+    viva, e tratar como se fosse trancava a pessoa fora do recurso por ate
+    20 min depois de a decisao ja ter morrido. Cada um e lido pelo MESMO
+    criterio que o dono dele usa pra aceitar resposta.
+
+    `CONFERIR_FILA` e `AUDIO_ESPERADO` ficaram DE FORA, e nao por esquecimento:
+    os dois sao armados depois do `_handle_commands` e esvaziados no mesmo
+    ciclo, entao nunca estao vivos na hora em que esta funcao le. Nao
+    protegiam nada — e como nenhum dos dois tem TTL, uma entrada orfa
+    (excecao entre armar e esvaziar) bloquearia o pedido de audio pra sempre.
+    """
+    if PENDING.get(phone) and not _pending_vencido(phone):
+        return True
+    _baixa = BAIXA_ESCOLHA.get(phone)
+    if _baixa:
+        try:
+            if (tempo.agora() - _baixa["quando"]).total_seconds() \
+                    <= BAIXA_ESCOLHA_TTL_S:
+                return True
+        except Exception:
+            # Carimbo ilegivel: o `_escolha_de_baixa` trata isso como estado
+            # morto. Aqui vale o mesmo — na duvida a pessoa NAO fica presa.
+            log.warning("[baixa] carimbo ilegivel ao medir decisao viva",
+                        exc_info=True)
+    return False
+
+
+def _pergunta_de_nicho_viva(phone: str) -> bool:
+    quando = PODCAST_PERGUNTA.get(phone)
+    if not quando:
+        return False
+    if (tempo.agora() - quando).total_seconds() > AJUSTE_TTL_S:
+        PODCAST_PERGUNTA.pop(phone, None)
+        return False
+    return True
+
+
+def _lista_de_nichos() -> str:
+    """Os cinco assuntos, do jeito que a pessoa vai digitar."""
+    return ("É um destes:\n\n"
+            + "\n".join("• %s %s" % (d["emoji"], d["rotulo"])
+                        for d in podcast.NICHOS.values())
+            + "\n\n_Escolhe um só — é um por pessoa._")
+
+
+def _pergunta_do_nicho() -> str:
+    return ("Boa! 🎧 Toda semana eu te mando um resumo em áudio das notícias "
+            "do assunto que você escolher — duas pessoas conversando, uns "
+            "dois minutos.\n\n" + _lista_de_nichos())
+
+
 def _mandar_podcast(user: dict, phone: str) -> str:
     """Gera e manda o episódio. Devolve o texto que fecha a conversa.
 
@@ -2577,6 +2791,29 @@ def _mandar_podcast(user: dict, phone: str) -> str:
     fabricado pra cumprir agenda é como se perde a confiança de alguém de uma
     vez só.
     """
+    # A CHAVE DE EMERGENCIA VALE AQUI TAMBEM (auditoria M5.4, P1-3).
+    #
+    # Este e o caminho reativo ("quero ouvir") e ele gera TTS pago. Uma chave
+    # que desliga o proativo e deixa o reativo de pe nao desliga a feature —
+    # so esconde metade dela.
+    #
+    # `_amostra_de_podcast` DE PROPOSITO fica de fora: e o comando do dono,
+    # e e exatamente com a feature desligada que ele precisa reouvir uma
+    # amostra pra decidir se religa.
+    import scheduler as _sched
+    if not _sched.PODCAST_ATIVO:
+        return ("Esse recurso está fora do ar por uns instantes. 🙏\n\n"
+                "Seus lembretes seguem normais — te aviso quando voltar.")
+
+    # QUEM NAO TEM ACESSO NAO GASTA TTS (auditoria M5.6, P1-3).
+    #
+    # A checagem tem que ser AQUI, antes de buscar noticia e sintetizar: o
+    # envio ja falharia no `canal`, mas so depois de a conta paga ter sido
+    # gasta — e a resposta de falha convida a tentar de novo.
+    if not db.user_can_receive(user, TRIAL_DAYS):
+        return ("Seu período de teste terminou. 🙏\n\n"
+                "Reativando o acesso, o áudio da semana volta junto.")
+
     import noticias
     import voz
 

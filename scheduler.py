@@ -74,11 +74,19 @@ def definir_politica_de_aviso(padrao=None, por_categoria=None) -> None:
 
 
 definir_politica_de_aviso()
-QUIET_START, QUIET_END = 21, 8
+QUIET_START, QUIET_END = 21, 8   # silêncio 21h–8h (exceto alarme com hora)
 
 # O mini-podcast so dispara quando o dono liga. Ver `check_podcast`.
+# LIGADO POR PADRAO desde 30/08/2026: o Kevin ouviu as cinco amostras e
+# aprovou ("ouvi todos e gostei, estao muito bons; pode por no ar, padrao pra
+# todos novos clientes"). A variavel continua existindo pra DESLIGAR sem
+# deploy, que e o que importa numa emergencia.
+# FAIL-CLOSED NA DIGITACAO (auditoria M5.4, P1-4): so LIGA com valor que a
+# gente reconhece como "ligado", ou com a variavel ausente (o default novo).
+# Qualquer outra coisa DESLIGA — "desligado", "OFF!", "n" digitados as
+# pressas no meio de uma emergencia nao podem manter a feature no ar.
 PODCAST_ATIVO = (os.environ.get("PODCAST_ATIVO", "") or "").strip().lower() \
-    in ("1", "true", "sim", "on")   # silêncio 21h–8h (exceto alarme com hora)
+    in ("", "1", "true", "sim", "on", "yes")
 
 # TODO KIND QUE O MOTOR PODE EMITIR, declarado num lugar só.
 #
@@ -291,11 +299,18 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
 def check_podcast_dia(ref: Optional[datetime] = None) -> list[dict]:
     """A pergunta de qual dia, 10 min depois do primeiro episodio.
 
+    MESMA CHAVE DO `check_podcast` (auditoria M5.4, P1-3). Sem isso,
+    `PODCAST_ATIVO=0` calava o convite e deixava a pergunta do dia saindo —
+    a pessoa recebia "que dia da semana voce prefere?" de uma feature que o
+    dono acabou de desligar.
+
     Ela volta no M4.7 porque agora a resposta VALE: com o template, o
     lembrete sai no dia escolhido mesmo que a pessoa nao fale com o bot ha
     uma semana. Antes disso, perguntar era prometer o que a gente nao
     honrava — e por isso a pergunta tinha saido.
     """
+    if not PODCAST_ATIVO:
+        return []
     import podcast as _pod
 
     agora = ref or tempo.agora()
@@ -1198,15 +1213,17 @@ def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
     import voz as _voz
 
     agora = ref or tempo.agora()
-    # TRAVA DE APROVACAO (M4.7).
+    # CHAVE DE EMERGENCIA (M4.7, redefinida no M5.4).
     #
-    # O Kevin ainda vai ouvir as amostras: "nao vai por no ar se eu ouvir
-    # como ficou". O codigo pode estar no ar sem a feature disparar — e essa
-    # e a diferenca entre deploy e lancamento. Enquanto `PODCAST_ATIVO` nao
-    # for ligado, nenhum cliente recebe convite nenhum.
+    # Ate 30/08/2026 isto era uma trava de aprovacao, DESLIGADA por default:
+    # o Kevin ainda ia ouvir as amostras, e deploy nao e lancamento. Ele
+    # ouviu, aprovou ("pode por no ar, padrao pra todos novos clientes"), e o
+    # default virou LIGADO.
     #
-    # Default DESLIGADO de proposito: uma feature que se liga sozinha ao
-    # subir e uma feature que estreia sem ninguem ter decidido.
+    # O que a variavel e HOJE: o jeito de calar a feature inteira sem
+    # deploy. Por isso ela e consultada nos TRES caminhos que geram audio ou
+    # convite — aqui, em `check_podcast_dia`, e no `_mandar_podcast` do
+    # `wa_bot`. Chave que desliga so um deles nao e chave de emergencia.
     if not PODCAST_ATIVO:
         return []
 
