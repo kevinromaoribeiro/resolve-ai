@@ -41,9 +41,16 @@ log = logging.getLogger("resolveai")
 # fechou no domingo.
 DIAS_DE_FRESCOR = 8
 
-# Teto por fonte. Ler o feed inteiro não ajuda: o roteiro usa três blocos, e
-# guardar cinquenta manchetes na memória por nada é só desperdício.
-POR_FONTE = 8
+# Teto por fonte.
+#
+# Era 8 e o Kevin achou o buraco ouvindo a primeira amostra: com pouco
+# candidato, os três blocos acabavam sendo as três matérias mais recentes —
+# que num sábado à noite são o mesmo jogo em três manchetes. Com 20 por fonte
+# (60 no total) há semana de verdade pra escolher: transferência de segunda,
+# polêmica de quarta, jogo de sábado.
+#
+# O custo é memória de uma lista, não requisição: é o MESMO download de feed.
+POR_FONTE = 20
 
 TIMEOUT_S = 12
 
@@ -120,11 +127,31 @@ def parse_feed(xml_bruto: str, fonte: str,
     """
     if not xml_bruto:
         return []
+    bruto = xml_bruto.strip()
     try:
-        raiz = ET.fromstring(xml_bruto.strip())
+        raiz = ET.fromstring(bruto)
     except ET.ParseError as e:
-        log.warning("[noticias] feed de %s nao e XML valido: %s", fonte, e)
-        return []
+        # LIXO DEPOIS DO FECHAMENTO E COMUM E NAO PODE CUSTAR A FONTE.
+        #
+        # O feed do Mercado&Consumo devolve HTML de rodape depois do
+        # `</rss>` ("junk after document element"), e isso zerava a fonte
+        # inteira — num nicho de tres fontes, um terco do material. Cortar no
+        # ultimo fechamento e o conserto honesto: o que vem depois nao e o
+        # feed.
+        raiz = None
+        for fecho in ("</rss>", "</feed>", "</rdf:RDF>"):
+            corte = bruto.rfind(fecho)
+            if corte > 0:
+                try:
+                    raiz = ET.fromstring(bruto[:corte + len(fecho)])
+                    log.info("[noticias] feed de %s tinha lixo no fim — "
+                             "cortado", fonte)
+                    break
+                except ET.ParseError:
+                    continue
+        if raiz is None:
+            log.warning("[noticias] feed de %s nao e XML valido: %s", fonte, e)
+            return []
 
     ref = agora or tempo.agora()
     corte = ref - timedelta(days=DIAS_DE_FRESCOR)

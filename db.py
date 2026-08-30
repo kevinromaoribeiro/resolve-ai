@@ -2866,3 +2866,83 @@ def podcast_marcar_pergunta_do_dia(user_id: int, quando=None) -> None:
             "UPDATE users SET podcast_dia_perguntado=? WHERE id=?",
             ((quando or tempo.agora()).strftime("%Y-%m-%d %H:%M:%S"),
              int(user_id)))
+
+
+# ---------------------------------------------------------------------------
+# O QUE A PESSOA JA OUVIU NO PODCAST (M4.8)
+# ---------------------------------------------------------------------------
+# O dedup do `noticias` so vale DENTRO de uma coleta: ele impede a mesma
+# materia sair duas vezes no mesmo audio. Nada impedia ela voltar na semana
+# seguinte — e feed de noticia repete manchete por dias.
+#
+# O Kevin foi direto: "nunca repetir conteudo". Repetir e o jeito mais rapido
+# de a pessoa concluir que o audio nao vale o tempo dela.
+_PODCAST_OUVIDO_DDL = """
+CREATE TABLE IF NOT EXISTS podcast_ouvido (
+    user_id   INTEGER NOT NULL,
+    chave     TEXT NOT NULL,
+    criado_em TEXT NOT NULL,
+    PRIMARY KEY (user_id, chave)
+);
+"""
+
+# Quanto tempo a memoria segura. Noventa dias: passado isso, uma materia
+# voltar nao e repeticao, e retrospectiva — e a tabela nao cresce pra sempre.
+PODCAST_MEMORIA_DIAS = 90
+
+
+def _podcast_chave(item: dict) -> str:
+    """O que identifica a materia. Link quando ha; titulo normalizado senao.
+
+    O LINK GANHA porque a manchete muda entre coletas ("Palmeiras vence" vira
+    "Palmeiras bate o Flamengo") e o titulo sozinho deixaria a mesma materia
+    passar por nova.
+    """
+    link = (item.get("link") or "").strip().lower()
+    if link:
+        return re.sub(r"[?#].*$", "", link)[:300]
+    t = (item.get("titulo") or "").strip().lower()
+    t = re.sub(r"[^\w\sà-ÿ]", "", t)
+    return re.sub(r"\s+", " ", t)[:200]
+
+
+def podcast_ineditas(user_id: int, itens: list) -> list:
+    """So o que esta pessoa ainda nao ouviu."""
+    if not itens:
+        return []
+    chaves = {_podcast_chave(i): i for i in itens if isinstance(i, dict)}
+    if not chaves:
+        return []
+    with get_conn() as conn:
+        conn.execute(_PODCAST_OUVIDO_DDL)
+        marcas = ",".join("?" * len(chaves))
+        ja = {r["chave"] for r in conn.execute(
+            "SELECT chave FROM podcast_ouvido WHERE user_id=? "
+            "AND chave IN (%s)" % marcas,
+            [int(user_id)] + list(chaves)).fetchall()}
+    return [i for i in itens if _podcast_chave(i) not in ja]
+
+
+def podcast_registrar_ouvidas(user_id: int, itens: list, quando=None) -> None:
+    """Carimba o que foi PRO AUDIO. So depois de o envio dar certo.
+
+    Registrar antes faria a pessoa perder a materia por um envio que falhou —
+    ela nunca mais ouviria aquilo.
+    """
+    if not itens:
+        return
+    q = (quando or tempo.agora()).strftime("%Y-%m-%d %H:%M:%S")
+    linhas = [(int(user_id), _podcast_chave(i), q)
+              for i in itens if isinstance(i, dict) and _podcast_chave(i)]
+    if not linhas:
+        return
+    corte = ((quando or tempo.agora())
+             - timedelta(days=PODCAST_MEMORIA_DIAS)
+             ).strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        conn.execute(_PODCAST_OUVIDO_DDL)
+        conn.executemany(
+            "INSERT OR IGNORE INTO podcast_ouvido (user_id, chave, criado_em) "
+            "VALUES (?,?,?)", linhas)
+        conn.execute("DELETE FROM podcast_ouvido WHERE criado_em < ?",
+                     (corte,))

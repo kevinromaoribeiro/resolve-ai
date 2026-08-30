@@ -200,7 +200,7 @@ def test_busca_so_bate_nos_feeds_declarados():
 
 def test_o_roteiro_so_aceita_o_que_veio_das_fontes():
     """A ponte entre este modulo e o `podcast`: fonte de fora e descartada."""
-    itens = [{"titulo": "Manchete", "resumo": "x", "fonte": "Blog do Ze"}]
+    itens = [{"titulo": "Palmeiras vence", "resumo": "x", "fonte": "Blog do Ze"}]
     assert podcast.montar_roteiro("futebol", itens) is None
 
 

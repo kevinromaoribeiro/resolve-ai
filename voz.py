@@ -37,11 +37,37 @@ PROVEDOR = (os.environ.get("VOZ_PROVEDOR") or "openai").strip().lower()
 VOZ_OPENAI = os.environ.get("VOZ_OPENAI") or "nova"
 MODELO_OPENAI = os.environ.get("VOZ_MODELO_OPENAI") or "gpt-4o-mini-tts"
 
-# Opus em OGG é o formato de mensagem de voz do WhatsApp. Mandar mp3 faz a
-# mensagem chegar como ARQUIVO, com ícone de download — e ninguém baixa
-# arquivo de bot. Como nota de voz, toca com um toque.
-FORMATO = "opus"
-MIME = "audio/ogg"
+# MP3, e a razão é o DIÁLOGO (M5.0).
+#
+# O episódio agora tem duas vozes conversando, e isso significa uma chamada
+# de síntese por FALA — depois é preciso colar tudo num arquivo só. Colar
+# OGG/Opus exige reescrever as páginas do container ou ter ffmpeg, e a
+# imagem é `python:3.12-slim`: não tem ffmpeg e botar um só pra isso são
+# ~100 MB no build.
+#
+# MP3 cola por concatenação de frames, em Python puro. A Meta aceita
+# `audio/mpeg` em `type: audio`, então a mensagem chega tocável — com botão
+# de play, não como card de download. O que se perde em relação ao Opus é a
+# onda de voz e o controle de velocidade da nota de voz nativa; o que se
+# ganha é a conversa entre duas pessoas, que era o pedido.
+FORMATO = "mp3"
+MIME = "audio/mpeg"
+
+# QUEM CONVERSA. Um homem e uma mulher, como o Kevin pediu.
+#
+# "shimmer" e "onyx" foram escolhidas por soarem CONVERSA e não locução:
+# "nova" e "echo" têm entonação de quem lê um texto, que é exatamente o
+# "robótico" que ele apontou na primeira amostra.
+VOZ_MULHER = os.environ.get("VOZ_MULHER") or "shimmer"
+VOZ_HOMEM = os.environ.get("VOZ_HOMEM") or "onyx"
+
+# A instrução de estilo pesa mais que a escolha da voz. Sem ela o modelo lê
+# como quem narra documentário — e foi assim que soou robótico.
+ESTILO = ("Você está gravando um podcast curto em português do Brasil, "
+          "conversando com outra pessoa. Fale como quem conta uma novidade "
+          "pra um amigo no sofá: ritmo natural, sem pressa, com as pausas "
+          "de quem pensa enquanto fala. Nada de entonação de locutor de "
+          "rádio, nada de voz de propaganda, nada de solenidade.")
 
 # Teto de segurança em caracteres. Três minutos de locução são ~2.500
 # caracteres; 6.000 é o dobro com folga. Acima disso alguma coisa deu errado
@@ -94,30 +120,93 @@ def sintetizar(texto: Optional[str]) -> Optional[bytes]:
     if not prov:
         log.info("[voz] nenhum provedor de voz configurado")
         return None
+
+    import podcast
+    falas = podcast.falas(t)
     try:
-        if prov == "openai":
-            return _openai(t)
-        if prov == "gemini":
-            return _gemini(t)
-        if prov == "elevenlabs":
-            return _elevenlabs(t)
+        if not falas:
+            # Texto sem diálogo: uma voz só. Continua servindo pra qualquer
+            # outro uso e é o caminho do roteiro determinístico antigo.
+            return _uma_voz(prov, t, VOZ_MULHER)
+        return _dialogo(prov, falas)
     except Exception:
         log.warning("[voz] %s falhou ao sintetizar", prov, exc_info=True)
         return None
+
+
+def _dialogo(prov: str, falas: list) -> Optional[bytes]:
+    """Uma chamada por fala, na voz de quem fala, coladas num arquivo só.
+
+    EM PARALELO, com ordem preservada. Um episódio tem 12 a 18 falas; em
+    série isso são uns dois minutos de espera, e a pessoa tocou num botão
+    esperando um áudio. O `ThreadPoolExecutor` mantém a ordem do `map`, que
+    é o que importa: fala fora de ordem vira conversa sem sentido.
+    """
+    import concurrent.futures as cf
+
+    def _um(par):
+        quem, texto = par
+        return _uma_voz(prov, texto,
+                        VOZ_HOMEM if quem == "homem" else VOZ_MULHER)
+
+    with cf.ThreadPoolExecutor(max_workers=4) as ex:
+        pedacos = list(ex.map(_um, falas))
+
+    bons = [p for p in pedacos if p]
+    if not bons:
+        return None
+    if len(bons) != len(falas):
+        # UMA FALA QUE FALTA ESTRAGA A CONVERSA. Melhor não mandar do que
+        # mandar um diálogo com buraco no meio — a pessoa ouve uma pergunta
+        # sem resposta e conclui que o produto está quebrado.
+        log.warning("[voz] %d de %d falas sintetizadas — nao mando pela "
+                    "metade", len(bons), len(falas))
+        return None
+    return _colar_mp3(bons)
+
+
+def _uma_voz(prov: str, texto: str, voz: str) -> Optional[bytes]:
+    if prov == "openai":
+        return _openai(texto, voz)
+    if prov == "gemini":
+        return _gemini(texto)
+    if prov == "elevenlabs":
+        return _elevenlabs(texto)
     return None
 
 
-def _openai(texto: str) -> Optional[bytes]:
+def _sem_id3(dados: bytes) -> bytes:
+    """Tira as etiquetas ID3 pra que os frames colem limpos.
+
+    Um ID3v2 no meio do arquivo faz parte dos players engasgarem ou pularem
+    a fala. O ID3v1 do fim tem o mesmo efeito na emenda seguinte.
+    """
+    if not dados:
+        return b""
+    if dados[:3] == b"ID3" and len(dados) > 10:
+        # tamanho em syncsafe: sete bits por byte
+        n = 0
+        for b in dados[6:10]:
+            n = (n << 7) | (b & 0x7F)
+        dados = dados[10 + n:]
+    if dados[-128:][:3] == b"TAG":
+        dados = dados[:-128]
+    return dados
+
+
+def _colar_mp3(pedacos: list) -> Optional[bytes]:
+    """Junta os trechos num MP3 só. Python puro, sem ffmpeg."""
+    limpos = [_sem_id3(p) for p in pedacos if p]
+    limpos = [p for p in limpos if p]
+    return b"".join(limpos) if limpos else None
+
+
+def _openai(texto: str, voz: Optional[str] = None) -> Optional[bytes]:
     from openai import OpenAI
     cliente = OpenAI(timeout=TIMEOUT_S)
     r = cliente.audio.speech.create(
-        model=MODELO_OPENAI, voice=VOZ_OPENAI, input=texto,
-        response_format=FORMATO,
-        # A instrução de estilo vale mais que a escolha da voz: sem ela o
-        # modelo lê como quem narra documentário.
-        instructions=("Fale em português do Brasil, ritmo de conversa, "
-                      "como quem conta uma novidade pra um amigo. "
-                      "Sem entonação de propaganda."))
+        model=MODELO_OPENAI, voice=voz or VOZ_OPENAI, input=texto,
+        response_format=FORMATO, instructions=ESTILO)
     dados = r.read() if hasattr(r, "read") else getattr(r, "content", None)
     return dados or None
 

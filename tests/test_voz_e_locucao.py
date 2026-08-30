@@ -182,10 +182,18 @@ def test_falha_do_provedor_devolve_none_e_nao_estoura(monkeypatch):
     assert voz.sintetizar("texto normal") is None
 
 
-def test_o_formato_e_nota_de_voz_nao_arquivo():
-    """Mp3 chega como card de download, e ninguem baixa arquivo de bot."""
-    assert voz.FORMATO == "opus"
-    assert voz.MIME == "audio/ogg"
+def test_o_formato_permite_colar_as_falas():
+    """MP3 desde o M5.0, e a razao e o DIALOGO.
+
+    Duas vozes = uma chamada de sintese por fala, e depois e preciso COLAR.
+    Colar OGG/Opus exige ffmpeg, e a imagem e `python:3.12-slim`. MP3 cola
+    por concatenacao de frames, em Python puro, e a Meta aceita audio/mpeg
+    em `type: audio`.
+    """
+    assert voz.FORMATO == "mp3"
+    assert voz.MIME == "audio/mpeg"
+    assert voz.VOZ_MULHER and voz.VOZ_HOMEM
+    assert voz.VOZ_MULHER != voz.VOZ_HOMEM, "as duas vozes tem que diferir"
 
 
 def test_a_conta_do_custo_fecha():
@@ -305,8 +313,10 @@ def test_o_roteiro_da_casa_passa_na_propria_conferencia():
     det = podcast.montar_roteiro("futebol", itens, nome="Kevin")
     assert det
     materia = " ".join("%s %s" % (i["titulo"], i["resumo"]) for i in itens)
-    for numero in ("1.", "2.", "3."):
-        assert numero in det, det
+    # DESDE O M5.0 O ROTEIRO E DIALOGO, nao lista numerada: quem marca a
+    # troca de assunto sao as falas ("Fechado. A proxima:"), nao "1." "2.".
+    assert len(podcast.falas(det)) >= 6, det
+    assert "Fechado. A próxima:" in det, det
     motivo = podcast.conferir_locucao(det + " " + "palavra " * 80, "futebol",
                                       materia=materia, hoje=_HOJE)
     assert motivo is None, ("a casa reprova o proprio roteiro: %s" % motivo)

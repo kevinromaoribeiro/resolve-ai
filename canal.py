@@ -167,7 +167,7 @@ def falar(telefone: str, texto: str, *, user_id=None, template=None,
 
 
 def falar_audio(telefone: str, dados: bytes, *, user_id=None,
-                mime: str = "audio/ogg") -> dict:
+                mime: Optional[str] = None) -> dict:
     """Manda AUDIO respeitando a janela de 24h. Mesma porta, mesma regra.
 
     {"enviado": bool, "via": "audio"|None, "motivo": str}
@@ -189,6 +189,15 @@ def falar_audio(telefone: str, dados: bytes, *, user_id=None,
         return {"enviado": False, "via": None, "motivo": "canal_sem_audio"}
     if not db.dentro_da_janela(user_id, telefone):
         return {"enviado": False, "via": None, "motivo": "fora_da_janela"}
+    if not mime:
+        # O FORMATO E DE QUEM GERA. Fixar "audio/ogg" aqui fazia o mime
+        # mentir quando o `voz` passou a produzir mp3 pro dialogo de duas
+        # vozes — e a Meta recusa o arquivo cujo tipo nao bate.
+        try:
+            import voz as _voz
+            mime = _voz.MIME
+        except Exception:
+            mime = "audio/mpeg"
     try:
         ok = send_audio(telefone, dados, mime)
     except Exception as e:

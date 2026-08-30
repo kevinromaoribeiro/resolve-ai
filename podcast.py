@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Optional
 
 import tempo
@@ -74,8 +74,11 @@ NICHOS = {
              "https://ge.globo.com/rss/ge/futebol/"),
             ("ESPN Brasil", "https://www.espn.com.br/futebol/",
              "https://www.espn.com.br/rss/futebol"),
-            ("Gazeta Esportiva", "https://www.gazetaesportiva.com/",
-             "https://www.gazetaesportiva.com/feed/"),
+            # Trivela no lugar da Gazeta Esportiva: a Gazeta cobre
+            # esporte em geral e foi por onde a Formula 1 entrou num
+            # episodio de futebol. A Trivela e futebol e mais nada.
+            ("Trivela", "https://trivela.com.br/",
+             "https://trivela.com.br/feed/"),
         ),
         "assuntos": ("resultados da rodada", "contratações",
                      "tabela e classificação",
@@ -85,11 +88,17 @@ NICHOS = {
         "rotulo": "Games",
         "emoji": "🎮",
         "fontes": (
-            ("IGN Brasil", "https://br.ign.com/", "https://br.ign.com/feed.xml"),
+            # AS TRES SAO SO DE GAMES, e essa foi a licao da primeira
+            # amostra. O feed geral do IGN trouxe "Esquenta 9.9: iPhone
+            # 17e" e o do Critical Hits trouxe X-Men e anime — os dois
+            # cobrem cultura pop inteira, nao games. Aqui: o feed
+            # /games/ do Adrenaline, o Arkade e o GameBlast.
             ("Adrenaline", "https://www.adrenaline.com.br/games/",
-             "https://www.adrenaline.com.br/feed/"),
-            ("Critical Hits", "https://criticalhits.com.br/",
-             "https://criticalhits.com.br/feed/"),
+             "https://www.adrenaline.com.br/games/feed/"),
+            ("Arkade", "https://www.arkade.com.br/",
+             "https://www.arkade.com.br/feed/"),
+            ("GameBlast", "https://www.gameblast.com.br/",
+             "https://www.gameblast.com.br/feeds/posts/default?alt=rss"),
         ),
         "assuntos": ("lançamentos da semana",
                      "promoções que valem a pena",
@@ -99,11 +108,14 @@ NICHOS = {
         "rotulo": "Inteligência artificial",
         "emoji": "🤖",
         "fontes": (
+            # OS FEEDS AGORA SAO DA EDITORIA DE IA, nao de tecnologia
+            # inteira. `canaltech.com.br/rss/` trazia celular, streaming e
+            # ciencia; `/rss/inteligencia-artificial/` traz IA.
             ("Canaltech IA", "https://canaltech.com.br/inteligencia-artificial/",
-             "https://canaltech.com.br/rss/"),
+             "https://canaltech.com.br/rss/inteligencia-artificial/"),
             ("Olhar Digital",
              "https://olhardigital.com.br/tag/inteligencia-artificial/",
-             "https://olhardigital.com.br/feed/"),
+             "https://olhardigital.com.br/tag/inteligencia-artificial/feed/"),
             ("MIT Technology Review Brasil", "https://mittechreview.com.br/",
              "https://mittechreview.com.br/feed/"),
         ),
@@ -129,9 +141,16 @@ NICHOS = {
         "rotulo": "Varejo online",
         "emoji": "🛍️",
         "fontes": (
-            ("Mercado&Consumo", "https://mercadoeconsumo.com.br/",
-             "https://mercadoeconsumo.com.br/feed/"),
-            ("NeoFeed varejo", "https://neofeed.com.br/varejo/",
+            # Mercado&Consumo SAIU: o feed dele estava com a materia mais
+            # recente de 19 dias atras (conferido em 30/08). Fonte que
+            # publica de tres em tres semanas nao alimenta resumo SEMANAL —
+            # ela nao contribui, e ainda ocupa uma das tres vagas.
+            ("Meio&Mensagem", "https://www.meioemensagem.com.br/",
+             "https://www.meioemensagem.com.br/feed"),
+            # O feed /varejo/feed/ do NeoFeed devolve ZERO item — conferido
+            # em 30/08. Fica o geral, e o filtro de assunto separa o que e
+            # varejo do que e mercado financeiro.
+            ("NeoFeed", "https://neofeed.com.br/varejo/",
              "https://neofeed.com.br/feed/"),
             ("Consumidor Moderno", "https://consumidormoderno.com.br/",
              "https://consumidormoderno.com.br/feed/"),
@@ -142,6 +161,125 @@ NICHOS = {
                      "novidade das grandes lojas"),
     },
 }
+
+# ---------------------------------------------------------------------------
+# O QUE E DO ASSUNTO — e o que NAO e
+# ---------------------------------------------------------------------------
+# O Kevin ouviu a primeira amostra e achou dois furos no mesmo lugar:
+#   "o audio de games ta falando de desconto em iPhone na Amazon"
+#   "games e games, e nao compra de celular ou filmes"
+#
+# A causa: veiculo de nicho nao publica so o nicho. O IGN cobre cinema e
+# celular, a Gazeta cobre Formula 1, o Canaltech cobre tudo de tecnologia.
+# Filtrar pela FONTE nao basta — tem que filtrar pelo ASSUNTO.
+#
+# Duas camadas, e a ordem importa:
+#   1. VETO DE OFERTA, em todos os nichos. Post de "menor preco" e conteudo
+#      comercial, nao noticia — e o bot que promete lembrar conta virando
+#      vitrine de Black Friday e a forma mais rapida de perder confianca.
+#   2. MARCA DE ASSUNTO, por nicho. A materia tem que falar da coisa.
+#
+# Na duvida a materia CAI FORA. Episodio com duas noticias certas e melhor
+# que episodio com tres, sendo uma sobre iPhone num podcast de games.
+
+# 1. Post de oferta. "R$" sozinho nao veta (noticia de transferencia tem
+#    valor); o que veta e a linguagem de vitrine.
+_E_OFERTA_RE = re.compile(
+    r"\b(oferta|ofertas|promo[çc][ãa]o|promo[çc][õo]es|desconto|descontos|"
+    r"cupom|cupons|menor\s+pre[çc]o|mais\s+barato|pechincha|"
+    r"vale\s+a\s+pena\s+comprar|onde\s+comprar|compre|comprar\s+agora|"
+    # "NOTICIA E PONTO" (Kevin, 30/08/2026). Nao e so o post de oferta: e
+    # qualquer formato que exista pra vender. Lista de produto, resenha com
+    # link de compra e "os N melhores" sao vitrine — o veiculo ganha
+    # comissao, e o bot que promete lembrar conta nao vira canal disso.
+    r"review|resenha|testamos|os?\s+\d+\s+melhores|"
+    r"melhores\s+\w+\s+para\s+comprar|vale\s+o\s+investimento|"
+    r"custo-?benef[íi]cio|"
+    # GUIA E LISTA TAMBEM NAO SAO NOTICIA. "Onde assistir ao vivo" e
+    # programacao; "6 combinacoes para investir" e vitrine com outro nome.
+    # Os dois vazaram pras amostras e o Kevin apontou os dois.
+    r"onde\s+assistir|onde\s+ver|que\s+horas|hor[áa]rio\s+e\s+onde|"
+    r"escala[çc][õo]es|prov[áa]veis|palpites?|\bodds?\b|"
+    r"\d+\s+(combina[çc][õo]es|looks?|jeitos?|maneiras?|dicas?)|"
+    r"para\s+investir|voc[êe]\s+precisa\s+ter|"
+    # "Black Friday" e "Prime Day" SAIRAM do veto: sao nomes de evento, e
+    # "Black Friday deve crescer 12%, diz pesquisa" e noticia de varejo
+    # legitima. Quem veta o post de vitrine e "oferta", "desconto", "cupom" —
+    # que aparecem em "Ofertas da Black Friday" e nao na noticia.
+    r"frete\s+gr[áa]tis|"
+    r"cai\s+de\s+pre[çc]o|por\s+apenas|a\s+partir\s+de\s+R\$)\b", re.I)
+
+# 2. Do que cada nicho fala. Casa no titulo OU no resumo.
+_ASSUNTO = {
+    "futebol": (
+        r"futebol|gol|gols|jogo|jogos|partida|rodada|campeonato|brasileir",
+        r"libertadores|copa|s[ée]rie\s+[ab]|t[ée]cnico|treinador|escala",
+        r"contrata|transferi|zagueiro|atacante|meia|goleiro|lateral",
+        r"palmeiras|flamengo|corinthians|s[ãa]o\s+paulo|santos|gr[êe]mio",
+        r"internacional|cruzeiro|atl[ée]tico|botafogo|vasco|fluminense",
+        r"bahia|fortaleza|sele[çc][ãa]o|cbf|est[áa]dio|torcida|artilheiro",
+        # FUTEBOL DE FORA TAMBEM E FUTEBOL. Sem isto, "Gerrard critica a
+        # postura do Liverpool" caiu do filtro — a lista so tinha clube
+        # brasileiro, e as fontes cobrem Europa o tempo todo.
+        r"liverpool|real\s+madrid|barcelona|manchester|chelsea|arsenal",
+        r"bayern|juventus|inter\s+de\s+mil[ãa]o|psg|premier\s+league",
+        r"champions|uefa|fifa|la\s+liga|jogador|craque|elenco|treino",
+        r"clube|time\b|times\b|derrota|vit[óo]ria|empate|p[êe]nalti",
+    ),
+    "games": (
+        r"\bgame\b|\bgames\b|jogo|jogos|gameplay|console|videogame",
+        r"playstation|\bps5\b|\bxbox\b|nintendo|switch|steam|\bpc\b",
+        r"\bdlc\b|expans[ãa]o|patch|atualiza[çc][ãa]o\s+do\s+jogo|beta",
+        r"early\s+access|\brpg\b|\bfps\b|indie|estúdio|desenvolvedora",
+        r"e-?sports|campeonato\s+de|\bcs2?\b|valorant|league\s+of\s+legends",
+        r"\bgta\b|fifa|\bea\b|ubisoft|rockstar|blizzard|sony|lan[çc]amento",
+    ),
+    "ia": (
+        r"intelig[êe]ncia\s+artificial|\bia\b|\bai\b|modelo\s+de\s+linguagem",
+        r"chatgpt|openai|gemini|claude|anthropic|copilot|llama|deepseek",
+        # "automacao" e "algoritmo" SAIRAM: soltas, deixaram entrar uma
+        # materia sobre trabalhar de Uber, que o Kevin ouviu e apontou. As
+        # duas aparecem em qualquer texto sobre plataforma ou planilha.
+        # Ficaram as marcas que so existem quando o assunto E IA.
+        r"\bllm\b|machine\s+learning|aprendizado\s+de\s+m[áa]quina",
+        r"rede\s+neural|redes\s+neurais|chatbot|deep\s+learning",
+        r"generativ[ao]|modelo\s+de\s+ia|treinar\s+modelo",
+        r"nvidia|hugging\s+face|midjourney|stable\s+diffusion",
+    ),
+    "moda": (
+        r"moda|cole[çc][ãa]o|passarela|desfile|estilo|tend[êe]ncia|look",
+        r"grife|estilista|fashion|semana\s+de\s+moda|alfaiataria|tecido",
+        r"sapato|bolsa|vestido|jaqueta|acess[óo]rio|beleza|maquiagem",
+        r"gucci|prada|chanel|dior|louis\s+vuitton|zara|farm|osklen",
+    ),
+    # VAREJO E COMPRA E VENDA, nao "mundo corporativo".
+    #
+    # A primeira versao aceitava "consumidor" e "vendas" soltos, e por ai
+    # entrou "fim da escala 6x1" e "engajamento de funcionarios" — pauta de
+    # RH num podcast de varejo online. As marcas agora falam de LOJA, de
+    # COMPRA e de ENTREGA.
+    "varejo online": (
+        r"varejo|varejista|e-?commerce|com[ée]rcio\s+eletr[ôo]nico",
+        r"marketplace|loja\s+online|lojas?\b|shopping|\bcompra",
+        r"frete|entrega|log[íi]stica|centro\s+de\s+distribui",
+        r"mercado\s+livre|amazon|magalu|magazine\s+luiza|shopee|americanas",
+        r"shein|aliexpress|temu|ifood|rappi|mercado\s+pago",
+        r"black\s+friday|consumidor\s+online|carrinho|checkout",
+        r"vendas\s+online|vendas\s+do\s+varejo|ticket\s+m[ée]dio",
+    ),
+}
+
+
+def e_do_assunto(nicho: str, titulo: str, resumo: str = "") -> bool:
+    """A materia fala do nicho? Post de oferta nunca fala."""
+    texto = "%s %s" % (titulo or "", resumo or "")
+    if _E_OFERTA_RE.search(texto):
+        return False
+    marcas = _ASSUNTO.get(nicho or "")
+    if not marcas:
+        return True
+    return any(re.search(m, texto, re.I) for m in marcas)
+
 
 # ---------------------------------------------------------------------------
 # O FORMATO DE 3 MINUTOS
@@ -244,6 +382,46 @@ def _dominio(url: str) -> str:
     return t.split("/")[0]
 
 
+# ---------------------------------------------------------------------------
+# QUANDO A NOTICIA E — dito como gente diz
+# ---------------------------------------------------------------------------
+# Pedido do Kevin (29/08/2026): "importante dizer de quando e, com datas mais
+# ou menos".
+#
+# Num resumo semanal, "quando" muda o sentido: "o Palmeiras venceu" e uma
+# informacao; "o Palmeiras venceu no sabado" e outra — a segunda deixa a
+# pessoa saber se ela ja sabia disso.
+#
+# DIA DA SEMANA, NAO NUMERO. Duas razoes: locucao falada diz "na quinta", nao
+# "no dia 27"; e numero no roteiro passa pela conferencia de alucinacao, que
+# reprovaria uma data legitima que o modelo escreveu de outro jeito.
+def data_falada(iso: Optional[str], hoje=None) -> str:
+    """"2026-08-28" -> "ontem" / "na quinta". "" quando nao da pra saber."""
+    if not iso:
+        return ""
+    try:
+        a, m, d = (int(x) for x in str(iso)[:10].split("-"))
+        quando = date(a, m, d)
+    except (ValueError, TypeError):
+        return ""
+    ref = hoje or tempo.hoje()
+    dias = (ref - quando).days
+    if dias < 0:
+        return ""
+    if dias == 0:
+        return "hoje"
+    if dias == 1:
+        return "ontem"
+    if dias == 2:
+        return "anteontem"
+    if dias <= 6:
+        return ("na segunda", "na terça", "na quarta", "na quinta",
+                "na sexta", "no sábado", "no domingo")[quando.weekday()]
+    if dias <= 13:
+        return "semana passada"
+    return ""
+
+
 def _conta_palavras(texto: str) -> int:
     return len([p for p in re.split(r"\s+", (texto or "").strip()) if p])
 
@@ -269,7 +447,7 @@ def montar_roteiro(nicho: Optional[str], itens: Optional[list],
     if not k or not itens:
         return None
     d = NICHOS[k]
-    bons = _validos(k, itens)[:BLOCOS]
+    bons = escolher_variado(_validos(k, itens))
     if not bons:
         return None
 
@@ -323,37 +501,247 @@ def _validos(k: str, itens: list) -> list:
             continue
         if fonte.lower() not in permitidas and _dominio(fonte) not in permitidas:
             continue
+        # DO ASSUNTO, e nao so da fonte certa. Veiculo de nicho publica fora
+        # do nicho o tempo todo — e foi assim que um desconto de iPhone
+        # entrou num episodio de games.
+        if not e_do_assunto(k, titulo, it.get("resumo") or ""):
+            continue
         bons.append({"titulo": titulo,
                      "resumo": (it.get("resumo") or "").strip(),
-                     "fonte": fonte})
+                     "fonte": fonte,
+                     "data": it.get("data"),
+                     # `link` e a CHAVE de "ja falei disso": ele identifica a
+                     # materia melhor que o titulo, que muda de manchete
+                     # entre uma coleta e outra.
+                     "link": it.get("link") or ""})
     return bons
 
 
+# ---------------------------------------------------------------------------
+# VARIEDADE: tres noticias DIFERENTES, nao a mesma vista de tres angulos
+# ---------------------------------------------------------------------------
+# O Kevin ouviu a primeira amostra: "o audio de futebol falou apenas de um
+# jogo de 2 times e mais nada; em 7 dias tem muito mais noticia relevante —
+# transferencia, polemica".
+#
+# Ele esta certo, e a causa era boba: o roteiro pegava os TRES PRIMEIROS itens
+# do feed. Feed vem em ordem cronologica, entao os tres primeiros sao o que
+# saiu nas ultimas horas — e num sabado a noite isso e o mesmo jogo em tres
+# manchetes. O dedup por titulo nao pega, porque "Palmeiras vence" e
+# "Flamengo perde em casa" sao titulos diferentes falando da mesma coisa.
+#
+# A escolha agora e por DISSEMELHANCA: entre os candidatos da semana, pega o
+# proximo que menos parece com o que ja foi escolhido. E o mesmo criterio que
+# um editor usa montando a primeira pagina — nao "o mais recente tres vezes",
+# e sim "o que cobre mais assunto".
+
+# Palavras que aparecem em qualquer manchete e nao dizem do que ela trata.
+# Sem esta lista, "o", "de" e "com" fariam duas noticias parecerem iguais.
+_VAZIAS = {
+    "a", "o", "as", "os", "um", "uma", "de", "do", "da", "dos", "das", "e",
+    "em", "no", "na", "nos", "nas", "por", "para", "pra", "com", "sem", "que",
+    "se", "ao", "aos", "the", "sobre", "apos", "após", "contra", "mais",
+    "menos", "ja", "já", "nao", "não", "seu", "sua", "ele", "ela", "isso",
+    "veja", "confira", "saiba", "entenda", "video", "vídeo", "fotos",
+}
+
+
+def _marcas(texto: str) -> set:
+    """As palavras que dizem do que a materia trata."""
+    t = "".join(c for c in unicodedata.normalize("NFD", (texto or "").lower())
+                if unicodedata.category(c) != "Mn")
+    return {w for w in re.split(r"[^a-z0-9]+", t)
+            if len(w) >= 4 and w not in _VAZIAS}
+
+
+def _parecidas(a: dict, b: dict) -> float:
+    """Quanto duas materias se sobrepoem, de 0 a 1."""
+    ma, mb = _marcas(a.get("titulo")), _marcas(b.get("titulo"))
+    if not ma or not mb:
+        return 0.0
+    return len(ma & mb) / float(min(len(ma), len(mb)))
+
+
+# Acima disto, sao a mesma historia. Medido em manchete real de futebol:
+# "Palmeiras vence o Flamengo por 2 a 1" e "Flamengo perde para o Palmeiras
+# fora de casa" dividem "palmeiras" e "flamengo" — 2 de 4 marcas.
+LIMITE_DE_SEMELHANCA = 0.45
+
+
+def _agrupar(itens: list) -> list:
+    """Junta as materias que contam a MESMA historia.
+
+    Duas fontes cobrindo o mesmo jogo escrevem manchetes diferentes
+    ("Palmeiras vence" / "Flamengo perde em casa"), entao agrupar por titulo
+    exato nao serve. Agrupa por sobreposicao de palavras-chave.
+    """
+    grupos: list = []
+    for it in itens:
+        for g in grupos:
+            if _parecidas(it, g[0]) >= LIMITE_DE_SEMELHANCA:
+                g.append(it)
+                break
+        else:
+            grupos.append([it])
+    return grupos
+
+
+def _relevancia(grupo: list) -> tuple:
+    """Quanto essa historia importa. Maior e melhor.
+
+    O SINAL E A COBERTURA CRUZADA, e ele e de graca: quando as tres fontes
+    do nicho publicam sobre a mesma coisa, aquela e A historia da semana.
+    Nenhuma delas gasta espaco com o que nao importa, e as tres concordando
+    e o mais perto de "relevante" que da pra medir sem opinar.
+    """
+    fontes = len({i.get("fonte") for i in grupo})
+    materias = len(grupo)
+    # Empate entre historias de mesma cobertura vai pra mais recente: numa
+    # semana igual, a novidade ganha.
+    recente = max((str(i.get("data") or "") for i in grupo), default="")
+    return (fontes, materias, recente)
+
+
+def escolher_variado(itens: list, quantos: int = 0) -> list:
+    """As `quantos` historias mais relevantes, uma materia de cada.
+
+    O Kevin, depois de ouvir a primeira amostra: "tem que ser as mais
+    relevantes, impactantes, polemicas — o povo quer saber disso".
+    Antes daqui a escolha era "as tres mais recentes", que num sabado a
+    noite sao o mesmo jogo em tres manchetes.
+
+    Agora: agrupa por historia, ordena por quantas FONTES cobriram, pega uma
+    materia de cada grupo. Sai relevante e variado pelo mesmo mecanismo — sao
+    grupos diferentes por definicao.
+    """
+    alvo = quantos or BLOCOS
+    validos = [i for i in (itens or []) if isinstance(i, dict)]
+    if not validos:
+        return []
+    grupos = _agrupar(validos)
+    escolhidas, usadas = [], set()
+    while grupos and len(escolhidas) < alvo:
+        # RELEVANCIA PRIMEIRO, FONTE INEDITA COMO DESEMPATE.
+        #
+        # So por relevancia, o site que publica mais leva as tres vagas — foi
+        # o que aconteceu na primeira versao (tres do ge.globo, tres do
+        # GameBlast). E so por fonte, entra materia fraca. A ordem certa e:
+        # historia coberta por mais fontes ganha; entre historias empatadas,
+        # ganha a que traz uma fonte que ainda nao falou.
+        melhor = max(grupos, key=lambda g: (
+            len({i.get("fonte") for i in g}),
+            1 if {i.get("fonte") for i in g} - usadas else 0,
+            len(g),
+            max((str(i.get("data") or "") for i in g), default="")))
+        # DENTRO DO GRUPO, A FONTE INEDITA GANHA — e so depois o resumo
+        # mais completo.
+        #
+        # Sem isto, numa historia coberta pelas tres fontes o representante
+        # era sempre a de resumo mais longo (o ge.globo), e as tres vagas
+        # do episodio acabavam com o mesmo site citado tres vezes. As tres
+        # fontes existem justamente pra que o episodio soe apurado.
+        escolhida = max(melhor, key=lambda i: (
+            0 if i.get("fonte") in usadas else 1,
+            len(i.get("resumo") or "")))
+        escolhidas.append(escolhida)
+        usadas.add(escolhida.get("fonte"))
+        grupos.remove(melhor)
+    return escolhidas
+
+
+def _fonte_do_grupo(grupo: list) -> str:
+    return max(grupo, key=lambda i: len(i.get("resumo") or "")).get("fonte")
+
+
+# ---------------------------------------------------------------------------
+# QUEM CONVERSA NO EPISODIO
+# ---------------------------------------------------------------------------
+# Pedido do Kevin depois de ouvir a primeira amostra: "nao tem tom de podcast
+# e nem 2 vozes discutindo sobre o tema; coloque sempre um homem e uma
+# mulher, muito humanizado".
+#
+# Ele acertou a causa. Uma voz so lendo tres paragrafos e LOCUCAO, e locucao
+# soa robotica por mais natural que seja o timbre. O que faz soar podcast nao
+# e a voz — e a CONVERSA: um comenta, o outro reage, um pergunta, o outro
+# responde. Isso muda o ROTEIRO, nao so a sintese.
+#
+# Nomes curtos e comuns de proposito: o TTS erra menos, e quem ouve nao
+# tropeca num nome estranho logo na primeira frase.
+APRESENTADORES = {"mulher": "Bia", "homem": "Léo"}
+
+_FALA_RE = re.compile(r"^\s*(BIA|L[ÉE]O)\s*:\s*(.+)$", re.I)
+
+
+def falas(roteiro):
+    """Roteiro -> [("mulher"|"homem", texto)]. [] quando nao e dialogo.
+
+    Lista vazia NAO e erro: e como o `voz` sabe que aquele texto e pra uma
+    voz so (qualquer outro uso que nao o episodio).
+    """
+    saida = []
+    for linha in (roteiro or "").splitlines():
+        m = _FALA_RE.match(linha)
+        if not m:
+            continue
+        texto = m.group(2).strip()
+        if not texto:
+            continue
+        saida.append(("mulher" if m.group(1).upper() == "BIA" else "homem",
+                      texto))
+    return saida
+
+
+def _sem_marcacao(roteiro):
+    """O texto falado, sem os nomes na frente.
+
+    A conferencia de alucinacao e o teto de palavras contam CONTEUDO;
+    contar "BIA:" dezesseis vezes inflaria o total e reprovaria roteiro bom.
+    """
+    ditas = falas(roteiro)
+    if ditas:
+        return " ".join(t for _q, t in ditas)
+    return roteiro or ""
+
+
 def _montar(d: dict, bons: list, nome: str) -> str:
-    """Monta o texto. Separado do corte pra que remontar não recurse."""
+    """Monta a CONVERSA. Separado do corte pra que remontar não recurse.
+
+    Este é o roteiro DE RESERVA: sai quando o LLM falha ou quando o que ele
+    escreveu é reprovado na conferência. Ele é mais seco que uma conversa de
+    verdade, e é assim de propósito — só repete o que veio do feed, sem
+    acrescentar nada.
+
+    Mesmo assim ele fecha um assunto antes de abrir o próximo ("Fechado. A
+    próxima:"), que foi o pedido do Kevin: dar a notícia, encerrar, anunciar
+    a seguinte e só então falar dela.
+    """
+    bia, leo = APRESENTADORES["mulher"], APRESENTADORES["homem"]
     primeiro = (nome or "").split()[0] if nome else ""
     saudacao = f"Oi, {primeiro}!" if primeiro else "Oi!"
-    partes = [
-        # SEM PROMETER MINUTAGEM (auditoria M4.2, P2-8): o roteiro
-        # deterministico sai entre 40s e 2 min, e um audio que se anuncia
-        # como "três minutos" e entrega quarenta segundos e o produto
-        # errando pra menos na primeira frase.
-        f"{saudacao} Seu resumo de {d['rotulo'].lower()} da semana.",
-        "",
+    linhas = [
+        f"BIA: {saudacao} Aqui é a {bia}.",
+        f"LEO: E eu sou o {leo}. Bora ao resumo de "
+        f"{d['rotulo'].lower()} da semana.",
     ]
     for i, it in enumerate(bons, 1):
-        partes.append(f"{i}. {it['titulo']}.")
+        quem = "BIA" if i % 2 else "LEO"
+        outro = "LEO" if i % 2 else "BIA"
+        quando = data_falada(it.get("data"))
+        abre = ("Começando: " if i == 1
+                else "Fechado. A próxima: " if i == 2
+                else "E pra terminar: ")
+        linhas.append(f"{quem}: {abre}{it['titulo']}"
+                      + (f", {quando}." if quando else "."))
         if it["resumo"]:
-            partes.append(it["resumo"])
-        partes.append("")
+            linhas.append(f"{outro}: {it['resumo']}")
 
     citadas = []
     for it in bons:
         if it["fonte"] not in citadas:
             citadas.append(it["fonte"])
-    partes.append("Isso foi o que saiu em " + _lista(citadas) + ".")
-    partes.append("Semana que vem eu te trago mais. Até lá!")
-    return "\n".join(partes).strip()
+    linhas.append(f"BIA: Isso foi o que saiu em {_lista(citadas)}.")
+    linhas.append("LEO: Semana que vem a gente volta. Até lá!")
+    return "\n".join(linhas).strip()
 
 
 def _encurtar(texto: str, palavras: int) -> str:
@@ -511,34 +899,62 @@ def pode_enviar(ultimo_envio_iso: Optional[str],
 # verdadeiro. Áudio com voz de locutor afirmando o que ninguém verificou é o
 # jeito mais rápido de perder a confiança de alguém.
 
-_PROMPT_LOCUCAO = """Você escreve o roteiro de um mini-podcast de 3 minutos \
-em português do Brasil, sobre {rotulo}.
+_PROMPT_LOCUCAO = """Você escreve o roteiro de um mini-podcast em português \
+do Brasil sobre {rotulo}. São DUAS pessoas conversando: {bia} (mulher) e \
+{leo} (homem).
 
-MATÉRIA-PRIMA (é tudo o que você sabe; não existe mais nada):
+MATÉRIA-PRIMA (é tudo o que vocês sabem; não existe mais nada):
 {materia}
 
-REGRAS, nesta ordem de importância:
-1. NÃO INVENTE. Não acrescente placar, número, nome, data ou consequência que \
-não esteja na matéria-prima acima. Se um item está vago, mantenha vago.
-2. NÃO CITE fonte nenhuma além destas: {fontes}.
-3. {blocos} blocos, na ordem dada. Cada bloco: uma frase que diz o que \
-aconteceu e uma que diz por que importa.
-4. Entre {minimo} e {alvo} palavras no total. Isso é o que cabe em 3 minutos.
-5. Português falado: frases curtas, sem "outrossim", sem "vale ressaltar", \
-sem manchete lida. Você está conversando, não lendo.
-6. Abra cumprimentando {nome} e feche dizendo de quais fontes veio.
+FORMATO — uma fala por linha, começando com o nome e dois pontos:
+BIA: ...
+LEO: ...
 
-Devolva SOMENTE o texto do roteiro, sem título, sem marcação, sem aspas."""
+REGRAS, nesta ordem de importância:
+
+1. NÃO INVENTE. Nenhum placar, número, nome, data ou consequência que não \
+esteja na matéria-prima. Item vago continua vago.
+
+2. NÃO CITE fonte nenhuma além destas: {fontes}.
+
+3. É CONVERSA, NÃO REVEZAMENTO DE LEITURA. Um dá a notícia, o outro REAGE de \
+verdade — comenta, discorda, pergunta, completa, se surpreende. Se ninguém \
+reagir, é locução com dois nomes na frente, e aí não valeu a pena.
+
+4. UM ASSUNTO POR VEZ, FECHADO ANTES DO PRÓXIMO. Dá a notícia, comenta, \
+ENCERRA ("é isso", "fica a conta", "vamos ver no que dá") e só então anuncia \
+o próximo ("a próxima é sobre...", "mudando de assunto..."). Nunca misture \
+dois assuntos na mesma fala.
+
+5. DIGA QUANDO FOI. A matéria-prima traz o dia entre parênteses — diga em \
+palavras: "no sábado", "ontem", "semana passada". Nunca invente data.
+
+6. {blocos} assuntos, na ordem dada. Entre {minimo} e {alvo} palavras no \
+total, contando só o que é falado.
+
+7. PORTUGUÊS FALADO DE VERDADE. Frase curta. Contração ("tá", "pra", "né"). \
+Pode começar frase com "e", "mas", "olha". Zero "outrossim", "vale ressaltar" \
+e "é importante destacar". Ninguém fala assim, e é isso que faz soar robô.
+
+8. {bia} abre cumprimentando {nome} e se apresentando; {leo} fecha dizendo \
+de quais fontes veio e que semana que vem tem mais.
+
+Devolva SOMENTE as linhas de fala, sem título, sem marcação, sem aspas."""
 
 
 def _prompt_de_locucao(nicho: str, itens: list, nome: str = "") -> str:
     d = NICHOS[nicho]
     linhas = []
     for i, it in enumerate(itens, 1):
-        linhas.append("%d. [%s] %s" % (i, it["fonte"], it["titulo"]))
+        quando = data_falada(it.get("data"))
+        linhas.append("%d. [%s]%s %s" % (
+            i, it["fonte"], (" (%s)" % quando) if quando else "",
+            it["titulo"]))
         if it.get("resumo"):
             linhas.append("   %s" % it["resumo"][:400])
     return _PROMPT_LOCUCAO.format(
+        bia=APRESENTADORES["mulher"],
+        leo=APRESENTADORES["homem"],
         rotulo=d["rotulo"],
         materia="\n".join(linhas),
         fontes=", ".join(f[0] for f in d["fontes"]),
@@ -571,7 +987,10 @@ def conferir_locucao(texto: Optional[str], nicho: Optional[str],
         return "nicho desconhecido"
     if not texto or not texto.strip():
         return "roteiro vazio"
-    n = _conta_palavras(texto)
+    # SEM OS NOMES NA FRENTE: "BIA:" e "LEO:" sao marcacao de quem fala,
+    # nao conteudo, e conta-los inflaria o total em ~16 palavras.
+    falado = _sem_marcacao(texto)
+    n = _conta_palavras(falado)
     if n > PALAVRAS_TETO:
         return "passou de %d palavras (%d)" % (PALAVRAS_TETO, n)
     if n < 60:
@@ -579,7 +998,7 @@ def conferir_locucao(texto: Optional[str], nicho: Optional[str],
 
     permitidas = {f[0].lower() for f in NICHOS[k]["fontes"]}
     permitidas |= {_dominio(f[1]) for f in NICHOS[k]["fontes"]}
-    for achado in _VEICULO_RE.findall(texto):
+    for achado in _VEICULO_RE.findall(falado):
         alvo = achado.lower().strip()
         if not any(alvo in p for p in permitidas):
             return "citou fonte de fora da lista: %r" % achado
@@ -621,7 +1040,7 @@ def conferir_locucao(texto: Optional[str], nicho: Optional[str],
     if materia is not None:
         fonte = _valores(materia)
         ano = (hoje or tempo.hoje()).year
-        for valor, cru, numeracao in _valores(texto, com_texto=True):
+        for valor, cru, numeracao in _valores(falado, com_texto=True):
             if not _autorizado(valor, fonte, ano, numeracao):
                 return "numero %r nao veio das fontes" % cru.rstrip(".,")
     return None
@@ -715,7 +1134,7 @@ def locucao(nicho: Optional[str], itens: Optional[list], nome: str = "",
     if not seguro:
         return None            # sem notícia válida não há episódio, e ponto
 
-    usados = _validos(k, itens)[:BLOCOS]
+    usados = escolher_variado(_validos(k, itens))
     try:
         bruto = (chamar or _chamar_llm)(_prompt_de_locucao(k, usados, nome))
     except Exception:
@@ -735,8 +1154,10 @@ def locucao(nicho: Optional[str], itens: Optional[list], nome: str = "",
 def _materia_bruta(itens: list) -> str:
     """Tudo o que veio dos feeds, junto. E o teto do que o roteiro
     pode afirmar."""
-    return " ".join("%s %s" % (i.get("titulo") or "", i.get("resumo") or "")
-                    for i in (itens or []))
+    return " ".join(
+        "%s %s %s" % (i.get("titulo") or "", i.get("resumo") or "",
+                      i.get("data") or "")
+        for i in (itens or []))
 
 
 def _chamar_llm(prompt: str) -> str:
