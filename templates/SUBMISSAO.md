@@ -121,6 +121,38 @@ Responda *ver tudo* para a lista completa.
 
 ---
 
+## `resolveai_podcast_pronto`
+
+- **Nome:** `resolveai_podcast_pronto`
+- **O que faz:** Avisa que o áudio da semana está pronto (só quem escolheu o dia)
+- **Categoria:** MARKETING
+- **Idioma:** pt_BR
+
+**Botões — tipo `Resposta rápida`, um por linha:**
+
+  - `Quero ouvir`
+  - `Agora não`
+  - `Não quero mais`
+
+**Corpo:**
+
+```
+Oi {{1}}, seu resumo de *{{2}}* da semana está pronto.
+
+Quer ouvir agora? É só tocar no botão.
+```
+
+**Variáveis (exemplo para a submissão):**
+
+  - `{{1}}` -> `Kevin`
+  - `{{2}}` -> `futebol`
+
+**Justificativa (cole no campo de descrição, se pedido):**
+
+> O usuário escolheu um assunto no cadastro e escolheu, tocando num botão, em que dia da semana quer ser lembrado. Esta mensagem é o lembrete nesse dia, e ela NÃO contém o conteúdo: o áudio só é enviado se ele tocar em 'Quero ouvir'. O botão 'Não quero mais' encerra o envio na hora.
+
+---
+
 ## `resolveai_reengajamento_pendentes`
 
 - **Nome:** `resolveai_reengajamento_pendentes`

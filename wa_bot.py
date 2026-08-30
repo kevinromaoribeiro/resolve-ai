@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v25.9-m46-podcast-2026-08-29"
+BUILD = "v26.0-m47-dia-com-template-2026-08-29"
 
 # ---------------------------------------------------------------------------
 # M1.2 — ACEITE DE LGPD COMO ATO EXPLICITO
@@ -779,6 +779,25 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
 
     if _PODCAST_QUERO_RE.match(text):
         return _mandar_podcast(user, phone)
+
+    # A ESCOLHA DO DIA — e ela agora VALE (M4.7).
+    #
+    # So com a pergunta pendente: "segunda" numa frase qualquer nao pode
+    # virar assinatura de audio.
+    if (user.get("podcast_nicho") and not user.get("podcast_dia")
+            and user.get("podcast_dia_perguntado")):
+        _dia = _DIA_DA_SEMANA_RE.match(text)
+        if _dia:
+            _nome_dia = _NORMALIZA_DIA.get(
+                _sem_acento_simples(_dia.group(1)), _dia.group(1).capitalize())
+            db.update_user_fields(user["id"], podcast_dia=_nome_dia)
+            return (f"Fechado! 🎧 Toda *{_nome_dia.lower()}* eu te aviso que "
+                    f"o resumo de "
+                    f"*{podcast.rotulo(user.get('podcast_nicho')).lower()}* "
+                    f"está pronto.\n\n"
+                    f"O áudio só vai quando você tocar em *Quero ouvir* — "
+                    f"nunca sozinho. Pra parar, é só dizer _não quero mais o "
+                    f"podcast_.")
 
     # --- "Copiar código": reenvia o código sozinho -------------------------
     #
@@ -1531,7 +1550,14 @@ def entende_comando(texto: str) -> bool:
         or _CONFIRMA_DOC_RE.match(t)
         or baixo in LISTA_COMANDOS
         or baixo in COMANDOS_ASSINATURA
-        or baixo in _COMANDOS_DO_BOT)
+        or baixo in _COMANDOS_DO_BOT
+        # Os tres botoes do podcast. Sem isto, o clique no botao do
+        # TEMPLATE aprovado cairia no LLM e podia virar "nao entendi" —
+        # logo depois de a pessoa ter feito exatamente o que o bot
+        # pediu. O teste que varre os botoes dos templates cobra isto.
+        or _PODCAST_QUERO_RE.match(t)
+        or _PODCAST_DEPOIS_RE.match(t)
+        or _PODCAST_NAO_QUERO_RE.match(t))
 
 
 # OS TRÊS BOTÕES DA FOTO DE DOCUMENTO (M3.5).
@@ -1643,6 +1669,15 @@ _PODCAST_NAO_QUERO_RE = re.compile(
     r"^\s*(n[ãa]o\s+quero\s+mais(\s+o\s+podcast)?|"
     r"cancela(r)?\s+o\s+(mini\s+)?podcast|"
     r"para(r)?\s+(o\s+)?podcast|sem\s+podcast)\s*[.!?]?\s*$", re.I)
+
+# A RESPOSTA DA PERGUNTA DO DIA (M4.7).
+#
+# Ela tinha saido quando o dia deixou de valer; volta agora que o template
+# faz o dia escolhido ser cumprido de verdade. Aceita as tres do botao e
+# qualquer dia digitado — quem responde "quarta" tambem esta respondendo.
+_DIA_DA_SEMANA_RE = re.compile(
+    r"^\s*(segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|sabado|domingo)"
+    r"(\s*-?\s*feira)?\s*[.!?]?\s*$", re.I)
 
 # Comando do dono pra ouvir uma amostra de cada nicho antes de soltar.
 _AMOSTRA_PODCAST_RE = re.compile(
@@ -2491,6 +2526,22 @@ def _amostra_de_podcast(user: dict, phone: str) -> str:
             + "\n".join(linhas)
             + "\n\n_Nada foi marcado como enviado — isso é inspeção, não "
               "entrega._")
+
+
+# O dia gravado tem que bater com o que o `scheduler` compara. Sem
+# normalizar, "terca" digitado e "Terça" da tabela nunca casariam e a pessoa
+# ficaria esperando um lembrete que nunca vem.
+_NORMALIZA_DIA = {
+    "segunda": "Segunda", "terca": "Terça", "quarta": "Quarta",
+    "quinta": "Quinta", "sexta": "Sexta", "sabado": "Sábado",
+    "domingo": "Domingo",
+}
+
+
+def _sem_acento_simples(t: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", (t or "").lower())
+                   if unicodedata.category(c) != "Mn")
 
 
 def _mandar_podcast(user: dict, phone: str) -> str:
@@ -5931,8 +5982,12 @@ def dispatch_proactive() -> int:
         # junto quem estava atras na fila — e o `_loop_proativo` engole
         # com "ciclo falhou", que foi o silencio que escondeu o P0-1.
         try:
-            if ok and d.get("kind") == "podcast" and d.get("user_id"):
+            if (ok and d.get("user_id")
+                    and d.get("kind") in ("podcast", "podcast-convite")):
                 db.podcast_marcar_convite(d["user_id"])
+            if (ok and d.get("user_id")
+                    and d.get("kind") == "podcast-dia"):
+                db.podcast_marcar_pergunta_do_dia(d["user_id"])
         except Exception:
             log.warning("[cron] falhei ao carimbar o podcast",
                         exc_info=True)
@@ -7443,6 +7498,32 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
                           != _dono]
                 _tocados = db.resetar_trial(_alvos, por="painel")
                 return JSONResponse({"ok": True, "tocados": len(_tocados)})
+            if body.get("acao") == "amostra_podcast":
+                # AMOSTRA PELO PAINEL, alem do comando por WhatsApp.
+                #
+                # O comando (`amostra do podcast`) exige que o dono digite do
+                # numero cadastrado como ADMIN_PHONE. Pelo painel ele escolhe
+                # PRA QUEM vai — util quando o numero dele nao e o admin, e
+                # util pra mandar a amostra pra alguem avaliar junto.
+                #
+                # Mesma trava do resto do painel: so com o token.
+                _alvo = re.sub(r"\D", "", str(body.get("telefone") or ""))
+                if not _alvo:
+                    return JSONResponse({"ok": False,
+                                         "erro": "telefone obrigatorio"})
+                _u = db.get_user_by_phone(_alvo)
+                if not _u:
+                    return JSONResponse(
+                        {"ok": False,
+                         "erro": "numero nao cadastrado: %s" % _alvo})
+                try:
+                    _txt = _amostra_de_podcast(_u, _alvo)
+                except Exception as e:
+                    log.warning("[painel] amostra do podcast falhou",
+                                exc_info=True)
+                    return JSONResponse({"ok": False, "erro": repr(e)[:200]})
+                send_whatsapp(_alvo, _txt)
+                return JSONResponse({"ok": True, "resumo": _txt})
             uid = int(body.get("user_id"))
             acao = body.get("acao")
             ok = False

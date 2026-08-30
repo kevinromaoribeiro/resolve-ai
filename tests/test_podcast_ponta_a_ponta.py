@@ -48,9 +48,15 @@ def _feed_falso(agora=None):
 
 @pytest.fixture
 def com_voz(monkeypatch):
-    """Provedor de voz configurado e sintese que devolve bytes de mentira."""
+    """Voz configurada, sintese dublada, e a feature LIGADA.
+
+    `PODCAST_ATIVO` e falso por default de proposito (o dono liga quando
+    aprovar). Sem ligar aqui, todo teste de podcast mediria a trava em vez
+    de medir o comportamento.
+    """
     monkeypatch.setattr(voz, "disponivel", lambda: True)
     monkeypatch.setattr(voz, "sintetizar", lambda t: b"OggS-audio-falso")
+    monkeypatch.setattr(scheduler, "PODCAST_ATIVO", True)
     return True
 
 
@@ -112,7 +118,7 @@ def test_o_convite_sai_depois_das_seis_horas(usuario, horario_util, com_voz):
     _com_nicho(usuario, horas_atras=7)
     d = scheduler.check_podcast()
     assert len(d) == 1, d
-    assert d[0]["kind"] == "podcast"
+    assert d[0]["kind"] == "podcast-convite"
     assert "?" in d[0]["message"]
     assert d[0]["botoes"] == ["Quero ouvir", "Agora não", "Não quero mais"]
 
@@ -346,8 +352,15 @@ def test_o_convite_nao_tem_template_e_isso_e_deliberado():
     """Pedir pra alguem ouvir um audio e o motivo que a Meta classifica como
     marketing — e marketing neste numero e o que ja rendeu duas restricoes."""
     import templates as T
-    assert "podcast" in T.KINDS_SEM_TEMPLATE
-    assert "podcast" not in T.KIND_TEMPLATE
+    # O CONVITE DE 1a VEZ e a PERGUNTA DO DIA vivem dentro da janela: a
+    # pessoa esta conversando com o bot naquele momento.
+    assert "podcast-convite" in T.KINDS_SEM_TEMPLATE
+    assert "podcast-dia" in T.KINDS_SEM_TEMPLATE
+    # O LEMBRETE SEMANAL tem template — e e ele que faz o dia escolhido
+    # valer. Sem ele, "toda segunda" so alcancava quem por acaso tivesse
+    # falado com o bot nas ultimas 24h.
+    assert T.KIND_TEMPLATE.get("podcast") == "resolveai_podcast_pronto"
+    assert T.CATALOGO["resolveai_podcast_pronto"].botoes[0] == "Quero ouvir"
     assert "podcast" in scheduler.KINDS_PROATIVOS
 
 
@@ -621,3 +634,68 @@ def test_a_amostra_espaca_os_envios(monkeypatch):
     fonte = inspect.getsource(wa_bot._amostra_de_podcast)
     assert "time.sleep" in fonte, (
         "a amostra manda em rajada, sem o freio de espacamento")
+
+
+def test_a_feature_nao_dispara_sem_o_dono_ligar(usuario, horario_util,
+                                                monkeypatch):
+    """Deploy nao e lancamento.
+
+    O codigo pode estar no ar com a feature desligada — e enquanto o Kevin
+    nao ouvir as amostras e aprovar, nenhum cliente recebe convite nenhum.
+    Feature que se liga sozinha ao subir e feature que estreia sem ninguem
+    ter decidido.
+    """
+    monkeypatch.setattr(voz, "disponivel", lambda: True)
+    monkeypatch.setattr(scheduler, "PODCAST_ATIVO", False)
+    _com_nicho(usuario)
+    assert scheduler.check_podcast() == []
+
+    monkeypatch.setattr(scheduler, "PODCAST_ATIVO", True)
+    assert scheduler.check_podcast(), "ligou e continuou mudo"
+
+
+def test_o_dia_escolhido_e_respeitado(usuario, com_voz, monkeypatch):
+    """O Kevin: "tem que respeitar o que o cliente quiser, no dia certo que
+    ele selecionar". Com o template, isso passou a ser possivel."""
+    _com_nicho(usuario)
+    db.update_user_fields(usuario["id"], podcast_dia="Sexta")
+    for dia, esperado in ((17, False), (18, False), (21, True), (22, False)):
+        agora = _dt.datetime(2026, 8, dia, 10, 0, 0)   # 21/08/2026 e sexta
+        monkeypatch.setattr(tempo, "agora", lambda a=agora: a)
+        monkeypatch.setattr(tempo, "hoje", lambda a=agora: a.date())
+        db.podcast_marcar_envio(usuario["id"],
+                                quando=agora - _dt.timedelta(days=8))
+        db.podcast_marcar_convite(usuario["id"],
+                                  quando=agora - _dt.timedelta(days=8))
+        with db.get_conn() as c:
+            c.execute("DELETE FROM dispatches")
+        assert bool(scheduler.check_podcast()) is esperado, (
+            "dia %d/08: esperava %s" % (dia, esperado))
+
+
+def test_o_lembrete_semanal_usa_o_template(usuario, com_voz, monkeypatch):
+    """E o template que faz o dia valer: fora da janela de 24h, texto livre
+    nao sai, e ai "toda sexta" seria promessa quebrada."""
+    import templates as T
+    _com_nicho(usuario)
+    db.podcast_marcar_envio(
+        usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
+    db.podcast_marcar_convite(
+        usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
+    d = scheduler.check_podcast()
+    assert d and d[0]["kind"] == "podcast", d
+    assert T.KIND_TEMPLATE["podcast"] == "resolveai_podcast_pronto"
+
+
+def test_o_audio_nunca_sai_junto_com_o_lembrete(usuario, com_voz):
+    """A regra que o Kevin repetiu: "nunca mandaremos o audio sem a
+    permissao". O lembrete e so texto+botao; o audio so no toque."""
+    _com_nicho(usuario)
+    db.podcast_marcar_envio(
+        usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
+    db.podcast_marcar_convite(
+        usuario["id"], quando=tempo.agora() - _dt.timedelta(days=8))
+    d = scheduler.check_podcast()[0]
+    assert "audio" not in d, d
+    assert isinstance(d.get("message"), str) and d["message"]
+    assert d["botoes"][0] == "Quero ouvir"

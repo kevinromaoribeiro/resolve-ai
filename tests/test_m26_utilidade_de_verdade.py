@@ -174,6 +174,14 @@ VEREDITO_DA_META = {
     "resolveai_cobranca_link": "nao_submetido",
     # APROVADO de verdade — verificado no Business Manager em 28/08/2026.
     "reativar_boas_vindas": "aprovado",
+    # CRIADO EM 29/08/2026, AINDA NAO SUBMETIDO.
+    #
+    # MARKETING desde o inicio, sem tentar utilidade. O criterio e o MOTIVO:
+    # lembrete sobre um item que a PESSOA cadastrou e utilidade; conteudo que
+    # NOS produzimos e oferecemos e marketing, mesmo ela tendo pedido e
+    # escolhido o dia. Tentar como utility so gastaria uma rodada de recusa —
+    # o erro ja cometido duas vezes nesta base.
+    "resolveai_podcast_pronto": "nao_submetido",
 }
 
 
@@ -361,6 +369,20 @@ MARKETING_AUTORIZADO = {
     # Meta (existe pra trazer alguem de volta) — e passou de primeira
     # justamente por nao tentar se disfarcar de utilidade.
     "reativar_boas_vindas",
+    # Lembrete do mini-podcast, no dia que a PESSOA escolheu tocando num
+    # botao (29/08/2026). E marketing pela regua da Meta — o conteudo e
+    # nosso, nao um compromisso dela — e por isso entra aqui em vez de
+    # tentar se disfarcar.
+    #
+    # O que justifica um MARKETING a mais num numero que ja foi restringido
+    # duas vezes: ele e a UNICA forma de o dia escolhido valer. Sem template,
+    # o lembrete so alcanca quem por acaso falou com o bot nas ultimas 24h, e
+    # "toda segunda" vira promessa quebrada na maioria das semanas. O Kevin
+    # foi explicito: "se a pessoa escolher segunda, nao podemos falhar".
+    #
+    # E ele NAO carrega o conteudo: e so o lembrete com botao. O audio so sai
+    # depois do toque. Sem opt-in por botao, ninguem recebe nada.
+    "resolveai_podcast_pronto",
 }
 
 

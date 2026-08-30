@@ -118,6 +118,35 @@ _reg(Template(
 ))
 
 _reg(Template(
+    nome="resolveai_podcast_pronto",
+    rotulo="Avisa que o áudio da semana está pronto (só quem escolheu o dia)",
+    # CATEGORIA HONESTA. A régua da Meta separa pelo MOTIVO, não pelo tom:
+    # lembrete sobre um item que a pessoa cadastrou é utility; conteúdo que a
+    # gente produz e oferece é marketing, mesmo que ela tenha pedido.
+    #
+    # Submeter como utility pra economizar seria exatamente o desvio de
+    # categoria que derruba número — e este já foi restringido duas vezes.
+    # Se a Meta reclassificar, tudo bem: o gate fail-closed segura até estar
+    # aprovado, e o produto funciona sem isto (a pessoa continua podendo
+    # pedir o episódio quando quiser).
+    categoria="MARKETING",
+    idioma="pt_BR",
+    corpo=("Oi {{1}}, seu resumo de *{{2}}* da semana está pronto.\n\n"
+           "Quer ouvir agora? É só tocar no botão."),
+    variaveis=["primeiro_nome", "nicho"],
+    exemplo=["Kevin", "futebol"],
+    # O BOTÃO É O QUE FAZ ISTO NÃO SER UM ÁUDIO NÃO PEDIDO. O lembrete
+    # chega; o áudio só sai depois do toque. Nunca o contrário.
+    botoes=["Quero ouvir", "Agora não", "Não quero mais"],
+    justificativa=(
+        "O usuário escolheu um assunto no cadastro e escolheu, tocando num "
+        "botão, em que dia da semana quer ser lembrado. Esta mensagem é o "
+        "lembrete nesse dia, e ela NÃO contém o conteúdo: o áudio só é "
+        "enviado se ele tocar em 'Quero ouvir'. O botão 'Não quero mais' "
+        "encerra o envio na hora."),
+))
+
+_reg(Template(
     nome="resolveai_reengajamento_pendentes",
     rotulo="Lembra de um item parado há dias na lista",
     categoria="UTILITY",
@@ -374,6 +403,7 @@ _reg(COBRANCA_LINK)
 _reg(REATIVAR_BOAS_VINDAS)
 
 KIND_TEMPLATE = {
+    "podcast": "resolveai_podcast_pronto",
     "hora": "resolveai_lembrete_hora",
     "trial-estendido": "resolveai_trial_estendido",
     "cobranca-link": "resolveai_cobranca_link",
@@ -411,13 +441,19 @@ KINDS_SEM_TEMPLATE = {
     # marketing. Ver o comentário no lugar onde o template morava. Dentro da
     # janela de 24h ele sai normalmente, como texto livre.
     "gastos",
-    # M4.2 — convite do mini-podcast. Nao tem template e nao vai ter:
-    # pedir pra alguem ouvir um audio e o motivo que a Meta classifica
-    # como marketing, e marketing neste numero e o que ja rendeu duas
-    # restricoes. Dentro da janela ele sai como texto livre com botao;
-    # fora dela nao sai naquela semana — e isso e aceitavel, porque o
-    # podcast e um extra, nao o que a pessoa contratou.
-    "podcast",
+    # M4.2/M4.7 — os DOIS momentos do podcast que vivem dentro da janela.
+    #
+    # `podcast-convite` e a primeira oferta, 6h depois do cadastro: a pessoa
+    # acabou de chegar e esta conversando, entao texto livre com botao basta.
+    # `podcast-dia` e a pergunta de qual dia ela quer, 10 min depois do
+    # primeiro audio — tambem no meio da conversa.
+    #
+    # O LEMBRETE SEMANAL (`podcast`) SAIU DAQUI no M4.7 e ganhou template.
+    # Sem template ele so alcancava quem por acaso tivesse falado com o bot
+    # nas ultimas 24h — ou seja, o dia escolhido pela pessoa nao valia nada.
+    # O Kevin foi direto: "se a pessoa escolher segunda, nao podemos falhar".
+    "podcast-convite",
+    "podcast-dia",
 } | {
     # nudges do trial guiado: são a coreografia dos primeiros dias, com texto
     # próprio em cada etapa (amostra, primeiro item, oferta do kit...).

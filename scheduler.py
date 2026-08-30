@@ -16,6 +16,7 @@ fossem mensagens proativas de WhatsApp.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+import os
 import unicodedata
 import tempo
 from typing import Optional
@@ -73,7 +74,11 @@ def definir_politica_de_aviso(padrao=None, por_categoria=None) -> None:
 
 
 definir_politica_de_aviso()
-QUIET_START, QUIET_END = 21, 8   # silêncio 21h–8h (exceto alarme com hora)
+QUIET_START, QUIET_END = 21, 8
+
+# O mini-podcast so dispara quando o dono liga. Ver `check_podcast`.
+PODCAST_ATIVO = (os.environ.get("PODCAST_ATIVO", "") or "").strip().lower() \
+    in ("1", "true", "sim", "on")   # silêncio 21h–8h (exceto alarme com hora)
 
 # TODO KIND QUE O MOTOR PODE EMITIR, declarado num lugar só.
 #
@@ -87,7 +92,7 @@ QUIET_START, QUIET_END = 21, 8   # silêncio 21h–8h (exceto alarme com hora)
 # envelheceria em silêncio, que é o defeito que ela existe pra evitar.
 KINDS_PROATIVOS = {
     "vencimento", "1-click-buy", "anti-churn", "trial-ending", "arquivado",
-    "vencido", "hora", "resumo", "winback", "gastos", "retorno", "podcast",
+    "vencido", "hora", "resumo", "winback", "gastos", "retorno", "podcast", "podcast-convite", "podcast-dia",
 } | {f"trial_d{n}" for n in range(1, 13)}
 
 
@@ -281,6 +286,35 @@ def check_due_items(ref: Optional[date] = None) -> list[dict]:
                 "quando": venc,
             })
     return dispatches
+
+
+def check_podcast_dia(ref: Optional[datetime] = None) -> list[dict]:
+    """A pergunta de qual dia, 10 min depois do primeiro episodio.
+
+    Ela volta no M4.7 porque agora a resposta VALE: com o template, o
+    lembrete sai no dia escolhido mesmo que a pessoa nao fale com o bot ha
+    uma semana. Antes disso, perguntar era prometer o que a gente nao
+    honrava — e por isso a pergunta tinha saido.
+    """
+    import podcast as _pod
+
+    agora = ref or tempo.agora()
+    saida: list[dict] = []
+    for u in db.podcast_a_perguntar_o_dia(
+            ref=agora, minutos=_pod.MINUTOS_ATE_PERGUNTAR_O_DIA):
+        if not db.user_can_receive(u):
+            continue
+        if db.dispatched_today("podcast-dia", u["id"]):
+            continue
+        p = _pod.pergunta_do_dia(nome=u.get("nome") or "")
+        saida.append({
+            "user_id": u["id"], "user_nome": u["nome"],
+            "telefone": u["telefone"], "item_id": None,
+            "kind": "podcast-dia", "message": p["texto"],
+            "botoes": p["botoes"],
+            "quando": _fmt_br(agora.date().isoformat()),
+        })
+    return saida
 
 
 def check_churn(ref: Optional[datetime] = None) -> list[dict]:
@@ -1088,7 +1122,7 @@ def run_proactive_engine(
         # Checagem nova entra NESTA tupla no mesmo commit em que nasce.
         due, churn, trial, guided, overdue, resumo, gastos, retorno = (
             [], [], [], [], [], [], [], [])
-        podcast_conv = []
+        podcast_conv, podcast_dia = [], []
     else:
         overdue = check_overdue(ref=ref_date) + check_winback()
         due = check_due_items(ref=ref_date)
@@ -1100,6 +1134,7 @@ def run_proactive_engine(
         # proativo — ele vai como resposta ao toque no botao, dentro da
         # conversa que a pessoa acabou de abrir.
         podcast_conv = check_podcast(ref=now)
+        podcast_dia = check_podcast_dia(ref=now)
         try:
             import trial_guiado
             guided = trial_guiado.run_trial_nudges()
@@ -1118,9 +1153,10 @@ def run_proactive_engine(
         "guided_dispatches": guided,
         "retorno_dispatches": retorno,
         "podcast_dispatches": podcast_conv,
+        "podcast_dia_dispatches": podcast_dia,
         "total": (len(alarms) + len(resumo) + len(overdue) + len(due)
                   + len(churn) + len(trial) + len(guided) + len(gastos)
-                  + len(retorno) + len(podcast_conv)),
+                  + len(retorno) + len(podcast_conv) + len(podcast_dia)),
     }
 
 
@@ -1129,6 +1165,15 @@ def simulate_next_day() -> dict:
     tomorrow = tempo.hoje() + timedelta(days=1)
     tomorrow_dt = tempo.agora() + timedelta(days=1)
     return run_proactive_engine(ref_date=tomorrow, ref_datetime=tomorrow_dt)
+
+
+_DIAS_PT = ("Segunda", "Terça", "Quarta", "Quinta", "Sexta",
+            "Sábado", "Domingo")
+
+
+def _sem_acento(t: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", t or "")
+                   if unicodedata.category(c) != "Mn").lower()
 
 
 def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
@@ -1153,6 +1198,18 @@ def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
     import voz as _voz
 
     agora = ref or tempo.agora()
+    # TRAVA DE APROVACAO (M4.7).
+    #
+    # O Kevin ainda vai ouvir as amostras: "nao vai por no ar se eu ouvir
+    # como ficou". O codigo pode estar no ar sem a feature disparar — e essa
+    # e a diferenca entre deploy e lancamento. Enquanto `PODCAST_ATIVO` nao
+    # for ligado, nenhum cliente recebe convite nenhum.
+    #
+    # Default DESLIGADO de proposito: uma feature que se liga sozinha ao
+    # subir e uma feature que estreia sem ninguem ter decidido.
+    if not PODCAST_ATIVO:
+        return []
+
     # SEM VOZ CONFIGURADA, NAO CONVIDA. Perguntar "quer ouvir?" e nao ter
     # como gerar o audio e prometer o que nao da pra entregar — e a pessoa
     # toca no botao e nao recebe nada.
@@ -1179,7 +1236,12 @@ def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
         #
         # `dispatched_today` e carimbado por quem ENVIA (`log_dispatch` no
         # laco do cron), entao convite que nao saiu volta amanha.
-        if db.dispatched_today("podcast", u["id"]):
+        # O DEDUP OLHA O KIND QUE VAI SER EMITIDO. Os dois momentos usam
+        # kinds diferentes (`podcast-convite` na 1a vez, `podcast` no
+        # semanal) desde o M4.7, e checar so um deles deixava o outro
+        # repetir a cada ciclo — que e o P0 que ja custou duas rodadas.
+        if db.dispatched_today("podcast-convite" if primeiro else "podcast",
+                               u["id"]):
             return
         if not _pod.pode_enviar(u.get("podcast_ultimo"), agora=agora):
             return
@@ -1200,7 +1262,13 @@ def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
             "user_nome": u["nome"],
             "telefone": u["telefone"],
             "item_id": None,
-            "kind": "podcast",
+            # DOIS KINDS, porque sao dois momentos com regras diferentes.
+            #
+            # `podcast-convite` (1a vez) vive dentro da janela: a pessoa
+            # acabou de se cadastrar e esta conversando. `podcast` (semanal)
+            # tem template, porque o dia que ELA escolheu tem que valer
+            # mesmo que ela nao fale com o bot ha uma semana.
+            "kind": "podcast-convite" if primeiro else "podcast",
             "message": convite["texto"],
             "botoes": convite["botoes"],
             "nicho": convite["nicho"],
@@ -1212,16 +1280,24 @@ def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
                                    horas=_pod.HORAS_ATE_O_CONVITE):
         _junta(u, True)
 
-    # PRIMEIRO DIA EM QUE ELA APARECER, nao um dia fixo (decisao do
-    # Kevin, 29/08/2026: "1x por semana pode ser, o importante e todo
-    # cliente ter" + "nao pode deixar de mandar").
+    # O DIA QUE A PESSOA ESCOLHEU VALE (M4.7).
     #
-    # O dia fixo era incompativel com as duas coisas ao mesmo tempo: o
-    # convite so sai DENTRO da janela de 24h, entao quem nao mandasse
-    # mensagem naquela sexta perdia a semana inteira em silencio — e com
-    # uso episodico, isso era a maioria das semanas. Quem segura o ritmo
-    # agora e so o teto de 1x por semana, que continua duro.
+    # Ele tinha sido removido porque, sem template, o lembrete so alcancava
+    # quem por acaso tivesse falado com o bot nas ultimas 24h — entao "toda
+    # segunda" era uma promessa que a gente quebrava na maioria das semanas.
+    # Com `resolveai_podcast_pronto` aprovado, o lembrete sai no dia certo
+    # independente de conversa recente, e a escolha dela passa a valer de
+    # verdade. O Kevin: "tem que respeitar o que o cliente quiser, no dia
+    # certo que ele selecionar".
+    #
+    # Quem ainda NAO escolheu dia entra em qualquer dia — ela ouviu uma vez
+    # e nao disse quando quer; segurar por isso seria puni-la por nao ter
+    # respondido.
+    hoje_pt = _DIAS_PT[agora.weekday()]
     for u in db.podcast_assinantes():
+        escolhido = (u.get("podcast_dia") or "").strip()
+        if escolhido and _sem_acento(escolhido) != _sem_acento(hoje_pt):
+            continue
         _junta(u, False)
     return dispatches
 
