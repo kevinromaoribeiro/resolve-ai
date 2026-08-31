@@ -144,3 +144,52 @@ def test_ninguem_recebe_o_mesmo_toque_duas_vezes(usuario):
 def test_um_toque_por_dia_no_maximo(usuario):
     _no_dia(usuario, dia=2, calado_ha=20)
     assert len(_meus(usuario)) <= 1
+
+
+# ---------------------------------------------------------------------------
+# 4. quem JÁ ESTÁ no meio do trial quando a régua liga
+# ---------------------------------------------------------------------------
+# A régua nunca disparou até 31/08. Ligá-la com gente no dia 5, 7, 11 não
+# pode virar uma rajada dos dias que essa pessoa "perdeu".
+
+@pytest.mark.parametrize("dia", [3, 5, 7, 9, 11, 12])
+def test_quem_ja_esta_no_meio_recebe_UM_toque_so(usuario, dia):
+    """O risco real do dia em que a régua passou a funcionar."""
+    _no_dia(usuario, dia=dia, calado_ha=20)
+    ds = _meus(usuario)
+    assert len(ds) <= 1, "rajada de %d mensagens no dia %d" % (len(ds), dia)
+
+
+def test_nao_manda_os_dias_atrasados_de_uma_vez(usuario):
+    """Quem entrou no dia 11 recebe o toque do 11 — não o do 1 ao 11."""
+    _no_dia(usuario, dia=11, calado_ha=20)
+    ds = _meus(usuario)
+    assert ds and ds[0]["kind"] == "trial_d11", [d["kind"] for d in ds]
+
+
+def test_o_dia_seguinte_traz_o_toque_seguinte_e_so(usuario):
+    _no_dia(usuario, dia=4, calado_ha=20)
+    primeiro = _meus(usuario)
+    assert len(primeiro) == 1
+    db.mark_nudge_sent(usuario["id"], "d4")
+    assert _meus(usuario) == [], "repetiu o mesmo dia"
+
+
+def test_o_texto_do_d5_diz_os_dias_certos(usuario):
+    """"faltam 2 dias" era verdade num trial de 7. Com 14, no D5 faltam 9 —
+    o texto dizia um número que o produto não cumpre."""
+    _no_dia(usuario, dia=5, calado_ha=20)
+    ds = _meus(usuario)
+    assert ds, "o D5 nao saiu"
+    restam = db.trial_days_left(db.get_user(usuario["id"]),
+                                trial_guiado.TRIAL_DAYS)
+    assert ("*%d* dias" % restam) in ds[0]["message"], ds[0]["message"]
+    assert "faltam 2 dias" not in ds[0]["message"]
+
+
+def test_o_fechamento_leva_link_de_verdade(usuario):
+    """Placeholder no ÚNICO momento em que o produto pede dinheiro."""
+    _no_dia(usuario, dia=trial_guiado.DIA_FECHAMENTO, calado_ha=20)
+    msg = _meus(usuario)[0]["message"]
+    assert "SEU-LINK" not in msg, msg
+    assert "mpago.la" in msg or "http" in msg, msg

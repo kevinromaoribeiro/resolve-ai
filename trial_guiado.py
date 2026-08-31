@@ -35,8 +35,14 @@ from typing import Optional
 import db
 import tempo
 
-PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://SEU-LINK-DE-PAGAMENTO")
-PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL", "")
+# OS MESMOS DEFAULTS REAIS DO `wa_bot`, e pelo mesmo motivo documentado la:
+# o default antigo aqui era "https://SEU-LINK-DE-PAGAMENTO", e uma VPS sem a
+# variavel entregava esse placeholder literal no fechamento do trial — o
+# unico momento em que o produto pede dinheiro. Link de cobranca e publico
+# por natureza; versiona-lo nao expoe segredo nenhum.
+PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://mpago.la/2oashdp")
+PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL",
+                                    "https://mpago.la/2n5pEVS")
 # MENOR QUE A JANELA DE 24h, e isso não é ajuste fino: é o que faz a régua
 # existir. O nudge sai como texto livre (nenhum `trial_d*` tem template, de
 # propósito), e texto livre só passa pra quem falou nas ÚLTIMAS 24h. Com
@@ -51,6 +57,15 @@ PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL", "")
 INACTIVE_HOURS = int(os.environ.get("TRIAL_INACTIVE_HOURS", "18"))
 # Dia em que a régua fecha e pede a assinatura. Trial de 14 dias -> D13,
 # para a mensagem de conversão chegar ANTES do prazo acabar, não depois.
+# MESMA ENV QUE O `wa_bot` e o `db` leem. Sem isto o D5 dizia "faltam 2
+# dias" — verdade num trial de 7 dias, mentira nos 14 de hoje.
+TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "14"))
+# O MESMO numero que o `wa_bot` libera de verdade. O texto dizia "falo com
+# o Kevin e libero alguns dias" — ninguem e consultado (a extensao e
+# automatica) e "alguns" deixava a pessoa esperando uma semana pra
+# receber dois dias. Promessa vaga no fechamento e a pior hora pra
+# frustrar.
+TRIAL_EXTENSAO_DIAS = int(os.environ.get("TRIAL_EXTENSAO_DIAS", "2"))
 DIA_FECHAMENTO = int(os.environ.get("TRIAL_DIA_FECHAMENTO", "13"))
 
 
@@ -178,9 +193,10 @@ def run_trial_nudges() -> list[dict]:
                    f"{planos}\n\n"
                    f"Toca no plano que preferir e pronto. 💛\n\n"
                    f"E se você ainda não teve tempo de me testar direito, "
-                   f"responde *mais tempo* que eu falo com o Kevin e libero "
-                   f"alguns dias a mais. Não quero que você decida sem ter "
-                   f"visto o que eu faço. Nada some: seus itens ficam aqui.")
+                   f"responde *mais tempo* que eu libero mais "
+                   f"*{TRIAL_EXTENSAO_DIAS}* dias na hora. Não quero que "
+                   f"você decida sem ter visto o que eu faço. Nada some: "
+                   f"seus itens ficam aqui.")
             dispatches.append(_mk(user, "trial_d6", msg,
                                          nudge="d6_fim"))
             continue
@@ -243,7 +259,9 @@ def run_trial_nudges() -> list[dict]:
                        f"sua cabeça. 🧘 Imagina isso todo mês, no automático.")
             else:
                 chave, cta = _sugestao_para(user)
-                msg = (f"{first}, faltam 2 dias do seu teste e eu ainda não te "
+                _faltam = max(1, db.trial_days_left(user, TRIAL_DAYS))
+                msg = (f"{first}, faltam *{_faltam}* dias do seu teste e eu "
+                       f"ainda não te "
                        f"mostrei o melhor. Testa agora: {cta}")
             dispatches.append(_mk(user, "trial_d5", msg,
                                          nudge="d5"))

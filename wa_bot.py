@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v28.3-m78-regua-do-trial-viva-2026-08-31"
+BUILD = "v28.4-m81-antispam-e-extensao-2026-08-31"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -756,9 +756,12 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
 
     # --- "mais tempo": auto-extensão única do trial -------------------------
     # A régua promete "responde *mais tempo* que eu libero". Promessa feita
-    # pelo bot que só o dono consegue cumprir é promessa quebrada — e no beta
-    # o custo de dar 7 dias a mais é zero perto de perder o feedback da
-    # pessoa. Uma vez por usuário, registrado no log de disparos.
+    # pelo bot que só o dono consegue cumprir é promessa quebrada. Uma vez
+    # por usuário, registrado no log de disparos.
+    #
+    # `TRIAL_EXTENSAO_DIAS` = 2 desde 31/08/2026, e o número tem motivo:
+    # dois dias bastam pra quem só precisava de um empurrão, e são curtos
+    # demais pra quem estava adiando a decisão.
     if _MAIS_TEMPO_RE.match(text.strip()):
         if (user.get("status") or "trial") != "trial":
             return None            # assinante não precisa; deixa o motor falar
@@ -863,6 +866,23 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     # SO PRA QUEM TEM PODCAST (auditoria M4.2, P2-6). "depois" e "mais
     # tarde" sao palavras de qualquer conversa; sem esta guarda, quem nunca
     # ouviu falar do recurso recebia resposta sobre podcast.
+    # "AGORA NAO" VALE PRA TUDO (M8.0).
+    #
+    # Era tratado so quando a pessoa tinha podcast — em qualquer outra
+    # oferta o botao nao fazia nada, e botao decorativo e a regra que ja
+    # custou um P0 aqui. Agora ele SEMPRE responde, e o carimbo de cortesia
+    # dá a ela 7 dias de silencio de TODA oferta nossa: pedir espaco uma vez
+    # e ser atendido em tudo.
+    if _PODCAST_DEPOIS_RE.match(text) and not user.get("podcast_nicho"):
+        try:
+            db.log_dispatch(user["id"], "reativacao")   # carimba a cortesia
+        except Exception:
+            log.warning("[cortesia] nao consegui carimbar a pausa do user %s",
+                        user.get("id"), exc_info=True)
+        return ("Tranquilo! 👍 Não te ofereço isso de novo essa semana.\n\n"
+                "Seus lembretes continuam normais — é só me mandar o que "
+                "você não pode esquecer.")
+
     if user.get("podcast_nicho") and _PODCAST_DEPOIS_RE.match(text):
         # Nao mexe em `podcast_ultimo`: ela nao ouviu nada. O convite volta
         # no ciclo semanal, sem insistencia hoje.
@@ -1326,7 +1346,16 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
 
 
 # Quantos dias a auto-extensão libera (1x por usuário).
-TRIAL_EXTENSAO_DIAS = int(os.environ.get("TRIAL_EXTENSAO_DIAS", "7"))
+# DOIS DIAS, NAO SETE. Decisao do Kevin em 31/08/2026, com clientes reais
+# entrando: "daremos so mais 2 dias no maximo, isso nao e uma ONG,
+# precisamos faturar".
+#
+# E o numero certo pelo funil, nao so pelo caixa: dois dias sao
+# suficientes pra quem so precisava de um empurrao, e curtos demais pra
+# quem estava adiando a decisao. Sete dias transformavam o trial de 14
+# em 21 pra qualquer um que pedisse — e quem pede mais tempo duas
+# semanas depois raramente fecha na terceira.
+TRIAL_EXTENSAO_DIAS = int(os.environ.get("TRIAL_EXTENSAO_DIAS", "2"))
 
 _MAIS_TEMPO_RE = re.compile(
     r"^\s*(?:mais\s+tempo|preciso\s+de\s+mais\s+tempo|"
@@ -6258,6 +6287,28 @@ def dispatch_proactive() -> int:
     # `DISPATCH_MAX_PER_CYCLE`, entao o convite ocuparia a vaga do "sua conta
     # vence amanha"; e reativacao existe pra quem ESFRIOU — quem esta
     # recebendo lembrete nao esfriou. Ela volta no proximo ciclo.
+    # UMA CORTESIA POR SEMANA, SOMANDO TODAS ELAS (M8.0).
+    #
+    # Vale por PESSOA e por CONJUNTO: quem recebeu o convite do podcast na
+    # segunda nao recebe o empurrao do trial na quarta. O que ela pediu
+    # (lembrete, alarme, resumo, cobranca do link que ela mesma pediu) passa
+    # por fora desta conta — e o produto, e nao tem teto.
+    if all_dispatches:
+        _antes_semana = len(all_dispatches)
+        all_dispatches = [
+            d for d in all_dispatches
+            if (d.get("kind") or "") not in KINDS_DE_CORTESIA
+            or not _cortesia_recente(d.get("user_id"))]
+        _cortados = _antes_semana - len(all_dispatches)
+        if _cortados:
+            log.info("[cortesia] %d adiada(s): a pessoa ja recebeu algo "
+                     "nosso nos ultimos %d dias",
+                     _cortados, CORTESIA_INTERVALO_DIAS)
+            try:
+                ULTIMO_CICLO["cortesia_da_semana"] = _cortados
+            except Exception:
+                pass
+
     # PARA DE PUXAR ASSUNTO COM QUEM NAO RESPONDE (M7.4).
     #
     # NAO e freio de operacao: e por PESSOA. Quem conversa com o bot recebe
@@ -6569,11 +6620,37 @@ KINDS_DE_CORTESIA = frozenset({
     "podcast", "podcast-convite", "podcast-dia",
 })
 
+# UMA CORTESIA POR PESSOA A CADA 7 DIAS — a regra inteira, num numero so.
+#
+# Cada feature ja tinha seu teto (convite 1x, cobranca 2x, empurrao 1x,
+# anti-churn 3x). Somados, a mesma pessoa recebia varias coisas nossas na
+# mesma semana, cada uma "dentro do limite dela". Teto por feature nao e
+# teto: e a soma que a pessoa sente, e e a soma que a Meta le.
+CORTESIA_INTERVALO_DIAS = int(os.environ.get("CORTESIA_INTERVALO_DIAS", "7"))
+
 
 # Depois de quantas proativas seguidas sem NENHUMA resposta a gente para de
 # puxar assunto com uma pessoa. Cinco e generoso: quem le e nao responde
 # ainda recebe cinco convites antes de a gente entender o recado.
 SILENCIO_ATE_PARAR = int(os.environ.get("SILENCIO_ATE_PARAR", "5"))
+
+
+def _cortesia_recente(user_id) -> bool:
+    """Esta pessoa ja recebeu alguma cortesia NOSSA nos ultimos N dias?
+
+    Na duvida devolve True: adiar um convite e recuperavel, mandar duas
+    mensagens nossas na mesma semana e o que faz a pessoa bloquear.
+    """
+    if not user_id:
+        return False
+    try:
+        return any(db.dispatched_within(k, user_id,
+                                        days=CORTESIA_INTERVALO_DIAS)
+                   for k in KINDS_DE_CORTESIA)
+    except Exception:
+        log.warning("[cortesia] nao consegui medir o intervalo do user %s",
+                    user_id, exc_info=True)
+        return True
 
 
 def _parou_de_ouvir(user_id) -> bool:

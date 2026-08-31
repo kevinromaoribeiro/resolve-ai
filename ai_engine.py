@@ -638,7 +638,7 @@ def _next_monthday(d: int, ref: Optional[date] = None) -> str:
     return cand.isoformat()
 
 
-def handle_text(text: str, user_name: str = "Kevin") -> dict:
+def handle_text(text: str, user_name: str = "") -> dict:
     res = _base_result()
 
     # --- filtro anti-spam (v6.4): encaminhado/promoção não vira lembrete ---
@@ -723,7 +723,7 @@ def handle_text(text: str, user_name: str = "Kevin") -> dict:
     return res
 
 
-def handle_audio(transcript: str, user_name: str = "Kevin") -> dict:
+def handle_audio(transcript: str, user_name: str = "") -> dict:
     cleaned = clean_audio_transcript(transcript)
     res = handle_text(cleaned, user_name)
     item = res["items"][0]
@@ -733,7 +733,7 @@ def handle_audio(transcript: str, user_name: str = "Kevin") -> dict:
 
 
 def handle_image_with_text(ocr_content: str, instruction: str,
-                           user_name: str = "Kevin") -> dict:
+                           user_name: str = "") -> dict:
     """Imagem + instrução: extrai dados do OCR e executa o comando."""
     res = _base_result()
     combined = f"{ocr_content}. {instruction}"
@@ -806,7 +806,7 @@ def _merge_correction(old: dict, correction_text: str) -> dict:
     return merged
 
 
-def handle_silent_image(ocr_content: str, user_name: str = "Kevin") -> dict:
+def handle_silent_image(ocr_content: str, user_name: str = "") -> dict:
     """Regra de Ouro: imagem sem contexto -> menu numerado + micro-educação."""
     res = _base_result()
     item = _build_item(ocr_content)
@@ -1406,7 +1406,7 @@ def process_input(
     kind: str,
     content: str,
     instruction: str = "",
-    user_name: str = "Kevin",
+    user_name: str = "",
     pending: Optional[dict] = None,
 ) -> dict:
     """
