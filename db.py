@@ -444,10 +444,18 @@ def mark_nudge_sent(user_id: int, nudge_id: str) -> None:
 
 
 def active_trial_users(trial_days: int = 14) -> list[dict]:
-    """Usuários em trial, já com onboarding concluído, dentro do prazo."""
+    """Usuários em trial, já com onboarding concluído, dentro do prazo.
+
+    `(x or "done")` E O MESMO IDIOMA DOS OUTROS QUATRO LUGARES que fazem
+    esta pergunta (db.py:639, db.py:2404, scheduler.py:889 e 1034). Só aqui
+    a comparação era estrita — e quem termina o onboarding fica com `None`,
+    não com `"done"` (ver `jornada.py`: "onboarding_step ja e None/'done'").
+    Efeito: a fila do trial guiado vinha VAZIA todo dia, e nenhum cliente
+    real nunca recebeu um nudge sequer.
+    """
     return [u for u in list_users()
             if (u.get("status") or "trial") == "trial"
-            and u.get("onboarding_step") == "done"
+            and (u.get("onboarding_step") or "done") == "done"
             and trial_days_left_raw(u, trial_days) >= 0]
 
 

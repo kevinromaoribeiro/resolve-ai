@@ -37,7 +37,18 @@ import tempo
 
 PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://SEU-LINK-DE-PAGAMENTO")
 PAYMENT_LINK_ANUAL = os.environ.get("PAYMENT_LINK_ANUAL", "")
-INACTIVE_HOURS = 24   # só toca quem não fala há 24h+
+# MENOR QUE A JANELA DE 24h, e isso não é ajuste fino: é o que faz a régua
+# existir. O nudge sai como texto livre (nenhum `trial_d*` tem template, de
+# propósito), e texto livre só passa pra quem falou nas ÚLTIMAS 24h. Com
+# `INACTIVE_HOURS = 24` as duas condições se excluíam — "calado há 24h+" e
+# "dentro da janela de 24h" não acontecem juntos. A mensagem era gerada e
+# descartada na linha seguinte, sem erro e sem log.
+#
+# 18h abre uma faixa real de 6 horas: quem falou ontem à noite recebe o
+# toque na tarde seguinte. Quem sumiu de vez só com template aprovado, e não
+# existe um pra nudge de trial — mas quem sumiu de vez também não é quem
+# esta régua existe pra ativar.
+INACTIVE_HOURS = int(os.environ.get("TRIAL_INACTIVE_HOURS", "18"))
 # Dia em que a régua fecha e pede a assinatura. Trial de 14 dias -> D13,
 # para a mensagem de conversão chegar ANTES do prazo acabar, não depois.
 DIA_FECHAMENTO = int(os.environ.get("TRIAL_DIA_FECHAMENTO", "13"))
