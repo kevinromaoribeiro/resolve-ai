@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v27.8-m72-mensagem-de-compra-2026-08-30"
+BUILD = "v27.9-m73-disjuntor-2026-08-31"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6223,6 +6223,21 @@ def dispatch_proactive() -> int:
     # `DISPATCH_MAX_PER_CYCLE`, entao o convite ocuparia a vaga do "sua conta
     # vence amanha"; e reativacao existe pra quem ESFRIOU — quem esta
     # recebendo lembrete nao esfriou. Ela volta no proximo ciclo.
+    # DISJUNTOR (M7.3). Ver `KINDS_DE_CORTESIA`.
+    if all_dispatches and _numero_no_vermelho():
+        _antes_disjuntor = len(all_dispatches)
+        all_dispatches = [d for d in all_dispatches
+                          if (d.get("kind") or "") not in KINDS_DE_CORTESIA]
+        _cortados = _antes_disjuntor - len(all_dispatches)
+        if _cortados:
+            log.warning("[freio] numero NO VERMELHO: %d mensagem(ns) de "
+                        "cortesia adiada(s). Lembretes seguem normais.",
+                        _cortados)
+            try:
+                ULTIMO_CICLO["cortesia_cortada"] = _cortados
+            except Exception:
+                pass
+
     _antes_poda = len(all_dispatches)
     all_dispatches = [d for d in all_dispatches if _tem_como_sair(d)]
     if len(all_dispatches) != _antes_poda:
@@ -6500,6 +6515,32 @@ def _estado_dos_templates() -> dict:
         return {"erro": True}
 
 
+# CORTESIA: o que a gente manda porque QUER. Some no vermelho.
+#
+# O criterio nao e "e importante?", e "quem pediu?". Lembrete de conta a
+# pessoa pediu — e o produto. Convite de podcast e reengajamento sao nossos.
+KINDS_DE_CORTESIA = frozenset({
+    "anti-churn", "winback", "reativacao",
+    "podcast", "podcast-convite", "podcast-dia",
+})
+
+
+def _numero_no_vermelho() -> bool:
+    """A Meta esta lendo este numero como broadcaster AGORA?
+
+    Na duvida devolve False: um erro aqui nao pode calar lembrete de
+    vencimento, que e o produto. O disjuntor protege o canal; deixar de
+    entregar o que a pessoa pagou pra receber nao protege nada.
+    """
+    try:
+        return str((db.pulso_envio() or {}).get("risco", "")
+                   ).startswith("🔴")
+    except Exception:
+        log.warning("[freio] nao consegui ler o risco do numero",
+                    exc_info=True)
+        return False
+
+
 def _proativas_hoje(user_id: int) -> int:
     """Quantas mensagens PROATIVAS este usuário já recebeu hoje.
 
@@ -6595,6 +6636,8 @@ try:
                                        ULTIMA_RECUSA_REATIVACAO}
                                       if ULTIMA_RECUSA_REATIVACAO else {})),
                 "ciclo": dict(ULTIMO_CICLO) or "AINDA NAO RODOU",
+                # O disjuntor esta segurando cortesia agora? (M7.3)
+                "cortesia_pausada": _numero_no_vermelho(),
                 # O NOME DO TEMPLATE NAO E SEGREDO (M6.4). `TEMPLATES_APROVADOS`
                 # e uma allowlist fail-closed: se o nome nao estiver la, o
                 # `canal` recusa o envio e a fila fica parada pra sempre, sem
