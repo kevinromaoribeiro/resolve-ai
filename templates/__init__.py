@@ -464,6 +464,22 @@ KINDS_SEM_TEMPLATE = {
 }
 
 
+def _nicho_do_usuario(user_id) -> str:
+    """O assunto que a pessoa escolheu, ou "" se nao da pra saber."""
+    import db
+    if not user_id:
+        return ""
+    try:
+        u = db.get_user(user_id) or {}
+        return u.get("podcast_nicho") or ""
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[template] nao consegui ler o nicho do user %s", user_id,
+            exc_info=True)
+        return ""
+
+
 def _primeiro_nome(d: dict) -> str:
     return ((d.get("user_nome") or "").split() or ["Oi"])[0]
 
@@ -557,7 +573,17 @@ def para_disparo(d: dict) -> tuple[Optional[str], list]:
         return None, []
 
     primeiro = _primeiro_nome(d)
-    if nome == "reativar_boas_vindas":
+    if nome == "resolveai_podcast_pronto":
+        # SEM NICHO, NAO SAI. O corpo promete "seu resumo de *X*", e X e o
+        # assunto que a PESSOA escolheu — preencher com "as noticias" seria
+        # mandar um lembrete generico de uma coisa que ela escolheu
+        # especifica. Mesmo raciocinio do `resolveai_conta_a_vencer`.
+        import podcast as _pod
+        _rot = _pod.rotulo(_nicho_do_usuario(d.get("user_id")))
+        if not _rot:
+            return None, []
+        variaveis = [primeiro, _rot.lower()]
+    elif nome == "reativar_boas_vindas":
         # Uma variavel so, o primeiro nome. O corpo inteiro e fixo e ja
         # aprovado — inclusive a frase "seus 14 dias gratis estao intactos,
         # valendo a partir de agora", que e verdade porque o

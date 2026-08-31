@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v27.9-m73-disjuntor-2026-08-31"
+BUILD = "v28.0-m74-silencio-por-pessoa-2026-08-31"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6223,18 +6223,28 @@ def dispatch_proactive() -> int:
     # `DISPATCH_MAX_PER_CYCLE`, entao o convite ocuparia a vaga do "sua conta
     # vence amanha"; e reativacao existe pra quem ESFRIOU — quem esta
     # recebendo lembrete nao esfriou. Ela volta no proximo ciclo.
-    # DISJUNTOR (M7.3). Ver `KINDS_DE_CORTESIA`.
-    if all_dispatches and _numero_no_vermelho():
-        _antes_disjuntor = len(all_dispatches)
-        all_dispatches = [d for d in all_dispatches
-                          if (d.get("kind") or "") not in KINDS_DE_CORTESIA]
-        _cortados = _antes_disjuntor - len(all_dispatches)
+    # PARA DE PUXAR ASSUNTO COM QUEM NAO RESPONDE (M7.4).
+    #
+    # NAO e freio de operacao: e por PESSOA. Quem conversa com o bot recebe
+    # tudo, todo dia, sem teto — inclusive o podcast e o convite. So quem
+    # ficou `SILENCIO_ATE_PARAR` mensagens seguidas sem responder deixa de
+    # receber o que a gente PUXA; o que ela pediu (lembrete de conta) segue
+    # saindo, porque e o produto e ela paga por ele.
+    #
+    # Volta sozinho: a pessoa responde qualquer coisa e a contagem zera.
+    if all_dispatches:
+        _antes_silencio = len(all_dispatches)
+        all_dispatches = [
+            d for d in all_dispatches
+            if (d.get("kind") or "") not in KINDS_DE_CORTESIA
+            or not _parou_de_ouvir(d.get("user_id"))]
+        _cortados = _antes_silencio - len(all_dispatches)
         if _cortados:
-            log.warning("[freio] numero NO VERMELHO: %d mensagem(ns) de "
-                        "cortesia adiada(s). Lembretes seguem normais.",
-                        _cortados)
+            log.info("[engajamento] %d convite(s) adiado(s): a pessoa nao "
+                     "responde ha %d mensagens. Lembretes seguem.",
+                     _cortados, SILENCIO_ATE_PARAR)
             try:
-                ULTIMO_CICLO["cortesia_cortada"] = _cortados
+                ULTIMO_CICLO["convite_adiado"] = _cortados
             except Exception:
                 pass
 
@@ -6525,20 +6535,39 @@ KINDS_DE_CORTESIA = frozenset({
 })
 
 
-def _numero_no_vermelho() -> bool:
-    """A Meta esta lendo este numero como broadcaster AGORA?
+# Depois de quantas proativas seguidas sem NENHUMA resposta a gente para de
+# puxar assunto com uma pessoa. Cinco e generoso: quem le e nao responde
+# ainda recebe cinco convites antes de a gente entender o recado.
+SILENCIO_ATE_PARAR = int(os.environ.get("SILENCIO_ATE_PARAR", "5"))
 
-    Na duvida devolve False: um erro aqui nao pode calar lembrete de
-    vencimento, que e o produto. O disjuntor protege o canal; deixar de
-    entregar o que a pessoa pagou pra receber nao protege nada.
+
+def _parou_de_ouvir(user_id) -> bool:
+    """Esta pessoa parou de responder ha muitas mensagens seguidas?
+
+    NAO e sobre a base, e sobre ELA. Quem conversa com o bot recebe tudo o
+    que a gente construiu, sem teto e sem espera — e e por isso que escalar
+    com clientes engajados nao tem risco: cada resposta entra do outro lado
+    da conta que a Meta faz.
+
+    Na duvida devolve False: erro aqui nao pode calar ninguem.
     """
-    try:
-        return str((db.pulso_envio() or {}).get("risco", "")
-                   ).startswith("🔴")
-    except Exception:
-        log.warning("[freio] nao consegui ler o risco do numero",
-                    exc_info=True)
+    if not user_id:
         return False
+    try:
+        return db.proativas_sem_resposta(user_id) >= SILENCIO_ATE_PARAR
+    except Exception:
+        log.warning("[engajamento] nao consegui medir o silencio do user %s",
+                    user_id, exc_info=True)
+        return False
+
+
+def _quantos_pararam_de_ouvir() -> int:
+    """Quantas pessoas da base pararam de responder. So contagem."""
+    try:
+        return sum(1 for u in db.list_users() if _parou_de_ouvir(u["id"]))
+    except Exception:
+        log.warning("[engajamento] nao consegui contar", exc_info=True)
+        return -1
 
 
 def _proativas_hoje(user_id: int) -> int:
@@ -6636,8 +6665,9 @@ try:
                                        ULTIMA_RECUSA_REATIVACAO}
                                       if ULTIMA_RECUSA_REATIVACAO else {})),
                 "ciclo": dict(ULTIMO_CICLO) or "AINDA NAO RODOU",
-                # O disjuntor esta segurando cortesia agora? (M7.3)
-                "cortesia_pausada": _numero_no_vermelho(),
+                # Quantas pessoas pararam de responder (M7.4). Nao e
+                # freio de operacao: e quanta gente sumiu.
+                "sem_responder": _quantos_pararam_de_ouvir(),
                 # O NOME DO TEMPLATE NAO E SEGREDO (M6.4). `TEMPLATES_APROVADOS`
                 # e uma allowlist fail-closed: se o nome nao estiver la, o
                 # `canal` recusa o envio e a fila fica parada pra sempre, sem

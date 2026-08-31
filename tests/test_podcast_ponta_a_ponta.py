@@ -1279,3 +1279,54 @@ def test_quem_escolheu_na_landing_nao_e_perguntado_de_novo(usuario, com_voz):
     assert db.get_user(usuario["id"])["podcast_nicho"] == "games"
     r = responder("quero o áudio")
     assert "é um destes" not in r.lower(), r
+
+
+# ---------------------------------------------------------------------------
+# 20. o template do podcast alcanca quem esfriou (M7.4)
+# ---------------------------------------------------------------------------
+# `resolveai_podcast_pronto` estava no KIND_TEMPLATE e NAO tinha ramo que
+# montasse as variaveis — o proprio catalogo avisava no log. Efeito: mesmo
+# depois de a Meta aprovar, o audio semanal nunca sairia pra quem esta fora
+# da janela de 24h. Falha silenciosa que so apareceria semanas depois.
+
+def test_o_disparo_semanal_monta_o_template(usuario):
+    import templates as _cat2
+    db.update_user_fields(usuario["id"], podcast_nicho="futebol")
+    d = {"kind": "podcast", "user_id": usuario["id"],
+         "user_nome": "Kevin Santos", "item_id": None, "quando": "31/08"}
+    tpl, variaveis = _cat2.para_disparo(d)
+    assert tpl == "resolveai_podcast_pronto", (tpl, variaveis)
+    assert variaveis == ["Kevin", "futebol"], variaveis
+
+
+def test_sem_assunto_escolhido_o_disparo_semanal_nao_sai(usuario):
+    """O corpo promete "seu resumo de *X*". Preencher X com "as noticias"
+    seria mandar um lembrete generico de uma coisa que ela escolheu
+    especifica — mesmo raciocinio do `resolveai_conta_a_vencer`."""
+    import templates as _cat2
+    db.update_user_fields(usuario["id"], podcast_nicho=None)
+    d = {"kind": "podcast", "user_id": usuario["id"],
+         "user_nome": "Kevin", "item_id": None, "quando": "31/08"}
+    assert _cat2.para_disparo(d) == (None, [])
+
+
+def test_o_rotulo_do_nicho_chega_legivel_no_template(usuario):
+    """"ia" no banco vira "inteligencia artificial" na mensagem."""
+    import templates as _cat2
+    db.update_user_fields(usuario["id"], podcast_nicho="ia")
+    d = {"kind": "podcast", "user_id": usuario["id"],
+         "user_nome": "Ana", "item_id": None, "quando": "31/08"}
+    _, variaveis = _cat2.para_disparo(d)
+    assert variaveis[1] == podcast.rotulo("ia").lower(), variaveis
+    assert len(variaveis[1]) > 3, variaveis
+
+
+def test_banco_fora_nao_manda_template_com_variavel_errada(usuario,
+                                                           monkeypatch):
+    def explode(*a, **k):
+        raise RuntimeError("banco fora")
+    monkeypatch.setattr(db, "get_user", explode)
+    import templates as _cat2
+    d = {"kind": "podcast", "user_id": usuario["id"],
+         "user_nome": "Ana", "item_id": None, "quando": "31/08"}
+    assert _cat2.para_disparo(d) == (None, [])

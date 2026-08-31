@@ -1039,6 +1039,34 @@ def dispatched_within(kind: str, user_id: int, days: int) -> bool:
         ).fetchone() is not None
 
 
+def proativas_sem_resposta(user_id: int) -> int:
+    """Quantas mensagens seguidas o bot mandou sem a pessoa responder nada.
+
+    Zera no instante em que ela fala qualquer coisa. E a unica pergunta que
+    importa pra saber se vale a pena continuar puxando assunto: falar com
+    quem responde nao tem risco nenhum, e falar com quem nunca responde e o
+    que a Meta le como spam.
+
+    Na duvida devolve 0 — o erro seguro aqui e continuar entregando, nunca
+    calar alguem por causa de um banco que piscou.
+    """
+    import logging   # LOCAL: `db.py` nao importa logging no topo.
+    try:
+        with get_conn() as conn:
+            r = conn.execute(
+                "SELECT ts FROM msg_log WHERE user_id=? AND direcao='in' "
+                "ORDER BY ts DESC LIMIT 1", (user_id,)).fetchone()
+            desde = r["ts"] if r else ""
+            return conn.execute(
+                "SELECT COUNT(*) FROM dispatches WHERE user_id=? "
+                "AND sent_at > ?", (user_id, desde)).fetchone()[0] or 0
+    except Exception:
+        logging.getLogger("resolveai").warning(
+            "[engajamento] nao consegui medir o silencio do user %s",
+            user_id, exc_info=True)
+        return 0
+
+
 def teve_proativa_hoje(user_id: int, horas: int = 4) -> bool:
     """Esta pessoa recebeu alguma mensagem que o bot iniciou nas ultimas N h?
 
