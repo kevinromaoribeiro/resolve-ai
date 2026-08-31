@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v28.0-m74-silencio-por-pessoa-2026-08-31"
+BUILD = "v28.1-m75-cadastro-da-landing-2026-08-31"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -500,9 +500,33 @@ def _parse_landing_payload(text: str) -> Optional[dict]:
             # normaliza contra as chaves conhecidas
             valid = {"contas", "mercado", "carro", "saude", "datas",
                      "encomendas", "pet", "burocracia"}
-            ints = [i.strip().lower() for i in partes[2].split(",")]
+            # SO ATE A PRIMEIRA QUEBRA DE LINHA.
+            #
+            # O payload e a primeira linha; depois dela vem a mensagem que a
+            # pessoa manda ("Oi! Quero comecar..."). Sem este corte, o
+            # ULTIMO interesse vinha grudado no texto inteiro
+            # ("saude\n\noi! quero comecar...") e nao casava a lista de
+            # validos — quem marcava dois perdia todos menos o primeiro, em
+            # silencio.
+            _cru = partes[2].split("\n")[0]
+            ints = [i.strip().lower() for i in _cru.split(",")]
             interesses = ",".join(i for i in ints if i in valid)
-        return {"nome": nome, "idade": idade, "interesses": interesses}
+        # O ASSUNTO DO AUDIO VEM NA MESMA MENSAGEM (M7.5).
+        #
+        # A landing acrescenta "E quero o resumo semanal de X." depois do
+        # payload. A extracao disso morava so no `_handle_commands`, e o
+        # cadastro novo devolve antes de chegar la — a escolha da pessoa
+        # sumia e o bot perguntava de novo. Quem le o payload le tudo.
+        _nicho = ""
+        try:
+            import podcast as _pod
+            _m = _NICHO_DA_LANDING_RE.search(text or "")
+            _nicho = (_pod.nicho_valido(_m.group(1).strip()) or "") if _m else ""
+        except Exception:
+            log.warning("[landing] nao consegui ler o assunto do audio",
+                        exc_info=True)
+        return {"nome": nome, "idade": idade, "interesses": interesses,
+                "podcast_nicho": _nicho}
     except Exception:
         return None
 
@@ -4330,7 +4354,8 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     # (ex.: logo após um RESET, que recria o registro no passo "nome").
     # Sem isso o payload seria gravado como se fosse o nome da pessoa.
     landing = _parse_landing_payload(content) if kind == "texto" else None
-    if landing and (landing.get("nome") or landing.get("interesses")) and (
+    if landing and (landing.get("nome") or landing.get("interesses")
+                    or landing.get("podcast_nicho")) and (
             is_new or user.get("onboarding_step") in ("nome", "interesses")):
         fn = ((landing["nome"] or "").split() or [""])[0] or first_name
         db.update_user_fields(
@@ -4338,6 +4363,10 @@ def handle_incoming(payload: dict) -> Optional[dict]:
             nome=landing["nome"] or user["nome"],
             idade=landing.get("idade"),
             interesses=landing.get("interesses") or None,
+            # `or None` NAO: sem assunto escolhido o campo fica como estava,
+            # e quem ja tinha um nao perde por preencher o formulario de novo.
+            **({"podcast_nicho": landing["podcast_nicho"]}
+               if landing.get("podcast_nicho") else {}),
             onboarding_step="lgpd_landing")
         _abrir_onboarding_lgpd(
             phone, jornada.BOAS_VINDAS.format(nome=fn, dias=TRIAL_DAYS),
