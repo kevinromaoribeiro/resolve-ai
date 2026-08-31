@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v28.1-m75-cadastro-da-landing-2026-08-31"
+BUILD = "v28.2-m77-cobranca-e-reoferta-2026-08-31"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -857,7 +857,8 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
                               podcast_recusado_em=tempo.agora().isoformat())
         return ("Beleza, cancelei o mini podcast. 👍\n\n"
                 "Seus lembretes continuam normais — isso aqui era só um "
-                "extra. Se mudar de ideia, é só me dizer o assunto.")
+                "extra.\n\nSe mudar de ideia um dia, é só me mandar "
+                "*quero os áudios*.")
 
     # SO PRA QUEM TEM PODCAST (auditoria M4.2, P2-6). "depois" e "mais
     # tarde" sao palavras de qualquer conversa; sem esta guarda, quem nunca
@@ -866,7 +867,7 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         # Nao mexe em `podcast_ultimo`: ela nao ouviu nada. O convite volta
         # no ciclo semanal, sem insistencia hoje.
         return ("Tranquilo! 👍 Deixo pra próxima semana.\n\n"
-                "Se quiser antes, é só me dizer *quero ouvir*.")
+                "Se quiser antes, é só me mandar *quero os áudios*.")
 
     if _PODCAST_QUERO_RE.match(text):
         # SEM ASSUNTO ESCOLHIDO, PERGUNTA — nao adivinha.
@@ -1881,7 +1882,12 @@ _NICHO_DA_LANDING_RE = re.compile(
 _PODCAST_QUERO_RE = re.compile(
     r"^\s*(quero\s+ouvir|manda\s+o\s+(mini\s+)?podcast|"
     r"quero\s+o\s+(mini\s+)?podcast|pode\s+mandar\s+o\s+[áa]udio|"
-    r"quero\s+o\s+[áa]udio)"
+    r"quero\s+o\s+[áa]udio|"
+    # A FRASE DE VOLTA (M7.7). Toda saida do recurso termina dizendo
+    # "quero os audios" — entao ela TEM que ser reconhecida aqui. Prometer
+    # uma palavra que o Python nao entende e a regra que custou um P0.
+    r"quero\s+os\s+[áa]udios|quero\s+as\s+not[íi]cias|"
+    r"quero\s+o\s+resumo(\s+semanal)?)"
     r"\s*[.!?]?\s*$", re.I)
 
 _PODCAST_DEPOIS_RE = re.compile(

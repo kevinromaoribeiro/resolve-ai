@@ -573,7 +573,15 @@ def para_disparo(d: dict) -> tuple[Optional[str], list]:
         return None, []
 
     primeiro = _primeiro_nome(d)
-    if nome == "resolveai_podcast_pronto":
+    if nome == "resolveai_cobranca_link":
+        # "ha *{{2}}* dia(s)" — o numero vem do disparo, que o leu do banco.
+        # Sem ele a frase viraria "ha 0 dias", que contradiz a propria
+        # mensagem ("ainda nao vi o pagamento entrar").
+        _dias = d.get("dias_desde_o_pedido") or 0
+        if not _dias:
+            return None, []
+        variaveis = [primeiro, str(_dias)]
+    elif nome == "resolveai_podcast_pronto":
         # SEM NICHO, NAO SAI. O corpo promete "seu resumo de *X*", e X e o
         # assunto que a PESSOA escolheu — preencher com "as noticias" seria
         # mandar um lembrete generico de uma coisa que ela escolheu

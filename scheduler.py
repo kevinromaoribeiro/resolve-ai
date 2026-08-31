@@ -116,6 +116,8 @@ PODCAST_ATIVO = (os.environ.get("PODCAST_ATIVO", "") or "").strip().lower() \
 KINDS_PROATIVOS = {
     "vencimento", "1-click-buy", "anti-churn", "trial-ending", "arquivado",
     "vencido", "hora", "resumo", "winback", "gastos", "retorno", "podcast", "podcast-convite", "podcast-dia",
+    # M7.6: a cobranca de quem pediu o link e nao pagou.
+    "cobranca-link",
     # M5.9: a reativacao dos testers. Kind declarado, template ja aprovado.
     "reativacao",
 } | {f"trial_d{n}" for n in range(1, 13)}
@@ -1158,6 +1160,8 @@ def run_proactive_engine(
     # inteiro das 21h as 8h, alarmes com hora inclusos — ja aconteceu com
     # `podcast_conv` (auditoria M4.4).
     reativacao: list[dict] = []
+    cobranca: list[dict] = []
+    oferta_pod: list[dict] = []
     if _in_quiet_hours(now):
         # TODA CHECAGEM PRECISA DE VALOR NOS DOIS RAMOS (auditoria M4.2).
         #
@@ -1183,6 +1187,8 @@ def run_proactive_engine(
         # MINI-PODCAST (M4.2). So o CONVITE sai daqui; o audio nunca e
         # proativo — ele vai como resposta ao toque no botao, dentro da
         # conversa que a pessoa acabou de abrir.
+        cobranca = check_cobranca(ref=now)
+        oferta_pod = check_podcast_oferta(ref=now)
         reativacao = check_reativacao(ref=now)
         podcast_conv = check_podcast(ref=now)
         podcast_dia = check_podcast_dia(ref=now)
@@ -1203,13 +1209,15 @@ def run_proactive_engine(
         "trial_dispatches": trial,
         "guided_dispatches": guided,
         "retorno_dispatches": retorno,
+        "cobranca_dispatches": cobranca,
+        "podcast_oferta_dispatches": oferta_pod,
         "reativacao_dispatches": reativacao,
         "podcast_dispatches": podcast_conv,
         "podcast_dia_dispatches": podcast_dia,
         "total": (len(alarms) + len(resumo) + len(overdue) + len(due)
                   + len(churn) + len(trial) + len(guided) + len(gastos)
                   + len(retorno) + len(podcast_conv) + len(podcast_dia)
-                  + len(reativacao)),
+                  + len(reativacao) + len(cobranca) + len(oferta_pod)),
     }
 
 
@@ -1378,6 +1386,87 @@ def reativacao_diagnostico() -> dict:
         log.warning("[reativacao] diagnostico falhou", exc_info=True)
         d["erro"] = True
     return d
+
+
+# A COBRANCA PERSEGUE — DUAS VEZES, E PARA.
+#
+# Duas e insistencia honesta: a primeira pode ter passado batido, a segunda
+# e o lembrete. A terceira e o caminho pro bloqueio, e quem nao respondeu as
+# duas primeiras ja respondeu.
+COBRANCA_DIAS = (2, 5)
+COBRANCA_MAX = len(COBRANCA_DIAS)
+
+
+def check_cobranca(ref: Optional[datetime] = None) -> list[dict]:
+    """Quem pediu o link de pagamento e ainda nao pagou.
+
+    NAO consulta `user_can_receive`, e essa e a decisao que faz a checagem
+    existir: ela devolve False pra trial expirado, e era isso que fazia a
+    pessoa sumir do radar exatamente no dia de decidir a compra. A gente
+    parava de servir E de cobrar no mesmo instante.
+    """
+    agora = ref or tempo.agora()
+    saida: list[dict] = []
+    for u in db.pediu_link_e_nao_pagou(dias=COBRANCA_DIAS[0]):
+        ja = db.dispatch_count("cobranca-link", u["id"])
+        if ja >= COBRANCA_MAX:
+            continue                      # ja insistimos o suficiente
+        dias = db.dias_desde_o_pedido_do_link(u["id"])
+        if dias < COBRANCA_DIAS[min(ja, COBRANCA_MAX - 1)]:
+            continue                      # ainda nao e a hora desta rodada
+        if db.dispatched_within("cobranca-link", u["id"], days=2):
+            continue                      # nao cobra dois dias seguidos
+        primeiro = ((u.get("nome") or "").split() or ["Oi"])[0]
+        saida.append({
+            "user_id": u["id"], "user_nome": u.get("nome") or "",
+            "telefone": u.get("telefone"), "item_id": None,
+            "kind": "cobranca-link",
+            "dias_desde_o_pedido": dias,
+            # Dentro da janela de 24h vale este texto; fora dela, o template
+            # aprovado (`resolveai_cobranca_link`, com os botoes "Ja paguei"
+            # e "Assinar").
+            "message": (
+                f"Oi {primeiro}! Você pediu o link do Resolve AI há "
+                f"*{dias}* dia(s) e eu ainda não vi o pagamento entrar.\n\n"
+                f"Se já pagou, me avisa aqui que eu libero na hora. Se "
+                f"preferir, responde *assinar* que eu mando o link de novo."),
+            "quando": _fmt_br(agora.date().isoformat()),
+        })
+    return saida
+
+
+def check_podcast_oferta(ref: Optional[datetime] = None) -> list[dict]:
+    """Oferece o audio pra quem pulou a escolha no formulario.
+
+    Sai como `podcast-convite`, que esta em `KINDS_SEM_TEMPLATE`: SO dentro
+    da janela de 24h. Nao existe template aprovado pra "escolha um assunto",
+    e inventar envio fora da janela e o caminho pra terceira restricao.
+    """
+    if not PODCAST_ATIVO:
+        return []
+    import voz as _voz
+    if not _voz.disponivel():
+        return []                 # prometer audio sem ter voz e nao entregar
+
+    agora = ref or tempo.agora()
+    saida: list[dict] = []
+    for u in db.podcast_a_ofertar(ref=agora):
+        if not db.user_can_receive(u, TRIAL_DAYS):
+            continue
+        primeiro = ((u.get("nome") or "").split() or ["Oi"])[0]
+        saida.append({
+            "user_id": u["id"], "user_nome": u.get("nome") or "",
+            "telefone": u.get("telefone"), "item_id": None,
+            "kind": "podcast-convite",
+            "message": (
+                f"🎧 {primeiro}, toda semana eu posso te mandar um resumo em "
+                f"áudio das notícias do assunto que você escolher — duas "
+                f"pessoas conversando, uns dois minutos.\n\n"
+                f"É de graça, faz parte do seu plano. Quer experimentar?"),
+            "botoes": ["Quero ouvir", "Agora não", "Nunca mais"],
+            "quando": _fmt_br(agora.date().isoformat()),
+        })
+    return saida
 
 
 def check_podcast(ref: Optional[datetime] = None) -> list[dict]:

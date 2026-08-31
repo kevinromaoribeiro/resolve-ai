@@ -1039,6 +1039,60 @@ def dispatched_within(kind: str, user_id: int, days: int) -> bool:
         ).fetchone() is not None
 
 
+def pediu_link_e_nao_pagou(dias: int = 2, limite: int = 50) -> list[dict]:
+    """Quem pediu o link de pagamento ha N+ dias e ainda nao foi aprovado.
+
+    O carimbo e o dispatch `link-pagamento`, gravado quando a pessoa digita
+    "assinar" e recebe os links. Quem o Kevin aprovou no painel vira
+    `status='ativo'` e sai desta lista na hora.
+
+    NAO filtra por trial valido de proposito: cobrar quem acabou de vencer e
+    justamente o ponto. Filtrar por `user_can_receive` aqui era o que fazia
+    a pessoa sumir do radar no dia da decisao.
+    """
+    import logging   # LOCAL: `db.py` nao importa logging no topo.
+    try:
+        corte = (tempo.agora() - timedelta(days=max(0, dias))
+                 ).strftime("%Y-%m-%d %H:%M:%S")
+        with get_conn() as conn:
+            linhas = conn.execute(
+                """SELECT u.*, MIN(d.sent_at) AS pediu_em
+                     FROM users u
+                     JOIN dispatches d ON d.user_id = u.id
+                    WHERE d.kind = 'link-pagamento'
+                      AND COALESCE(u.status,'trial') NOT IN ('ativo',
+                                                             'cancelado',
+                                                             'bloqueado')
+                    GROUP BY u.id
+                   HAVING MIN(d.sent_at) <= ?
+                    ORDER BY MIN(d.sent_at) ASC LIMIT ?""",
+                (corte, limite)).fetchall()
+        return [dict(r) for r in linhas]
+    except Exception:
+        logging.getLogger("resolveai").warning(
+            "[cobranca] nao consegui montar a fila", exc_info=True)
+        return []
+
+
+def dias_desde_o_pedido_do_link(user_id: int) -> int:
+    """Ha quantos dias a pessoa pediu o link. 0 se nao da pra saber."""
+    import logging
+    try:
+        with get_conn() as conn:
+            r = conn.execute(
+                "SELECT MIN(sent_at) FROM dispatches WHERE user_id=? "
+                "AND kind='link-pagamento'", (user_id,)).fetchone()
+        if not r or not r[0]:
+            return 0
+        quando = datetime.fromisoformat(str(r[0]))
+        return max(0, (tempo.agora() - quando).days)
+    except Exception:
+        logging.getLogger("resolveai").warning(
+            "[cobranca] data do pedido ilegivel do user %s", user_id,
+            exc_info=True)
+        return 0
+
+
 def proativas_sem_resposta(user_id: int) -> int:
     """Quantas mensagens seguidas o bot mandou sem a pessoa responder nada.
 
@@ -2842,6 +2896,32 @@ def podcast_a_convidar(ref=None, horas: int = 6, limite: int = 20) -> list[dict]
             """SELECT * FROM users
                 WHERE podcast_nicho IS NOT NULL
                   AND TRIM(podcast_nicho) <> ''
+                  AND podcast_convite_em IS NULL
+                  AND podcast_recusado_em IS NULL
+                  AND data_criacao <= ?
+                ORDER BY data_criacao ASC LIMIT ?""",
+            (corte, limite)).fetchall()
+    return [dict(r) for r in linhas]
+
+
+def podcast_a_ofertar(ref=None, horas: int = 24,
+                      limite: int = 20) -> list[dict]:
+    """Quem NAO escolheu assunto, nao recusou, e ainda nao foi ofertado.
+
+    Quem marcou "Depois eu escolho" no formulario sumia do recurso pra
+    sempre: a fila do convite exige nicho preenchido. Esta e a fila que
+    devolve essas pessoas pro jogo — uma vez so, carimbada pelo mesmo
+    `podcast_convite_em`.
+
+    `horas` da folga pro onboarding acontecer antes: oferecer um extra no
+    mesmo minuto do cadastro e falar de sobremesa antes do prato.
+    """
+    agora = ref or tempo.agora()
+    corte = (agora - timedelta(hours=horas)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        linhas = conn.execute(
+            """SELECT * FROM users
+                WHERE (podcast_nicho IS NULL OR TRIM(podcast_nicho) = '')
                   AND podcast_convite_em IS NULL
                   AND podcast_recusado_em IS NULL
                   AND data_criacao <= ?
