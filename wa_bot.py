@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v27.7-m71-estado-dos-templates-2026-08-30"
+BUILD = "v27.8-m72-mensagem-de-compra-2026-08-30"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -625,8 +625,22 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         # já estiveram fora de sincronia aqui (R$ 149 anunciado como
         # "R$ 12,40/mês", quando dá 12,42). Preço errado numa mensagem de
         # venda custa a confiança inteira por um detalhe de digitação.
+        # A ECONOMIA TAMBEM E DERIVADA, pelo mesmo motivo do "/mês": o
+        # desconto ficava pro cliente calcular, e quem calcula desiste.
+        # `_meses_gratis` so aparece a partir de 1 mes cheio — "0 meses
+        # grátis" seria pior que nao dizer nada.
+        _economia = PRECO_MENSAL * 12 - PRECO_ANUAL
+        _meses_gratis = int(_economia / PRECO_MENSAL) if PRECO_MENSAL else 0
+        _vantagem = ""
+        if _economia > 0:
+            _vantagem = f" — economiza {_brl(_economia)}"
+            if _meses_gratis >= 1:
+                _vantagem += (f", quase {_meses_gratis} "
+                              f"{'meses' if _meses_gratis > 1 else 'mês'} "
+                              f"de graça")
         anual = (f"\n📅 Anual — {_brl(PRECO_ANUAL)} "
-                 f"({_brl(PRECO_ANUAL / 12)}/mês): {PAYMENT_LINK_ANUAL}"
+                 f"({_brl(PRECO_ANUAL / 12)}/mês){_vantagem}: "
+                 f"{PAYMENT_LINK_ANUAL}"
                  if PAYMENT_LINK_ANUAL else "")
         # A FILA DE APROVAÇÃO COMEÇA AQUI (M2.9).
         #
@@ -640,7 +654,22 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
             log.warning("[assinatura] pedido de link do user %s NAO entrou na "
                         "fila de aprovacao — ative pelo telefone",
                         user.get("id"), exc_info=True)
+        # O QUE ELA GANHOU, com numero de verdade. Sem contagem, a linha
+        # some: "guardei 0 compromissos" e argumento CONTRA a assinatura, e
+        # numero inventado numa mensagem de venda custa a confianca inteira.
+        _prova = ""
+        try:
+            _n = len(db.list_items(user["id"]))
+            if _n:
+                _prova = (f"Até agora eu guardei *{_n}* compromisso"
+                          f"{'s' if _n > 1 else ''} seu"
+                          f"{'s' if _n > 1 else ''} e te avisei antes de "
+                          f"vencer.\n\n")
+        except Exception:
+            log.warning("[assinatura] nao consegui contar os itens do user %s",
+                        user.get("id"), exc_info=True)
         return (f"Bora, {first_name}! 🚀\n\n"
+                f"{_prova}"
                 f"💳 Mensal — {_brl(PRECO_MENSAL)}: {PAYMENT_LINK}{anual}\n\n"
                 f"É assinatura: renova sozinho, você não precisa pagar na mão "
                 f"todo mês. Pra sair, é só me mandar *cancelar*.\n\n"
