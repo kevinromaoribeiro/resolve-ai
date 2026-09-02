@@ -214,7 +214,10 @@ def test_verificar_diz_qual_feed_morreu():
         return _rss()
 
     r = noticias.verificar(baixar=_metade)
-    assert len(r) == 15, len(r)
+    # uma linha por FONTE, e o catalogo cresce: contar o numero fixo
+    # fazia o teste quebrar a cada assunto novo sem nada estar errado.
+    import podcast as _pod
+    assert len(r) == sum(len(d["fontes"]) for d in _pod.NICHOS.values())
     ruins = [x for x in r if not x["ok"]]
     assert any("ESPN" in x["fonte"] for x in ruins), ruins
     assert all(x["erro"] for x in ruins), "feed ruim sem motivo no relatorio"

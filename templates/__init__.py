@@ -586,11 +586,18 @@ def para_disparo(d: dict) -> tuple[Optional[str], list]:
         # assunto que a PESSOA escolheu — preencher com "as noticias" seria
         # mandar um lembrete generico de uma coisa que ela escolheu
         # especifica. Mesmo raciocinio do `resolveai_conta_a_vencer`.
+        #
+        # LE A LISTA, NAO A CHAVE UNICA (auditoria M9, P0-1). A coluna passou
+        # a guardar ate tres assuntos; `rotulo()` le chave unica e devolvia ""
+        # pra "futebol,economia" — e "" aqui significa NAO SAI. Como este e o
+        # unico caminho do podcast que atravessa a janela de 24h, quem
+        # escolheu dois assuntos e nao falava com o bot ha dois dias parava de
+        # ser avisado, sem erro no log.
         import podcast as _pod
-        _rot = _pod.rotulo(_nicho_do_usuario(d.get("user_id")))
+        _rot = _pod.rotulos_da_pessoa(_nicho_do_usuario(d.get("user_id")))
         if not _rot:
             return None, []
-        variaveis = [primeiro, _rot.lower()]
+        variaveis = [primeiro, _rot]
     elif nome == "reativar_boas_vindas":
         # Uma variavel so, o primeiro nome. O corpo inteiro e fixo e ja
         # aprovado — inclusive a frase "seus 14 dias gratis estao intactos,

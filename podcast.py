@@ -160,6 +160,170 @@ NICHOS = {
                      "o que subiu e o que caiu de preço",
                      "novidade das grandes lojas"),
     },
+    "economia": {
+        "rotulo": "Economia e seu bolso",
+        "emoji": "💰",
+        "fontes": (
+            ("InfoMoney", "https://www.infomoney.com.br/",
+             "https://www.infomoney.com.br/feed/"),
+            ("G1 Economia", "https://g1.globo.com/economia/",
+             "https://g1.globo.com/rss/g1/economia/"),
+            ("Exame", "https://exame.com/",
+             "https://exame.com/feed/"),
+        ),
+        "assuntos": ("juros e inflação", "dólar e bolsa",
+                     "impostos e benefícios", "preço de energia e combustível"),
+    },
+    "brasil": {
+        "rotulo": "Notícias do Brasil",
+        "emoji": "🇧🇷",
+        "fontes": (
+            ("G1", "https://g1.globo.com/brasil/",
+             "https://g1.globo.com/rss/g1/brasil/"),
+            ("Agência Brasil", "https://agenciabrasil.ebc.com.br/",
+             "https://agenciabrasil.ebc.com.br/rss/geral/feed.xml"),
+            ("BBC News Brasil", "https://www.bbc.com/portuguese",
+             "https://feeds.bbci.co.uk/portuguese/rss.xml"),
+        ),
+        "assuntos": ("o que aconteceu no país", "decisões que afetam todo mundo",
+                     "clima e infraestrutura"),
+    },
+    "saude": {
+        "rotulo": "Saúde e bem-estar",
+        "emoji": "🩺",
+        "fontes": (
+            ("G1 Bem Estar", "https://g1.globo.com/bemestar/",
+             "https://g1.globo.com/rss/g1/bemestar/"),
+            ("Drauzio Varella", "https://drauziovarella.uol.com.br/",
+             "https://drauziovarella.uol.com.br/feed/"),
+            ("Agência Fiocruz", "https://agencia.fiocruz.br/",
+             "https://agencia.fiocruz.br/rss.xml"),
+        ),
+        "assuntos": ("estudos e descobertas", "prevenção e vacinas",
+                     "alimentação e sono"),
+    },
+    "celebridades": {
+        "rotulo": "Celebridades e TV",
+        "emoji": "🌟",
+        "fontes": (
+            ("Quem", "https://revistaquem.globo.com/",
+             "https://revistaquem.globo.com/rss/quem/"),
+            ("Gshow", "https://gshow.globo.com/",
+             "https://gshow.globo.com/rss/gshow/"),
+            ("Hugo Gloss", "https://hugogloss.uol.com.br/",
+             "https://hugogloss.uol.com.br/feed/"),
+        ),
+        "assuntos": ("novela e reality", "quem casou, quem terminou",
+                     "bastidores da TV"),
+    },
+    "carros": {
+        "rotulo": "Carros",
+        "emoji": "🚗",
+        "fontes": (
+            ("Autoesporte", "https://autoesporte.globo.com/",
+             "https://autoesporte.globo.com/rss/autoesporte/"),
+            ("Quatro Rodas", "https://quatrorodas.abril.com.br/",
+             "https://quatrorodas.abril.com.br/feed/"),
+            ("AutoPapo", "https://autopapo.uol.com.br/",
+             "https://autopapo.uol.com.br/feed/"),
+        ),
+        "assuntos": ("lançamentos e recalls", "vendas e preços",
+                     "elétricos e híbridos"),
+    },
+    "viagens": {
+        "rotulo": "Viagens",
+        "emoji": "✈️",
+        "fontes": (
+            ("Melhores Destinos", "https://www.melhoresdestinos.com.br/",
+             "https://www.melhoresdestinos.com.br/feed"),
+            ("Viagem e Turismo", "https://viagemeturismo.abril.com.br/",
+             "https://viagemeturismo.abril.com.br/feed/"),
+            ("Passageiro de Primeira", "https://passageirodeprimeira.com/",
+             "https://passageirodeprimeira.com/feed/"),
+        ),
+        "assuntos": ("promoção de passagem", "regras de bagagem e visto",
+                     "destinos e roteiros"),
+    },
+    "horoscopo": {
+        "rotulo": "Horóscopo",
+        "emoji": "🔮",
+        "fontes": (
+            # LIDO, NUNCA INVENTADO. Horoscopo so entrou porque existe veiculo
+            # publicando — se um dia estas tres cairem, o assunto sai do ar em
+            # vez de o bot escrever previsao por conta propria.
+            ("João Bidu", "https://joaobidu.com.br/",
+             "https://joaobidu.com.br/feed/"),
+            ("Terra Horóscopo",
+             "https://www.terra.com.br/vida-e-estilo/horoscopo/",
+             "https://www.terra.com.br/vida-e-estilo/horoscopo/rss.xml"),
+            ("Metrópoles Horóscopo",
+             "https://www.metropoles.com/colunas/horoscopo",
+             "https://www.metropoles.com/colunas/horoscopo/feed"),
+        ),
+        "assuntos": ("previsão dos signos", "fases da lua e retrógrados",
+                     "energia da semana"),
+    },
+    "geopolitica": {
+        "rotulo": "Geopolítica",
+        "emoji": "🌍",
+        "fontes": (
+            ("G1 Mundo", "https://g1.globo.com/mundo/",
+             "https://g1.globo.com/rss/g1/mundo/"),
+            ("RFI Brasil", "https://www.rfi.fr/br/",
+             "https://www.rfi.fr/br/rss"),
+            ("Opera Mundi", "https://operamundi.uol.com.br/",
+             "https://operamundi.uol.com.br/feed/"),
+        ),
+        "assuntos": ("conflitos e acordos", "eleições fora do Brasil",
+                     "comércio entre países"),
+    },
+    "ciencia": {
+        "rotulo": "Ciência e espaço",
+        "emoji": "🔬",
+        "fontes": (
+            ("Super Interessante", "https://super.abril.com.br/",
+             "https://super.abril.com.br/feed/"),
+            ("Galileu", "https://revistagalileu.globo.com/",
+             "https://revistagalileu.globo.com/rss/galileu/"),
+            ("Agência FAPESP", "https://agencia.fapesp.br/",
+             "https://agencia.fapesp.br/rss/"),
+        ),
+        "assuntos": ("descobertas e pesquisas", "espaço e astronomia",
+                     "arqueologia e história"),
+    },
+    "musica": {
+        "rotulo": "Música",
+        "emoji": "🎵",
+        "fontes": (
+            ("Rolling Stone Brasil", "https://rollingstone.com.br/",
+             "https://rollingstone.com.br/feed/"),
+            ("POPline", "https://portalpopline.com.br/",
+             "https://portalpopline.com.br/feed/"),
+            ("Tenho Mais Discos Que Amigos",
+             "https://tenhomaisdiscosqueamigos.com/",
+             "https://tenhomaisdiscosqueamigos.com/feed/"),
+        ),
+        "assuntos": ("lançamentos e álbuns", "shows e festivais",
+                     "bastidores de artista"),
+    },
+    "gastronomia": {
+        "rotulo": "Gastronomia",
+        "emoji": "🍳",
+        "fontes": (
+            ("Paladar", "https://paladar.estadao.com.br/",
+             "https://www.estadao.com.br/arc/outboundfeeds/feeds/rss/"
+             "sections/paladar/"),
+            ("Guia da Cozinha", "https://guiadacozinha.com.br/",
+             "https://guiadacozinha.com.br/feed/"),
+            # VejaSP e fonte AMPLA (cidade e cultura), e entra pela regra do
+            # proprio dono: "falar de futebol na UOL ok, mas pegue apenas
+            # noticias do tema". Quem garante a pureza aqui e o `_ASSUNTO`.
+            ("VejaSP", "https://vejasp.abril.com.br/comer-beber/",
+             "https://vejasp.abril.com.br/feed/"),
+        ),
+        "assuntos": ("restaurantes e chefs", "técnicas e ingredientes",
+                     "bebidas e cafés"),
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -267,6 +431,128 @@ _ASSUNTO = {
         r"black\s+friday|consumidor\s+online|carrinho|checkout",
         r"vendas\s+online|vendas\s+do\s+varejo|ticket\s+m[ée]dio",
     ),
+    "economia": (
+        r"juros?|selic|infla[çc][ãa]o|ipca|d[óo]lar|c[âa]mbio|euro\b",
+        r"bolsa|ibovespa|a[çc][õo]es|investimento|renda\s+fixa|tesouro",
+        r"imposto|tributa|receita\s+federal|ir\b|declara[çc][ãa]o",
+        r"sal[áa]rio|emprego|desemprego|caged|renda|benef[íi]cio|inss",
+        r"banco\s+central|copom|pib|economia|mercado|empresa|lucro",
+        r"gasolina|combust[íi]vel|energia|tarifa|pre[çc]o|custo\s+de\s+vida",
+        r"fgts|aposentadoria|pens[ãa]o|financiamento|cr[ée]dito|d[íi]vida",
+    ),
+    "brasil": (
+        # FONTE AMPLA, FILTRO APERTADO: G1 e Agencia Brasil publicam de tudo.
+        # Sem estes termos, esporte e celebridade entrariam como "noticia".
+        r"governo|congresso|senado|c[âa]mara|stf|supremo|minist[ée]rio",
+        r"lei\b|projeto\s+de\s+lei|decreto|medida\s+provis[óo]ria|reforma",
+        r"pol[íi]cia|opera[çc][ãa]o|justi[çc]a|julgamento|preso|investiga",
+        r"chuva|enchente|seca|temporal|queimada|inmet|defesa\s+civil",
+        r"educa[çc][ãa]o|enem|escola|universidade|professor|greve",
+        r"transporte|rodovia|aeroporto|metr[ôo]|obra|infraestrutura",
+        r"brasil|brasileiro|estado|munic[íi]pio|prefeitura|popula[çc][ãa]o",
+    ),
+    "saude": (
+        r"sa[úu]de|doen[çc]a|sintoma|diagn[óo]stico|tratamento|rem[ée]dio",
+        r"vacina|imuniza|surto|epidemia|v[íi]rus|bact[ée]ria|infec[çc][ãa]o",
+        r"m[ée]dico|hospital|sus\b|anvisa|minist[ée]rio\s+da\s+sa[úu]de",
+        r"estudo|pesquisa|cientistas?\s+descobr|ensaio\s+cl[íi]nico",
+        r"alimenta[çc][ãa]o|dieta|nutri|exerc[íi]cio|sono|dormir|estresse",
+        r"c[âa]ncer|diabetes|press[ãa]o|colesterol|obesidade|depress[ãa]o",
+        r"corpo|mente|bem-?estar|preven[çc][ãa]o|exame|check-?up",
+    ),
+    "celebridades": (
+        r"novela|reality|bbb\b|a\s+fazenda|programa|apresentador",
+        r"ator|atriz|cantor|cantora|artista|famos[oa]|celebridade",
+        r"namoro|casamento|separa[çc][ãa]o|divorcio|div[óo]rcio|romance",
+        r"gravidez|filho|beb[êe]|fam[íi]lia|homenagem|desabafo",
+        r"globo|record|sbt|netflix|estreia|elenco|bastidores|s[ée]rie",
+        r"instagram|redes\s+sociais|post|declara[çc][ãa]o|entrevista",
+        r"pol[êe]mica|briga|resposta|processo|indireta",
+    ),
+    "carros": (
+        r"carro|autom[óo]vel|ve[íi]culo|suv|sedã|sed[ãa]|hatch|picape",
+        r"motor|c[âa]mbio|pot[êe]ncia|cavalos|consumo|autonomia",
+        r"el[ée]trico|h[íi]brido|flex|combust[íi]vel|etanol|diesel",
+        r"lan[çc]amento|recall|montadora|fabricante|conce[ss]ion[áa]ria",
+        r"fiat|volkswagen|chevrolet|toyota|honda|hyundai|renault|jeep",
+        r"byd|tesla|ford|nissan|caoa|gwm|ram\b|peugeot|citro[ëe]n",
+        r"ipva|licenciamento|multa|cnh|tr[âa]nsito|seguro\s+do\s+carro",
+        r"test-?drive|avalia[çc][ãa]o|vers[ãa]o|pre[çc]o\s+do\s+carro",
+    ),
+    "viagens": (
+        r"viagem|viajar|passagem|voo|voos|a[ée]rea|companhia\s+a[ée]rea",
+        r"destino|roteiro|turismo|turista|hotel|pousada|hospedagem",
+        r"aeroporto|bagagem|check-?in|conex[ãa]o|escala|milhas",
+        r"visto|passaporte|imigra[çc][ãa]o|fronteira|embaixada",
+        # "pa[íi]s" pegava "acordo entre paises" da geopolitica. Destino
+        # se reconhece pelos outros termos, nao por essa palavra.
+        r"praia|montanha|europa|caribe|nordeste|litoral|ilha\b",
+        r"latam|gol\b|azul\b|smiles|tudoazul|promo[çc][ãa]o\s+de\s+passag",
+        r"cruzeiro|pacote|feriado|alta\s+temporada|baixa\s+temporada",
+    ),
+    "horoscopo": (
+        r"signo|signos|hor[óo]scopo|astrolog|zod[íi]aco|mapa\s+astral",
+        # CANCER SAIU DA LISTA SOLTA (auditoria M9, P2): ele casava
+        # "Câncer de mama: novo exame chega ao SUS", e essa materia lida
+        # em voz de horoscopo e um estrago com o cliente. O signo
+        # continua valendo quando vem com companhia de horoscopo — que e
+        # como ele aparece numa materia de horoscopo de verdade.
+        r"[áa]ries|touro|g[êe]meos|le[ãa]o|virgem|libra",
+        r"(signo|hor[óo]scopo|previs[ãa]o|astral|regente)[^.]{0,40}c[âa]ncer|c[âa]ncer[^.]{0,40}(signo|ascendente|regente|hor[óo]scopo)",
+        r"escorpi[ãa]o|sagit[áa]rio|capric[óo]rnio|aqu[áa]rio|peixes",
+        r"lua\s+(cheia|nova|crescente|minguante)|eclipse|retr[óo]grado",
+        r"merc[úu]rio|v[êe]nus|marte|j[úu]piter|saturno|urano|netuno",
+        r"previs[ãa]o|energia\s+d[ao]|astral|ascendente|casa\s+astrol",
+        r"ritual|simpatia|tarot|numerologia|cristal",
+    ),
+    "geopolitica": (
+        r"guerra|conflito|cessar-?fogo|tr[ée]gua|invas[ãa]o|ataque",
+        r"acordo|tratado|c[úu]pula|negocia[çc][ãa]o|di[áa]logo|san[çc][õo]es",
+        r"onu\b|otan|nato|uni[ãa]o\s+europeia|brics|mercosul|g7\b|g20",
+        r"presidente|primeiro-?ministro|chanceler|embaixador|diplomacia",
+        r"elei[çc][ãa]o|elei[çc][õo]es|parlamento|governo\s+d[eoa]",
+        r"tarifa|com[ée]rcio|exporta[çc][ãa]o|importa[çc][ãa]o|embargo",
+        r"eua|estados\s+unidos|china|r[úu]ssia|ucr[âa]nia|israel|ir[ãa]",
+        r"gaza|palestina|venezuela|argentina|frontei|refugiad",
+    ),
+    "ciencia": (
+        r"ci[êe]ncia|cientista|pesquisa|estudo|descobert|experimento",
+        r"espa[çc]o|nasa|sat[ée]lite|foguete|sonda|telesc[óo]pio|[óo]rbita",
+        # `estrela\b` NAO pega "chef estrelado", e a lua saiu daqui: ela
+        # aparece muito mais em horoscopo que em astronomia.
+        r"planeta|marte|estrelas?\b(?!\s+michelin)|gal[áa]xia|asteroide|cometa",
+        r"universo|buraco\s+negro|astronom|f[íi]sica|qu[íi]mica|biologia",
+        r"f[óo]ssil|dinossauro|arqueolog|escava[çc][ãa]o|ru[íi]na|antig",
+        r"evolu[çc][ãa]o|esp[ée]cie|animal|planta|clima|oceano|geolog",
+        r"universidade|instituto|revista\s+cient|publicad[oa]\s+n[ao]",
+    ),
+    "musica": (
+        r"m[úu]sica|can[çc][ãa]o|[áa]lbum|disco|single|\bep\b|faixa",
+        r"cantor|cantora|banda|artista|dupla|grupo|rapper|dj\b",
+        r"show|turn[êe]|festival|palco|rock\s+in\s+rio|lollapalooza",
+        # "lan[çc]a" sozinho pegava "Fiat lanca nova picape". Lancamento
+        # so conta quando o objeto e musical.
+        r"lan[çc]a\w*\s+(?:o\s+|a\s+|seu\s+|novo\s+|nova\s+)?(?:[áa]lbum|disco|single|clipe|m[úu]sica|faixa|\bep\b)",
+        r"clipe|videoclipe|feat\b|parceria\s+musical|regravou",
+        r"spotify|deezer|streaming|billboard|grammy|premia[çc][ãa]o",
+        r"sertanejo|funk|samba|pagode|rock|pop\b|rap\b|trap|mpb",
+        r"guitarr|vocal|letra\s+d[ae]|estúdio|produtor\s+musical",
+    ),
+    "gastronomia": (
+        # FONTE AMPLA, FILTRO APERTADO: VejaSP publica cidade e cultura.
+        # Sem estes termos, show e novela entrariam como "gastronomia".
+        # `bar\b` SOLTO casava "Show do Rock in Rio tem bar novo" — e a
+        # VejaSP e feed amplo (ver o comentario acima). Bar continua
+        # entrando; precisa e vir falando de bar.
+        r"restaurante|boteco|chef|cozinha|cozinhar|culin[áa]ria",
+        r"\bbar(es)?\b[^.]{0,40}(drink|coquete|chopp|cerveja|petisco|menu|card[áa]pio|vinho|abre|inaugur)|(novo|melhor|abre|inaugura)[^.]{0,20}\bbar\b",
+        r"receita|prato|ingrediente|tempero|molho|massa|carne|peixe",
+        r"sobremesa|doce|bolo|p[ãa]o|padaria|confeitaria|panificad",
+        r"caf[ée]|vinho|cerveja|drink|coquetel|destilado|bebida",
+        r"gastronom|sabor|menu|card[áa]pio|degusta[çc][ãa]o|harmoniza",
+        r"michelin|premiad[oa]|abertura\s+d[eo]|inaugura|casa\s+nova",
+        r"assar|refogar|fritar|grelhar|forno|panela|fog[ãa]o",
+    ),
 }
 
 
@@ -305,6 +591,10 @@ BLOCOS = 3
 HORAS_ATE_O_CONVITE = 6
 MINUTOS_ATE_PERGUNTAR_O_DIA = 10
 DIAS_ENTRE_EPISODIOS = 7
+# O PISO, decisao do dono: "no maximo a cada 5 dias". Nao e limite tecnico —
+# e o que impede o podcast de virar radio num numero que a Meta ja restringiu
+# duas vezes.
+MENOR_INTERVALO_DIAS = 5
 
 BOTOES_CONVITE = ["Quero ouvir", "Agora não", "Não quero mais"]
 BOTOES_DIA = ["Segunda", "Sexta", "Domingo"]
@@ -336,6 +626,81 @@ def _chave(nicho: Optional[str]) -> Optional[str]:
 def nicho_valido(nicho: Optional[str]) -> Optional[str]:
     """A chave canônica do nicho, ou None. Porta única de entrada."""
     return _chave(nicho)
+
+
+# TETO DE TRES, decisao do dono. Nao e limite tecnico: e o que mantem o dia
+# de entrega com tres audios em vez de virar radio.
+MAX_ASSUNTOS = 3
+
+
+def nichos_da_pessoa(bruto) -> list:
+    """As chaves de assunto desta pessoa, ate `MAX_ASSUNTOS`, sem repetir.
+
+    Aceita os DOIS formatos que existem na base: a chave unica de quem
+    escolheu antes do M9.3 e a lista separada por virgula de quem escolheu
+    depois. Assunto que nao existe mais no catalogo e descartado em silencio
+    — a alternativa seria o episodio inteiro morrer por causa de uma chave
+    velha.
+    """
+    if not bruto:
+        return []
+    if isinstance(bruto, dict):
+        bruto = bruto.get("podcast_nicho") or ""
+    if isinstance(bruto, (list, tuple)):
+        partes = list(bruto)
+    else:
+        partes = str(bruto).split(",")
+    saida: list = []
+    for p in partes:
+        k = _chave(p)
+        if k and k not in saida:
+            saida.append(k)
+        if len(saida) >= MAX_ASSUNTOS:
+            break
+    return saida
+
+
+def guardar_nichos(chaves) -> str:
+    """Como a lista vai pro banco. Porta unica, pra ninguem gravar a mao."""
+    return ",".join(nichos_da_pessoa(chaves))
+
+
+def nichos_do_texto(txt) -> list:
+    """Os assuntos citados num texto livre: "futebol, economia e moda".
+
+    A landing manda os rotulos bonitos separados por virgula desde que ganhou
+    selecao de tema. Passar isso por `_chave` inteiro devolve None — e nicho
+    None e pessoa cadastrada sem podcast nenhum, calada.
+    """
+    bruto = str(txt or "")
+    # O TEXTO INTEIRO PRIMEIRO. "Economia e seu bolso" e UM rotulo e tem " e "
+    # dentro: quebrar por " e " antes de tentar o todo transformava o assunto
+    # mais escolhido da landing em nenhum assunto, calado.
+    inteiro = _chave(bruto)
+    if inteiro:
+        return [inteiro]
+    achados: list = []
+    for pedaco in re.split(r"[,;/]", bruto):
+        for parte in ([pedaco] if _chave(pedaco.strip())
+                      else re.split(r"\se\s", pedaco)):
+            k = _chave(parte.strip())
+            if k and k not in achados:
+                achados.append(k)
+            if len(achados) >= MAX_ASSUNTOS:
+                return achados
+    return achados
+
+
+def rotulos_da_pessoa(bruto) -> str:
+    """"futebol, economia e moda" — o que ela assinou, por extenso.
+
+    VAZIO QUANDO NAO HA ASSUNTO, e isso importa: quem chama isto pra montar
+    template usa o vazio como "nao manda". O `_lista` sozinho devolveria
+    "nossas fontes" (o default dele serve pro rodape de fontes), e o lembrete
+    sairia dizendo "seu resumo de nossas fontes esta pronto".
+    """
+    nomes = [rotulo(k).lower() for k in nichos_da_pessoa(bruto)]
+    return _lista(nomes) if nomes else ""
 
 
 def fontes(nicho: Optional[str]) -> tuple:
@@ -763,6 +1128,12 @@ def _lista(nomes: list) -> str:
         return "nossas fontes"
     if len(nomes) == 1:
         return nomes[0]
+    # QUANDO UM NOME JA TEM "E" DENTRO, O "E" DA JUNCAO CONFUNDE (M9.11).
+    # "Economia e seu bolso" e um rotulo so, e a lista saía "futebol,
+    # economia e seu bolso e moda" — três assuntos que parecem quatro. Nesse
+    # caso a vírgula sozinha separa melhor que a conjunção.
+    if any(" e " in n for n in nomes):
+        return ", ".join(nomes)
     return ", ".join(nomes[:-1]) + " e " + nomes[-1]
 
 
@@ -771,9 +1142,10 @@ def _lista(nomes: list) -> str:
 # ---------------------------------------------------------------------------
 def convite(nicho: Optional[str], nome: str = "") -> Optional[dict]:
     """"Seu podcast está pronto, quer ouvir?" — com botão. None sem nicho."""
-    k = _chave(nicho)
-    if not k:
+    ks = nichos_da_pessoa(nicho)
+    if not ks:
         return None
+    k = ks[0]
     d = NICHOS[k]
     primeiro = (nome or "").split()[0] if nome else ""
     return {
@@ -783,9 +1155,21 @@ def convite(nicho: Optional[str], nome: str = "") -> Optional[dict]:
                   # o roteiro venha da locucao ou do fallback. Prometer
                   # "3 minutos" na primeira frase e errar pra menos
                   # justo onde a pessoa decide se toca ou nao.
-                  f"Seu mini podcast de *{d['rotulo'].lower()}* da semana "
-                  f"está pronto.\n\n"
-                  f"Quer ouvir agora?"),
+                  # SEM "DA SEMANA" (auditoria M9 2a passada, P1-B). A
+                  # regularidade virou escolha da pessoa — 5, 7, 15 ou 30
+                  # dias — e "da semana" mente pra quem pediu quinzenal ou
+                  # mensal. "Novo" vale nos quatro casos.
+                  + (f"Seu novo mini podcast de "
+                     f"*{d['rotulo'].lower()}* está pronto.\n\n"
+                     if len(ks) == 1 else
+                     # O PLURAL E O NUMERO IMPORTAM: quem assinou tres
+                     # recebe tres notas de voz seguidas, e o convite e o
+                     # unico lugar onde da pra avisar disso antes.
+                     f"Seus *{len(ks)}* novos mini podcasts estão "
+                     f"prontos — "
+                     f"{_lista([NICHOS[x]['rotulo'].lower() for x in ks])}."
+                     f"\n\n")
+                  + f"Quer ouvir agora?"),
         "botoes": list(BOTOES_CONVITE),
         "nicho": k,
     }
@@ -832,15 +1216,29 @@ def data_legivel(valor) -> bool:
 
 
 def pode_enviar(ultimo_envio_iso: Optional[str],
-                agora=None) -> bool:
-    """Passou uma semana desde o último episódio?
+                agora=None, dias: Optional[int] = None) -> bool:
+    """Passou o intervalo que ESTA pessoa escolheu desde o último episódio?
 
     TETO DURO, não sugestão: o Kevin definiu no máximo 1x por semana, quatro
     por mês. Áudio é a mensagem mais intrusiva do WhatsApp, e este número já
     foi restringido duas vezes.
 
+    `dias` é a regularidade dela (5, 7, 15 ou 30 — M9.12). Sem ela, cai no
+    padrão semanal. Antes isto era 7 fixo nos dois caminhos, e quem pedia "a
+    cada 5 dias" continuava recebendo de 7 em 7: a escolha aparecia na
+    confirmação e não acontecia no produto.
+
+    Valor estranho cai no padrão em vez de virar intervalo zero — episódio no
+    ritmo errado é recuperável, enxurrada de áudio não.
+
     Sem registro de envio, pode: é o primeiro episódio.
     """
+    try:
+        _gap = int(dias or DIAS_ENTRE_EPISODIOS)
+    except Exception:
+        _gap = DIAS_ENTRE_EPISODIOS
+    if _gap < MENOR_INTERVALO_DIAS:
+        _gap = DIAS_ENTRE_EPISODIOS
     from datetime import date as _date, datetime as _datetime
     if not ultimo_envio_iso:
         return True
@@ -882,7 +1280,7 @@ def pode_enviar(ultimo_envio_iso: Optional[str],
             return False
     if ultimo.tzinfo is not None:
         ultimo = ultimo.replace(tzinfo=None)
-    return (ref - ultimo) >= timedelta(days=DIAS_ENTRE_EPISODIOS)
+    return (ref - ultimo) >= timedelta(days=_gap)
 
 
 # ---------------------------------------------------------------------------

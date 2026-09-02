@@ -180,6 +180,11 @@ def _dialogo(prov: str, falas: list) -> Optional[bytes]:
         log.warning("[voz] %d de %d falas sintetizadas — nao mando pela "
                     "metade", len(bons), len(falas))
         return None
+    # NOTA DE VOZ PRIMEIRO. So o OGG/Opus mostra os botoes de velocidade no
+    # WhatsApp; o MP3 chega tocavel, mas sem eles.
+    ogg = _colar_opus(bons)
+    if ogg:
+        return ogg
     return _colar_mp3(bons)
 
 
@@ -213,6 +218,77 @@ def _sem_id3(dados: bytes) -> bytes:
     if dados[-128:][:3] == b"TAG":
         dados = dados[:-128]
     return dados
+
+
+_FFMPEG = None
+
+
+def tem_ffmpeg() -> bool:
+    """O ffmpeg esta nesta imagem? Medido uma vez e guardado."""
+    global _FFMPEG
+    if _FFMPEG is None:
+        import shutil
+        _FFMPEG = shutil.which("ffmpeg") or ""
+    return bool(_FFMPEG)
+
+
+def formato_de_saida() -> tuple:
+    """(extensao, mime) do que o `sintetizar` devolve AGORA.
+
+    Depende do ffmpeg estar na imagem, entao e funcao e nao constante: o
+    `canal` pergunta na hora de enviar, e um deploy sem ffmpeg nao faz o
+    mime mentir sobre o arquivo.
+    """
+    return ("ogg", "audio/ogg") if tem_ffmpeg() else (FORMATO, MIME)
+
+
+def _colar_opus(pedacos: list) -> Optional[bytes]:
+    """Junta os trechos num OGG/Opus so — o formato de nota de voz.
+
+    NUNCA LEVANTA. Qualquer falha aqui (sem ffmpeg, binario velho, disco
+    cheio) devolve None e o chamador cai no MP3. Audio com botao de
+    velocidade e melhor; audio nenhum e pior que os dois.
+    """
+    if not pedacos or not tem_ffmpeg():
+        return None
+    import os as _os
+    import subprocess
+    import tempfile
+    pasta = tempfile.mkdtemp(prefix="voz_")
+    try:
+        lista = _os.path.join(pasta, "lista.txt")
+        with io.open(lista, "w", encoding="utf-8", newline="\n") as f:
+            for i, dados in enumerate(pedacos):
+                nome = _os.path.join(pasta, "p%03d.mp3" % i)
+                with open(nome, "wb") as g:
+                    g.write(dados)
+                # `concat` do ffmpeg: caminho entre aspas simples, uma linha
+                # por trecho. A ordem daqui e a ordem da conversa.
+                f.write("file '%s'\n" % nome.replace("\\", "/"))
+        saida = _os.path.join(pasta, "episodio.ogg")
+        r = subprocess.run(
+            [_FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "concat", "-safe", "0", "-i", lista,
+             "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", "-ac", "1",
+             saida],
+            capture_output=True, timeout=180)
+        if r.returncode != 0 or not _os.path.exists(saida):
+            log.warning("[voz] ffmpeg falhou (%s) — episodio sai em mp3: %s",
+                        r.returncode, (r.stderr or b"")[:180])
+            return None
+        with open(saida, "rb") as f:
+            dados = f.read()
+        return dados or None
+    except Exception:
+        log.warning("[voz] nao consegui colar em opus — episodio sai em mp3",
+                    exc_info=True)
+        return None
+    finally:
+        try:
+            import shutil as _sh
+            _sh.rmtree(pasta, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def _colar_mp3(pedacos: list) -> Optional[bytes]:

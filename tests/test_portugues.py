@@ -46,7 +46,11 @@ RE_PALAVRA = re.compile(r"[a-zà-ÿ]+", re.IGNORECASE)
 # "comecar"). Corrigir o texto aqui deixaria o repo divergente do que a Meta
 # entrega — pior que o erro, porque esconderia o erro. Fica registrado como
 # divida, nao como bug.
-CONGELADOS_NA_META = {"reativar_boas_vindas"}
+# CONGELADO = O CORPO JA ESTA APROVADO NA META, e mudar exige nova
+# submissao. Sem estar nesta lista, alguem edita o texto no codigo e ele
+# diverge em silencio do que a Meta aprovou — e o que sai pro cliente e o
+# que a Meta tem, nao o que o repo diz.
+CONGELADOS_NA_META = {"reativar_boas_vindas", "resolveai_podcast_pronto"}
 
 
 def _erros(texto):

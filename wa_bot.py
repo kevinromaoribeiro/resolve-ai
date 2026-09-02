@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v28.4-m81-antispam-e-extensao-2026-08-31"
+BUILD = "v29.0-m9-podcast-multiassunto-2026-09-01"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -521,7 +521,8 @@ def _parse_landing_payload(text: str) -> Optional[dict]:
         try:
             import podcast as _pod
             _m = _NICHO_DA_LANDING_RE.search(text or "")
-            _nicho = (_pod.nicho_valido(_m.group(1).strip()) or "") if _m else ""
+            _nicho = (",".join(_pod.nichos_do_texto(_m.group(1)))
+                      if _m else "")
         except Exception:
             log.warning("[landing] nao consegui ler o assunto do audio",
                         exc_info=True)
@@ -767,9 +768,11 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
             return None            # assinante não precisa; deixa o motor falar
         if db.dispatched_ever("extensao-trial", user["id"]):
             faltam = db.trial_days_left(user, TRIAL_DAYS)
+            # SEM O NOME DO DONO. Regra dele, textual: "nunca cite o meu
+            # nome pra nenhum cliente JAMAIS" — o bot fala pela empresa.
             return (f"Já te dei uma extensão, {user['nome'].split()[0]} — "
                     f"restam *{faltam} dia(s)*. Se precisar de mais, me fala "
-                    f"que eu aviso o Kevin. 🙂")
+                    f"que eu levo pro time. 🙂")
         # QUEM MARCA O DEDUP E QUEM EXECUTOU. O retorno era ignorado e o
         # `log_dispatch` gravava do mesmo jeito: com o UPDATE falhando, a
         # pessoa lia "liberei +7 dias" (o `faltam` relia o usuario nao
@@ -821,7 +824,7 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     if not user.get("podcast_nicho"):
         _m_nicho = _NICHO_DA_LANDING_RE.search(text or "")
         if _m_nicho:
-            _n = podcast.nicho_valido(_m_nicho.group(1).strip())
+            _n = ",".join(podcast.nichos_do_texto(_m_nicho.group(1)))
             if _n:
                 db.update_user_fields(user["id"], podcast_nicho=_n)
                 user["podcast_nicho"] = _n
@@ -895,7 +898,7 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         # Os 11 testers vieram antes da landing ter selecao de nicho, entao
         # ninguem tem assunto guardado. Escolher por eles seria mandar audio
         # de um tema que a pessoa nao pediu, que e o oposto da regra da casa.
-        if not podcast.nicho_valido(user.get("podcast_nicho")):
+        if not podcast.nichos_da_pessoa(user):
             # NAO PERGUNTA O QUE NAO VAI PODER OUVIR (auditoria M5.6, P1-1).
             #
             # A guarda de decisao viva estava so na RESPOSTA. Efeito medido:
@@ -946,16 +949,63 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
     # chegava no resgate de pendencia e matava a decisao do documento.
     if _pergunta_de_nicho_viva(phone) and _decisao_de_conversa_viva(phone):
         PODCAST_PERGUNTA.pop(phone, None)
+
+    # A REGULARIDADE (M9.9) — mesma precedencia da pergunta do assunto: uma
+    # decisao viva (baixa, documento) manda mais que uma preferencia.
+    if _pergunta_de_freq_viva(phone) and _decisao_de_conversa_viva(phone):
+        PODCAST_FREQ_PERGUNTA.pop(phone, None)
+    if _pergunta_de_freq_viva(phone):
+        _f = _frequencia_por_numero(text)
+        if _f:
+            PODCAST_FREQ_PERGUNTA.pop(phone, None)
+            db.update_user_fields(user["id"], podcast_frequencia=str(_f))
+            user["podcast_frequencia"] = str(_f)
+            return (f"Combinado! 🎧 Vou te mandar *{_como_recebe(_f)}*.\n\n"
+                    f"Cada episódio cobre as notícias desse período — nada "
+                    f"repetido, nada que você já ouviu.\n\n"
+                    f"_Pra mudar depois, é só dizer_ *muda a frequência*.")
+        # NAO INSISTE: quem respondeu outra coisa esta falando de outra
+        # coisa, e o padrao semanal ja serve. Perguntar duas vezes uma
+        # preferencia e o "encher o saco" que o Kevin vetou em 30/08 — e
+        # deixar o slot vivo faria a proxima mensagem dela cair aqui de
+        # novo, que e a mesma jaula do menu numerico.
+        PODCAST_FREQ_PERGUNTA.pop(phone, None)
+
+    # O PASSO A PASSO — responde mesmo pra quem nao assinou: e ele que
+    # explica como assinar.
+    if _PODCAST_AJUDA_RE.match(text):
+        return _passo_a_passo_do_podcast(user)
+
+    # "MUDA OS ASSUNTOS" — a porta que faltava. Sem ela, quem cansou do
+    # assunto que escolheu tinha duas saidas: aguentar ou cancelar o podcast
+    # inteiro. Preferencia sem troca vira motivo de cancelamento.
+    if _PODCAST_ASSUNTOS_RE.match(text) and podcast.nichos_da_pessoa(user):
+        if _decisao_de_conversa_viva(phone):
+            return ("Só um instante — me responde a de cima primeiro. 🙂"
+                    "\n\nDepois é só mandar *muda os assuntos* de novo.")
+        PODCAST_PERGUNTA[phone] = tempo.agora()
+        return _lista_de_nichos()
+
+    # "MUDA A FREQUENCIA" — o fecho promete isso, entao tem que existir.
+    if _PODCAST_FREQ_RE.match(text) and podcast.nichos_da_pessoa(user):
+        PODCAST_FREQ_PERGUNTA[phone] = tempo.agora()
+        return _pergunta_da_regularidade()
     if _pergunta_de_nicho_viva(phone):
-        _n = podcast.nicho_valido(text)
-        if _n:
+        _ns = _assuntos_da_resposta(text)
+        if _ns:
             PODCAST_PERGUNTA.pop(phone, None)
-            db.update_user_fields(user["id"], podcast_nicho=_n,
+            db.update_user_fields(user["id"],
+                                  podcast_nicho=podcast.guardar_nichos(_ns),
                                   podcast_recusado_em=None)
-            user["podcast_nicho"] = _n
-            return (f"Fechado! 🎧 Vou preparar seu resumo de "
-                    f"*{podcast.rotulo(_n).lower()}*.\n\n"
-                    f"Responde *quero ouvir* que eu mando o primeiro agora.")
+            user["podcast_nicho"] = podcast.guardar_nichos(_ns)
+            _nomes = [podcast.rotulo(k).lower() for k in _ns]
+            _lista = (_nomes[0] if len(_nomes) == 1
+                      else ", ".join(_nomes[:-1]) + " e " + _nomes[-1])
+            _quantos = ("um episódio" if len(_ns) == 1
+                        else "%d episódios, um de cada" % len(_ns))
+            return (f"Fechado! 🎧 *{_lista}*.\n\n"
+                    f"Você vai receber {_quantos}.\n\n"
+                    f"Responde *quero ouvir* que eu mando agora.")
         # "cancela o lembrete da luz" casa `_e_recusa` por causa do "cancela".
         # Sem a guarda de outro assunto, o bot respondia "seus lembretes
         # continuam normais" e NAO cancelava nada.
@@ -980,7 +1030,7 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
             db.update_user_fields(user["id"], podcast_dia=_nome_dia)
             return (f"Fechado! 🎧 Toda *{_nome_dia.lower()}* eu te aviso que "
                     f"o resumo de "
-                    f"*{podcast.rotulo(user.get('podcast_nicho')).lower()}* "
+                    f"*{podcast.rotulos_da_pessoa(user)}* "
                     f"está pronto.\n\n"
                     f"O áudio só vai quando você tocar em *Quero ouvir* — "
                     f"nunca sozinho. Pra parar, é só dizer _não quero mais o "
@@ -1270,7 +1320,7 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
             _novidade = (
                 "🎧 *Novidade:* toda semana eu posso te mandar um resumo em "
                 "áudio das notícias do assunto que você escolher — duas "
-                "pessoas conversando, uns dois minutos. É só responder "
+                "pessoas conversando, poucos minutos. É só responder "
                 "_quero o áudio_.")
         _linha_trial = ""
         if _dias_teste > 0 and (user.get("status") or "") == "trial":
@@ -1918,6 +1968,23 @@ _PODCAST_QUERO_RE = re.compile(
     r"quero\s+os\s+[áa]udios|quero\s+as\s+not[íi]cias|"
     r"quero\s+o\s+resumo(\s+semanal)?)"
     r"\s*[.!?]?\s*$", re.I)
+
+_PODCAST_ASSUNTOS_RE = re.compile(
+    r"^\s*(muda[r]?\s+(os\s+)?(assunto|tema)s?|"
+    r"troca[r]?\s+(os\s+)?(assunto|tema)s?|"
+    r"quero\s+outros?\s+(assunto|tema)s?|"
+    r"mudar\s+o\s+que\s+eu\s+receb[oe])\s*[.!?]?\s*$", re.I)
+
+_PODCAST_AJUDA_RE = re.compile(
+    r"^\s*(como\s+funciona\s+o\s+(mini\s+)?podcast|"
+    r"como\s+funcionam?\s+os\s+[áa]udios|"
+    r"passo\s+a\s+passo(\s+do\s+podcast)?|"
+    r"ajuda\s+(do\s+)?podcast)\s*[.!?]?\s*$", re.I)
+
+_PODCAST_FREQ_RE = re.compile(
+    r"^\s*(muda[r]?\s+a\s+frequ[êe]ncia|mudar?\s+a\s+regularidade|"
+    r"trocar?\s+a\s+frequ[êe]ncia|quero\s+mudar\s+a\s+frequ[êe]ncia|"
+    r"frequ[êe]ncia)\s*[.!?]?\s*$", re.I)
 
 _PODCAST_DEPOIS_RE = re.compile(
     r"^\s*(agora\s+n[ãa]o|mais\s+tarde|depois|hoje\s+n[ãa]o)"
@@ -2727,13 +2794,25 @@ _PENDENCIAS_DE_CONVERSA = frozenset({
 })
 
 
+# Quantos assuntos a `/amostra` manda quando o dono nao pede um especifico.
+# Cinco era o catalogo inteiro quando o comando nasceu; com 16 assuntos, varrer
+# tudo custa 16 sinteses TTS pagas e 32 mensagens por toque.
+AMOSTRA_MAX_NICHOS = 5
+
+
 def _amostra_de_podcast(user: dict, phone: str, nicho: str = "",
                         provedor: str = "") -> str:
-    """Um episódio de cada nicho, pro dono julgar antes de soltar.
+    """Uma amostra de episódios, pro dono julgar antes de soltar.
 
-    Roda o caminho REAL — feed, roteiro, locução, voz, envio — cinco vezes.
-    Um dublê aqui não serviria pra nada: o que ele quer ouvir é o que o
-    cliente ouviria.
+    Roda o caminho REAL — feed, roteiro, locução, voz, envio. Um dublê aqui
+    não serviria pra nada: o que ele quer ouvir é o que o cliente ouviria.
+
+    SEM NICHO, MANDA UM LOTE, NÃO O CATÁLOGO INTEIRO (auditoria M9, P2). O
+    catálogo foi de 5 pra 16 assuntos e este comando varria todos: 16 sínteses
+    TTS **pagas**, 32 mensagens e uns 3 min de `sleep` segurando a thread, por
+    toque. O número nunca foi escolhido — subiu de carona com o catálogo. Pra
+    julgar voz e formato, um punhado basta; pra comparar dois provedores, o
+    caminho certo é pedir UM nicho, que é o único que compara o mesmo texto.
 
     Não mexe em `podcast_ultimo` nem carimba nada: isto é inspeção, não
     entrega. Se marcasse, o dono ficaria uma semana sem receber o episódio
@@ -2753,7 +2832,7 @@ def _amostra_de_podcast(user: dict, phone: str, nicho: str = "",
     # UM NICHO SO, quando pedido: serve pra comparar dois provedores de voz
     # no MESMO conteudo, que e a unica comparacao que diz alguma coisa.
     alvos = ([podcast.nicho_valido(nicho)] if podcast.nicho_valido(nicho)
-             else list(podcast.NICHOS))
+             else list(podcast.NICHOS)[:AMOSTRA_MAX_NICHOS])
     linhas, ok, enviados_ate_agora = [], 0, 0
     for chave in alvos:
         rotulo = podcast.rotulo(chave)
@@ -2822,6 +2901,11 @@ def _sem_acento_simples(t: str) -> str:
 # dura 24h e jaula.
 PODCAST_PERGUNTA: dict = {}
 
+# A PERGUNTA DA REGULARIDADE, no mesmo desenho da do assunto: slot proprio,
+# fora do `PENDING`, com prazo. Sai depois do primeiro episodio ("gostou?
+# escolha quando quer receber") e so entao os numeros 1 a 4 valem.
+PODCAST_FREQ_PERGUNTA: dict = {}
+
 
 def _decisao_de_conversa_viva(phone: str) -> bool:
     """Tem alguma coisa esperando resposta desta pessoa AGORA?
@@ -2870,18 +2954,191 @@ def _pergunta_de_nicho_viva(phone: str) -> bool:
     return True
 
 
+def _pergunta_de_freq_viva(phone: str) -> bool:
+    """Mesma regra da pergunta do assunto, e pelo mesmo motivo.
+
+    Sem TTL, um "2" digitado dias depois — respondendo qualquer outra coisa —
+    viraria "de 7 em 7 dias" calado. Foi assim que o menu numerico derrubou a
+    baixa de conta em 30/08.
+    """
+    quando = PODCAST_FREQ_PERGUNTA.get(phone)
+    if not quando:
+        return False
+    if (tempo.agora() - quando).total_seconds() > AJUSTE_TTL_S:
+        PODCAST_FREQ_PERGUNTA.pop(phone, None)
+        return False
+    return True
+
+
+def _como_recebe(dias: int) -> str:
+    """"a cada 5 dias", "uma vez por semana"... — pra escrever no fecho."""
+    return {5: "a cada 5 dias", 7: "uma vez por semana",
+            15: "a cada 15 dias", 30: "uma vez por mês"}.get(
+                dias, "uma vez por semana")
+
+
+def _ordem_dos_assuntos() -> list:
+    """A ordem em que os assuntos aparecem na lista — e o que o numero
+    significa. Vem do `NICHOS`, entao lista e resposta nunca divergem."""
+    return list(podcast.NICHOS.keys())
+
+
+def _assunto_por_numero(texto: str):
+    """"3" -> a chave do terceiro assunto da lista. None se nao for numero.
+
+    So e chamada com a pergunta VIVA — fora dela, digito nao vira assunto.
+    """
+    t = (texto or "").strip().rstrip(".)")
+    if not t.isdigit():
+        return None
+    ordem = _ordem_dos_assuntos()
+    n = int(t)
+    return ordem[n - 1] if 1 <= n <= len(ordem) else None
+
+
+def _assuntos_da_resposta(texto: str) -> list:
+    """Ate tres assuntos de uma resposta como "1, 5, 9" ou "futebol e moda".
+
+    Aceita numero e nome misturados, ignora o que nao existe e nao repete.
+    Devolve [] quando nada casou — e ai a mensagem segue pro motor normal em
+    vez de ficar presa aqui.
+    """
+    import re as _re
+    achados: list = []
+    bruto = (texto or "").strip()
+    # "1 5 9": espaco so vira separador quando a resposta INTEIRA e numero.
+    # Separar por espaco sempre quebraria "varejo online" em duas palavras
+    # que nao existem, e a pessoa perderia a escolha sem entender por que.
+    sep = (r"[,;/\s]+" if _re.fullmatch(r"[0-9\s]+", bruto)
+           else r"[,;/]|\s+e\s+|\n")
+    for pedaco in _re.split(sep, bruto):
+        pedaco = pedaco.strip()
+        if not pedaco:
+            continue
+        k = _assunto_por_numero(pedaco) or podcast.nicho_valido(pedaco)
+        if k and k not in achados:
+            achados.append(k)
+        if len(achados) >= podcast.MAX_ASSUNTOS:
+            break
+    return achados
+
+
+def _passo_a_passo_do_podcast(user: dict) -> str:
+    """O guia do mini podcast em uma mensagem.
+
+    CADA LINHA E UMA COISA QUE DA PRA DIGITAR. Guia que explica conceito nao
+    ajuda ninguem no celular; ajuda o que a pessoa consegue copiar e mandar.
+    E ele diz o estado ATUAL dela: um passo a passo generico faz a pessoa
+    perguntar "mas eu estou em qual mesmo?".
+    """
+    _ks = podcast.nichos_da_pessoa(user)
+    if _ks:
+        agora = (f"Hoje você recebe *{podcast.rotulos_da_pessoa(user)}*, "
+                 f"{_como_recebe(db.frequencia_do_podcast(user))}.")
+    else:
+        agora = "Você ainda não assinou o mini podcast."
+    return (f"🎧 *Como funciona o mini podcast*\n\n"
+            f"{agora}\n\n"
+            # SEM MINUTAGEM, pelo mesmo motivo do convite: o audio sai
+            # entre 40s e 3min conforme a semana e conforme o roteiro venha
+            # da locucao ou do fallback. Prometer numero e errar de graca.
+            f"São duas pessoas conversando sobre as notícias dos assuntos "
+            f"que você escolher, direto aqui no WhatsApp.\n\n"
+            f"*Pra usar, é só me mandar:*\n\n"
+            f"• *quero ouvir* — manda o episódio agora\n"
+            f"• *muda os assuntos* — escolhe outros (até "
+            f"{podcast.MAX_ASSUNTOS})\n"
+            f"• *muda a frequência* — de 5 em 5 dias, semanal, quinzenal "
+            f"ou mensal\n"
+            f"• *não quero mais o podcast* — para de vez\n\n"
+            # "NA FRENTE" VIROU MENTIRA quando a legenda passou pra depois
+            # do audio (auditoria M9 2a passada, P1-A) — ela so pode sair
+            # depois porque antes nao da pra saber se o envio vai.
+            f"_Com mais de um assunto, você recebe um áudio de cada, no "
+            f"mesmo dia, cada um com o nome logo abaixo._")
+
+
+def _pergunta_da_regularidade(primeiro: str = "") -> str:
+    """Sai depois do primeiro episodio. Numerada porque a resposta e numero."""
+    ola = ("%s, g" % primeiro) if primeiro else "G"
+    return (f"{ola}ostou? 🎧\n\n"
+            f"Escolhe de quanto em quanto tempo você quer receber — é só "
+            f"responder o número:\n\n"
+            f"*1* — a cada 5 dias\n"
+            f"*2* — 1x por semana\n"
+            f"*3* — a cada 15 dias\n"
+            f"*4* — 1x por mês")
+
+
+# AS RESPOSTAS DO MENU DE REGULARIDADE, por extenso.
+#
+# CASAMENTO EXATO, NUNCA SUBSTRING (auditoria M9, P1-1/P1-2). Duas coisas
+# quebraram enquanto isto usava `in`:
+#
+#   1. "5 dias" esta dentro de "a cada 15 dias", e o menu escreve exatamente
+#      "a cada 15 dias" — quem respondia com as palavras levava 5 dias, tres
+#      vezes a taxa que pediu.
+#   2. com o slot vivo por 20 min, "me lembra do IPTU semana que vem" virava
+#      resposta do menu e a funcao dava `return`: o lembrete nunca chegava ao
+#      motor. E a mesma jaula do menu numerico de 30/08, com outra porta.
+#
+# A pergunta do assunto nunca teve esse problema porque compara a mensagem
+# INTEIRA. Aqui e igual: a resposta tem que ser a resposta.
+_FREQ_POR_EXTENSO = {
+    # SEM O "5" SOLTO (auditoria M9 2a passada, P2): ele aceitava "5" como
+    # cinco dias, mas "7"/"15"/"30" nao valiam nada — e o menu numera 1 a 4,
+    # entao "5" nem e opcao. Assimetria gratuita num parser estrito.
+    5: ("5 dias", "a cada 5 dias", "a cada 5", "cinco dias",
+        "de 5 em 5 dias"),
+    7: ("semanal", "toda semana", "1x por semana", "uma vez por semana",
+        "por semana", "7 dias", "sete dias", "cada semana"),
+    15: ("quinzenal", "15 dias", "a cada 15 dias", "quinze dias",
+         "de 15 em 15 dias", "a cada 15"),
+    30: ("mensal", "1x por mes", "uma vez por mes", "por mes", "30 dias",
+         "trinta dias", "a cada 30 dias", "todo mes", "cada mes"),
+}
+
+
+def _frequencia_por_numero(texto: str):
+    """"2" -> 7 dias. Aceita tambem "quinzenal", "a cada 15 dias" etc.
+
+    So responde quando a mensagem INTEIRA e a escolha. Frase com a palavra
+    dentro nao conta — ver o bloco acima.
+    """
+    t = (texto or "").strip().rstrip(".!?)").strip().lower()
+    porordem = {"1": 5, "2": 7, "3": 15, "4": 30}
+    if t in porordem:
+        return porordem[t]
+    import unicodedata as _u
+    limpo = "".join(c for c in _u.normalize("NFD", t)
+                    if _u.category(c) != "Mn")
+    limpo = " ".join(limpo.split())
+    for dias, termos in _FREQ_POR_EXTENSO.items():
+        if limpo in termos:
+            return dias
+    return None
+
+
 def _lista_de_nichos() -> str:
-    """Os cinco assuntos, do jeito que a pessoa vai digitar."""
-    return ("É um destes:\n\n"
-            + "\n".join("• %s %s" % (d["emoji"], d["rotulo"])
-                        for d in podcast.NICHOS.values())
-            + "\n\n_Escolhe um só — é um por pessoa._")
+    """Os assuntos, NUMERADOS — porque a resposta esperada e o numero.
+
+    A numeracao so e segura porque `_assunto_por_numero` roda unicamente com
+    a pergunta viva: em 30/08 um catch-all que lia qualquer digito fez "2"
+    respondendo "qual deles eu dou baixa?" virar assinatura de podcast, e a
+    baixa sumiu calada.
+    """
+    linhas = ["*%d* — %s %s" % (i, d["emoji"], d["rotulo"])
+              for i, d in enumerate(podcast.NICHOS.values(), 1)]
+    return ("Quais assuntos você mais gosta? Responde os números — "
+            "*até %d*:\n\n" % podcast.MAX_ASSUNTOS
+            + "\n".join(linhas)
+            + "\n\n_Exemplo: *1, 6, 12*_")
 
 
 def _pergunta_do_nicho() -> str:
     return ("Boa! 🎧 Toda semana eu te mando um resumo em áudio das notícias "
             "do assunto que você escolher — duas pessoas conversando, uns "
-            "dois minutos.\n\n" + _lista_de_nichos())
+            "poucos minutos.\n\n" + _lista_de_nichos())
 
 
 def _mandar_podcast(user: dict, phone: str) -> str:
@@ -2921,7 +3178,11 @@ def _mandar_podcast(user: dict, phone: str) -> str:
         return ("Seu período de teste terminou. 🙏\n\n"
                 "Reativando o acesso, o áudio da semana volta junto.")
 
+    # `time`/`random` sao por funcao neste arquivo (ver `_amostra_de_podcast`),
+    # e o espacamento entre assuntos precisa dos dois.
     import noticias
+    import random
+    import time
     import voz
 
     nicho = user.get("podcast_nicho")
@@ -2953,45 +3214,191 @@ def _mandar_podcast(user: dict, phone: str) -> str:
         # `podcast_marcar_envio` la embaixo — e ele so roda quando o audio
         # comprovadamente saiu.
         _ultimo = None
-    if podcast.nicho_valido(nicho) and not podcast.pode_enviar(_ultimo):
-        return ("Você já ouviu o episódio desta semana. 🎧\n\n"
-                "O próximo sai daqui a alguns dias — mando um toque quando "
-                "estiver pronto.")
-    if not podcast.nicho_valido(nicho):
+    _assinou = podcast.nichos_da_pessoa(user)
+    if _assinou and not podcast.pode_enviar(
+            _ultimo, dias=db.frequencia_do_podcast(user)):
+        return (f"Você já ouviu o episódio deste período. 🎧\n\n"
+                f"Você recebe *{_como_recebe(db.frequencia_do_podcast(user))}*"
+                f" — mando um toque quando o próximo estiver pronto.\n\n"
+                f"_Pra mudar, é só dizer_ *muda a frequência*.")
+    if not _assinou:
         return ("Você ainda não escolheu um assunto pro mini podcast. 🎧\n\n"
                 "Pode ser futebol, games, inteligência artificial, moda ou "
                 "varejo online — é só me dizer qual.")
 
-    try:
-        itens = noticias.buscar(nicho)
-    except Exception:
-        import logging
-        logging.getLogger("resolveai").warning(
-            "[podcast] falha ao buscar noticia", exc_info=True)
-        itens = []
+    import logging as _lg
+    _log = _lg.getLogger("resolveai")
 
-    roteiro = podcast.locucao(nicho, itens, nome=user.get("nome") or "")
-    if not roteiro:
-        return (f"Essa semana não achei novidade que valesse 3 minutos em "
-                f"*{podcast.rotulo(nicho).lower()}*. 🤷\n\n"
-                f"Semana que vem eu tento de novo — prefiro não te mandar "
-                f"áudio só pra cumprir tabela.")
+    # UM EPISODIO POR ASSUNTO (M9.7). A pessoa escolheu ate tres porque gosta
+    # das tres — juntar num audio so daria assunto trocado no meio.
+    # `_assinou` E A MESMA LISTA, ja calculada no portao logo acima. O `or`
+    # que existia aqui era rede morta: o portao devolve cedo quando ela esta
+    # vazia, entao o outro ramo nunca rodava — e rede morta e pior que
+    # nenhuma, porque parece que alguem cuidou do caso.
+    _assuntos = _assinou
+    # A JANELA E A FREQUENCIA DELA: quem ouve de mes em mes precisa do mes.
+    _janela = db.frequencia_do_podcast(user)
 
-    audio = voz.sintetizar(roteiro)
-    if not audio:
+    # O QUE JA CHEGOU NUM LOTE QUE O CANAL INTERROMPEU. Vazio no caminho
+    # normal — so tem conteudo depois de uma falha de envio recente.
+    # USA `_ultimo`, NAO O CAMPO CRU (auditoria M9, 4a passada). Ele e a
+    # mesma leitura ja sanitizada tres linhas acima — data ilegivel vira
+    # None de proposito, pra nao prender a pessoa. Ler o campo cru aqui
+    # seriam duas interpretacoes diferentes do mesmo valor, lado a lado.
+    _ja_chegou = db.podcast_lote_interrompido(user["id"], ultimo=_ultimo)
+
+    _saiu = 0
+    # QUEM QUEBROU POR FALHA DE CANAL (auditoria M9 2a passada, P1-A). E
+    # diferente de `_vazios`: la nao havia noticia, aqui havia episodio pronto
+    # e o envio caiu. O fecho precisa dos dois pra nao esconder metade dos
+    # motivos de um audio nao ter chegado.
+    _falhou_envio: list = []
+    # O QUE REALMENTE SAIU (auditoria M9, P1-5). O fecho era montado a partir
+    # do que ela ASSINA, entao um assunto sem noticia virava "seu resumo de
+    # moda e futebol esta ai em cima" com um audio so, citando as fontes de um
+    # episodio que nao existe.
+    _entregues: list = []
+    _vazios: list = []
+    for _k in _assuntos:
+        # JA CHEGOU NO LOTE INTERROMPIDO? (auditoria M9 2a passada, P1-A.)
+        # So acontece depois de uma falha de envio recente: como a gente nao
+        # carimba nesse caso, o "quero ouvir" seguinte passaria por aqui de
+        # novo e remandaria o que ela ja ouviu.
+        if _k in _ja_chegou:
+            _entregues.append(_k)
+            # CONTA COMO SAIDO pra numeracao: senao a retomada de um lote
+            # interrompido diria "1 de 3" pro segundo assunto, e a pessoa
+            # procuraria um primeiro que ela ja tem.
+            _saiu += 1
+            continue
+
+        _diag: dict = {}
+        try:
+            itens = noticias.buscar(_k, dias=_janela, relatorio=_diag)
+        except Exception:
+            _log.warning("[podcast] falha ao buscar noticia de %s", _k,
+                         exc_info=True)
+            itens = []
+            _diag = {"fontes": 3, "falharam": 3}
+        # AS TRES FONTES CAIRAM E "NAO TEVE NOTICIA" SAO COISAS DIFERENTES.
+        # A primeira e o assunto mudo e tem que acender o farol; a segunda e
+        # o produto se comportando ("prefiro nao te mandar audio so pra
+        # cumprir tabela") e nao pode acender nada.
+        _fontes_mudas = (_diag.get("falharam", 0) >= _diag.get("fontes", 3)
+                         and _diag.get("fontes", 0) > 0)
+
+        roteiro = podcast.locucao(_k, itens, nome=user.get("nome") or "")
+        if not roteiro:
+            _vazios.append(podcast.rotulo(_k).lower())
+            # SEMANA QUIETA NAO E FALHA (auditoria M9, P2) — mas fonte
+            # caida e. Contando as duas como falha, o farol acenderia laranja
+            # em rotina ate o dono aprender a ignora-lo, que e o oposto do
+            # motivo dele existir; contando as duas como sucesso, ele nunca
+            # avisaria que um assunto ficou mudo.
+            db.podcast_registrar_episodio(
+                user["id"], _k, 0, not _fontes_mudas,
+                "fontes fora do ar" if _fontes_mudas
+                else "sem noticia na janela")
+            continue
+
+        audio = voz.sintetizar(roteiro)
+        if not audio:
+            db.podcast_registrar_episodio(user["id"], _k, 0, False,
+                                          "voz nao sintetizou")
+            continue
+
+        # O NOME ANTES DO AUDIO, e so quando ha mais de um: com um assunto
+        # so, a legenda vira ruido — a pessoa sabe o que pediu.
+        # ESPACAMENTO, como em todo envio em lote desta casa (auditoria M9,
+        # P1-4). Tres assuntos sao ate sete mensagens; manda-las de enfiada e
+        # a assinatura de ritmo que ja rendeu 3h de restricao neste numero
+        # (ver `_amostra_de_podcast` e o FREIO 2 do cron). Este era o unico
+        # caminho de lote sem freio — e o unico que roda pra cliente.
+        # So ENTRE assuntos: fazer a pessoa esperar pelo primeiro audio depois
+        # de ela tocar "quero ouvir" seria pagar o preco sem o motivo.
+        if _saiu:
+            time.sleep(random.uniform(ENVIO_INTERVALO_MIN,
+                                      ENVIO_INTERVALO_MAX))
+
+        res = wasender.falar_audio(phone, audio, user_id=user["id"])
+        if not res.get("enviado"):
+            _log.warning("[podcast] audio de %s nao saiu p/ user %s: %s",
+                         _k, user["id"], res.get("motivo"))
+            db.podcast_registrar_episodio(user["id"], _k, 0, False,
+                                          str(res.get("motivo") or "")[:80])
+            _falhou_envio.append(podcast.rotulo(_k).lower())
+            # PARA AQUI. `continue` mandava a legenda seguinte com "1 de 3"
+            # outra vez, porque `_saiu` nao tinha andado. E falha de envio e
+            # quase sempre do CANAL: insistir nos outros dois assuntos so
+            # acrescenta mensagem num numero que a Meta ja restringiu.
+            break
+
+        _saiu += 1
+        _entregues.append(_k)
+
+        # A LEGENDA VEM DEPOIS DO AUDIO (auditoria M9 2a passada, P1-A).
+        #
+        # Ela vinha antes, e o `break` da rodada anterior matou a
+        # MULTIPLICACAO das legendas orfas, nao a causa: antes de mandar a
+        # gente nao sabe se o audio vai. Uma legenda sozinha, sem nada atras,
+        # continuava possivel — e o teste que eu tinha escrito pra isso
+        # permitia uma, em vez de proibir todas.
+        #
+        # Depois funciona igual: o WhatsApp mostra a mensagem logo abaixo da
+        # nota de voz, que e onde a pessoa procura o rotulo.
+        if len(_assuntos) > 1:
+            wasender.falar(
+                phone,
+                "%s *%s* — %d de %d" % (podcast.NICHOS[_k]["emoji"],
+                                        podcast.rotulo(_k), _saiu,
+                                        len(_assuntos)),
+                user_id=user["id"])
+        # Opus a 32 kbps: bytes * 8 / 32000 = segundos. E estimativa, e esta
+        # rotulada como tal no dash — mas e medida do arquivo, nao chute.
+        db.podcast_registrar_episodio(
+            user["id"], _k, round(len(audio) * 8 / 32000.0, 1), True)
+
+    if not _saiu:
+        # FALHA DE ENVIO NAO E FALHA DE GERACAO. Dizer "nao consegui gerar"
+        # quando o episodio existia e so nao atravessou culpa a coisa errada
+        # e esconde da pessoa que tentar de novo AGORA resolve.
+        if _falhou_envio:
+            return ("Preparei seu episódio mas não consegui te mandar "
+                    "agora. 😕\n\nResponde *quero ouvir* que eu tento de "
+                    "novo — não perdi nada.")
+        if _vazios:
+            return (f"Dessa vez não achei novidade que valesse o áudio em "
+                    f"*{podcast._lista(_vazios)}*. 🤷\n\n"
+                    f"Na próxima eu tento de novo — prefiro não te mandar "
+                    f"áudio só pra cumprir tabela.")
         return ("Não consegui gerar o áudio agora. 😕 Tenta de novo daqui a "
                 "pouco que eu mando.")
+    res = {"enviado": True}
 
-    res = wasender.falar_audio(phone, audio, user_id=user["id"])
-    if not res.get("enviado"):
-        import logging
-        logging.getLogger("resolveai").warning(
-            "[podcast] audio nao saiu p/ user %s: %s",
-            user["id"], res.get("motivo"))
-        return ("Preparei seu episódio mas não consegui te mandar agora. 😕 "
-                "Responde *quero ouvir* que eu tento de novo.")
-
-    db.podcast_marcar_envio(user["id"])
+    # O CARIMBO NAO PODE DERRUBAR O FECHO (auditoria M9, P2). Aqui os
+    # audios JA SAIRAM. Se o UPDATE estourar ("database is locked" e cenario
+    # real, e o `scheduler` embrulha os carimbos dele por isso), a pessoa
+    # receberia excecao no lugar do fecho e `podcast_ultimo` ficaria sem
+    # carimbo — o proximo toque reenviaria tudo e requeimaria TTS pago.
+    # ENTREGA PARCIAL POR FALHA DE CANAL NAO CARIMBA (auditoria M9 2a
+    # passada, P1-A). Carimbar aqui trancaria a pessoa ate a proxima janela —
+    # ate 30 dias, pra quem escolheu mensal — por um erro que foi nosso. Sem
+    # carimbo ela pode tocar "quero ouvir" de novo, e o laco la em cima pula
+    # o que ja chegou, entao vem so o que falta.
+    #
+    # Sem noticia NAO conta como entrega parcial: ali nao ha o que reenviar,
+    # e nao carimbar faria o convite renascer todo dia por causa de uma
+    # semana quieta.
+    if _falhou_envio:
+        _log.info("[podcast] entrega parcial p/ user %s (%d de %d) — sem "
+                  "carimbo, ela pode pedir o resto",
+                  user["id"], _saiu, len(_assuntos))
+    else:
+        try:
+            db.podcast_marcar_envio(user["id"])
+        except Exception:
+            _log.warning("[podcast] nao consegui carimbar o envio do "
+                         "user %s", user["id"], exc_info=True)
     # O convite fica carimbado junto: quem ouviu não precisa ser convidado
     # de novo pelo caminho de "primeira vez".
     if not user.get("podcast_convite_em"):
@@ -3006,11 +3413,48 @@ def _mandar_podcast(user: dict, phone: str) -> str:
     # O que sobrou é o que importa: a frequência e a saída. E vai de carona
     # numa mensagem que já ia sair — a resposta ao toque é reativa, não gasta
     # o teto proativo dela nem entra na razão de ritmo.
-    return (f"Pronto! 🎧 Seu resumo de "
-            f"*{podcast.rotulo(nicho).lower()}* está aí em cima.\n\n"
-            f"_Fontes: {', '.join(f[0] for f in podcast.fontes(nicho))}._\n\n"
-            f"Mando um desses *uma vez por semana*. Pra parar, é só dizer "
-            f"_não quero mais o podcast_.")
+    # AS FONTES SAO AS DOS ASSUNTOS QUE SAIRAM, sem repetir: com tres
+    # assuntos a lista dobrava de tamanho e vinha com nome repetido.
+    _fontes: list = []
+    for _k in _entregues:
+        for _f in podcast.fontes(_k):
+            if _f[0] not in _fontes:
+                _fontes.append(_f[0])
+
+    # SO O QUE SAIU (auditoria M9, P1-5).
+    _cabeca = (f"Pronto! 🎧 Seu resumo de "
+               f"*{podcast.rotulos_da_pessoa(','.join(_entregues))}* "
+               f"está aí em cima.\n\n"
+               f"_Fontes: {', '.join(_fontes[:6])}._\n\n")
+    # E O QUE NAO SAIU E DITO, nao escondido: semana quieta num assunto e
+    # comportamento correto ("prefiro nao te mandar audio so pra cumprir
+    # tabela"), mas a pessoa contou os audios e viu que faltou um.
+    if _vazios:
+        _cabeca += (f"_Em {podcast._lista(_vazios)} não achei novidade que "
+                    f"valesse o áudio dessa vez._\n\n")
+    # E O QUE QUEBROU NA ENTREGA TAMBEM (auditoria M9 2a passada, P1-A). Ela
+    # contou os audios e viu que faltou; nao reconhecer parece defeito calado.
+    if _falhou_envio:
+        _cabeca += (f"_Não consegui te mandar "
+                    f"{podcast._lista(_falhou_envio)} agora. Responde "
+                    f"*quero ouvir* que eu tento de novo._\n\n")
+
+    # A PERGUNTA DA REGULARIDADE SO NA PRIMEIRA VEZ, e de carona: mensagem
+    # separada custaria uma proativa pra perguntar uma preferencia.
+    if not (user.get("podcast_frequencia") or "").strip():
+        PODCAST_FREQ_PERGUNTA[phone] = tempo.agora()
+        _primeiro = (user.get("nome") or "").split()[0] if user.get("nome") else ""
+        # A SAIDA VAI JUNTO DA PERGUNTA (auditoria M9.9). Perguntando a
+        # regularidade sem oferecer a saida, o primeiro episodio — que e
+        # justamente onde a pessoa mais decide se quer isso — ficava sem
+        # nenhuma porta, e a unica que sobra e bloquear o numero.
+        return (_cabeca + _pergunta_da_regularidade(_primeiro)
+                + "\n\n_Se não quiser mais, é só dizer_ "
+                  "*não quero mais o podcast*.")
+
+    return (_cabeca
+            + f"Mando um desses *{_como_recebe(db.frequencia_do_podcast(user))}*"
+            f". Pra parar, é só dizer _não quero mais o podcast_.")
 
 
 def _resgatar_pendencia(user: dict, phone: str) -> str:
@@ -5677,8 +6121,43 @@ def _dados_do_painel() -> dict:
             logging.getLogger("resolveai").warning(
                 "[painel] falha ao somar gastos do user %s", u.get("id"),
                 exc_info=True)
+    # OS TRES FAROIS DO PODCAST (M9.10). `podcast_farois` ja nao levanta,
+    # mas o `try` fica: painel que cai por causa de telemetria e um painel a
+    # menos justamente no dia em que ele seria necessario.
+    try:
+        _pod = db.podcast_farois()
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[painel] farois do podcast falharam", exc_info=True)
+        _pod = {"estado": "sem dados", "ok": 0, "falhas": 0,
+                "segundos_medio": 0, "na_semana": 0, "ultimo": ""}
+    _seg = int(_pod.get("segundos_medio") or 0)
     return {
         "heatmap": serie,
+        # M9.10 — "se estao conseguindo puxar das fontes e gerar
+        # perfeitamente", quanto dura e quantos sairam na semana. O primeiro
+        # e o que justifica os outros: o sintoma de fonte seca sempre foi
+        # AUSENCIA de audio, e ausencia nao aparece em painel nenhum — quem
+        # nao recebe nao reclama, cancela.
+        "podcast": {
+            "estado": _pod.get("estado") or "sem dados",
+            "ok": _pod.get("ok") or 0,
+            "falhas": _pod.get("falhas") or 0,
+            "na_semana": _pod.get("na_semana") or 0,
+            "segundos_medio": _seg,
+            # MIN:SEG PRONTO. "125 segundos" obriga a fazer conta pra saber
+            # se o episodio saiu do tamanho combinado (uns 2 minutos).
+            "duracao": ("—" if not _seg
+                        else "%d:%02d" % (_seg // 60, _seg % 60)),
+            # O PORQUE DA COR VAI JUNTO: "com falhas" sozinho manda abrir o
+            # log pra descobrir o que ja esta gravado aqui do lado.
+            "nota": ("nenhum episódio ainda"
+                     if (_pod.get("estado") or "sem dados") == "sem dados"
+                     else "%d ok · %d falha%s em 7 dias"
+                          % (_pod.get("ok") or 0, _pod.get("falhas") or 0,
+                             "" if (_pod.get("falhas") or 0) == 1 else "s")),
+        },
         # `serie` pronta: sem isso o painel varria a tabela DUAS vezes por
         # request, a cada 20 segundos.
         "constancia": db.constancia(dias=90, serie=serie),
@@ -5791,19 +6270,28 @@ PODERES = [
      "desc": "Horas depois de você dar baixa em unha, dentista ou "
              "sobrancelha, pergunta se já guarda o próximo — com a data "
              "calculada. Conta de luz não ganha essa pergunta."},
-    {"grupo": "Sai aviso", "titulo": "Mini podcast semanal",
-     "desc": "Áudio de até 3 minutos, um nicho por pessoa, no máximo 1x por "
-             "semana. Cinco nichos — futebol, games, IA, moda e varejo "
-             "online — cada um com 3 fontes de RSS conferidas, citadas no "
-             "fim do áudio. A notícia vem do feed, nunca da cabeça do "
+    {"grupo": "Sai aviso", "titulo": "Mini podcast em áudio",
+     "desc": "Áudio de até 3 minutos por assunto. A pessoa escolhe ATÉ 3 "
+             "assuntos entre 16 — futebol, games, IA, moda, varejo online, "
+             "economia, Brasil, saúde, celebridades, carros, viagens, "
+             "horóscopo, geopolítica, ciência, música e gastronomia — cada "
+             "um com 3 fontes de RSS conferidas, citadas no fim do áudio. "
+             "Com mais de um assunto, os episódios saem no mesmo dia, um de "
+             "cada, com o nome de cada um logo abaixo do áudio. "
+             "Ela também escolhe de quanto em quanto tempo recebe: a cada "
+             "5, 7, 15 ou 30 dias — e essa escolha é também a janela de "
+             "notícia (quem recebe de mês em mês ouve o mês inteiro). "
+             "A notícia vem do feed, nunca da cabeça do "
              "modelo; se ele citar fonte de fora, o roteiro é recusado. "
              "O bot NUNCA manda sozinho: pergunta \"quer ouvir?\" com botão "
-             "e manda só no toque. Uma vez por semana, no primeiro dia em "
-             "que a pessoa aparecer — não num dia fixo, senão quem não "
-             "abre o WhatsApp naquele dia perde a semana. Sem novidade "
-             "na semana, ele diz isso em vez de inventar episódio. "
+             "e manda só no toque — no primeiro dia em que a pessoa "
+             "aparecer, não num dia fixo, senão quem não abre o WhatsApp "
+             "naquele dia perde a rodada. Sem novidade no período, ele diz "
+             "isso em vez de inventar episódio. "
+             "Ela troca quando quiser: _muda os assuntos_, _muda a "
+             "frequência_, ou _não quero mais o podcast_. "
              "Custa ~US$ 0,03 por áudio. Você testa com "
-             "_amostra do podcast_."},
+             "_amostra do podcast_ e acompanha nos 3 faróis do painel."},
     {"grupo": "Sai aviso", "titulo": "Arquivamento com aviso",
      "desc": "Item parado 15 dias sai da lista, mas só DEPOIS que o aviso "
              "comprovadamente saiu. Nunca some calado."},
@@ -7312,6 +7800,31 @@ try:
             except Exception:
                 cron_txt = f"Última checagem: {ultimo_cron[11:16]}"
         cron_cor = "#22c55e" if cron_ok else "#ef4444"
+
+        # OS TRES FAROIS DO PODCAST (M9.10). Nunca levanta: painel que quebra
+        # por causa de telemetria e um painel a menos num dia de incidente.
+        try:
+            _pod_f = db.podcast_farois()
+        except Exception:
+            log.warning("[dash] farois do podcast falharam", exc_info=True)
+            _pod_f = {"estado": "sem dados", "ok": 0, "falhas": 0,
+                      "segundos_medio": 0, "na_semana": 0, "ultimo": ""}
+        _pod_cor = {"ok": "#22c55e", "atencao": "#f59e0b",
+                    "quebrado": "#ef4444"}.get(_pod_f["estado"], "#94a3b8")
+        _pod_luz = {"ok": "🟢 gerando", "atencao": "🟠 com falhas",
+                    "quebrado": "🔴 quebrado"}.get(_pod_f["estado"],
+                                                   "⚪ sem dados")
+        # O RODAPE CONTA O PORQUE. "🟠 com falhas" sozinho manda o Kevin
+        # abrir o log pra descobrir o que ja esta gravado aqui do lado.
+        _pod_nota = ("nenhum episódio ainda"
+                     if _pod_f["estado"] == "sem dados"
+                     else "%d ok · %d falha%s nos últimos 7 dias"
+                          % (_pod_f["ok"], _pod_f["falhas"],
+                             "" if _pod_f["falhas"] == 1 else "s"))
+        _pod_seg = int(_pod_f["segundos_medio"] or 0)
+        _pod_dur = ("—" if not _pod_seg
+                    else "%d:%02d" % (_pod_seg // 60, _pod_seg % 60))
+
         linhas = ""
         for r in m["ultimas"]:
             seta = "⬅️ recebida" if r["direcao"] == "in" else "➡️ enviada"
@@ -7381,6 +7894,12 @@ th{{text-align:left;padding:8px 10px;background:#f1f5f9;font-size:12px;color:#47
 <div class="card"><div class="n">{m['ativos']}</div><div class="l">assinantes ativos</div></div>
 <div class="card"><div class="n">{m['trial']}</div><div class="l">em teste grátis</div></div>
 <div class="card"><div class="n">R$ {m['mrr']:.0f}</div><div class="l">MRR</div></div>
+</div>
+<h1 style="font-size:15px">🎧 Mini podcast</h1>
+<div class="grid">
+<div class="card"><div class="n" style="color:{_pod_cor};font-size:19px">{_pod_luz}</div><div class="l">{_pod_nota}</div></div>
+<div class="card"><div class="n">{_pod_dur}</div><div class="l">duração média do áudio (min:seg)</div></div>
+<div class="card"><div class="n">{_pod_f['na_semana']}</div><div class="l">episódios enviados na semana</div></div>
 </div>
 <h1 style="font-size:15px">Últimas mensagens</h1>
 <table><tr><th>Hora</th><th>Nº</th><th>Direção</th><th>Conteúdo</th></tr>
@@ -7562,6 +8081,12 @@ async function carrega(){
  $('#hora').textContent=d.hora+' · atualiza sozinho';
  const m=d.metricas, e=d.envio, g=d.engajamento, s=d.serie;
  const hj=s[s.length-1]||{};
+ // OS TRES FAROIS DO MINI PODCAST (M9.10)
+ const P=d.podcast||{estado:'sem dados',duracao:'—',na_semana:0,
+                     nota:'nenhum episódio ainda'};
+ const pluz={ok:'ok',atencao:'warn',quebrado:'bad'}[P.estado]||'';
+ const ptxt={ok:'Gerando',atencao:'Com falhas',
+             quebrado:'Quebrado'}[P.estado]||'Sem dados';
  const conn=d.conectado?'ok':'bad';
  const risco=(e.risco||'').includes('alto')?'bad':(e.risco||'').includes('aten')?'warn':'ok';
  const hab=(g.veredito||'').includes('🟢')?'ok':(g.veredito||'').includes('🟡')?'warn':'bad';
@@ -7822,6 +8347,15 @@ async function carrega(){
        <button class="b" onclick="mandar(${u.id})">enviar</button>
      </div></div>`;
   }).join('');
+ h+=card('🎧 Mini podcast',
+   `<div class="st"><span class="dot ${pluz}"></span>${ptxt}</div>
+     <div class="sub" style="margin:6px 0 10px">${P.nota}</div>
+     <div class="grid">
+       <div class="kpi"><div class="l">Duração média</div>
+         <div class="v">${P.duracao}</div><div class="u">min:seg</div></div>
+       <div class="kpi"><div class="l">Enviados na semana</div>
+         <div class="v">${P.na_semana}</div><div class="u">episódios</div></div>
+     </div>`);
  h+=card('Clientes',
    `<div class="filtros">${abas}</div>`+
    (us||'<div class="muted">ninguém com esse status</div>'));

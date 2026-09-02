@@ -117,8 +117,49 @@ def _texto(elem, *nomes) -> str:
     return ""
 
 
+def parece_feed(corpo: Optional[str]) -> bool:
+    """O que chegou tem cara de RSS/Atom? (auditoria M9 2a passada, P2.)
+
+    Serve pro farol distinguir "nao teve noticia" de "a fonte parou de
+    responder feed" — as duas chegam como lista vazia, e sao coisas
+    diferentes: a primeira e o produto se comportando, a segunda e o assunto
+    mudo pra sempre.
+
+    NAO BASTA VER SE O PARSE FALHOU. O jeito mais comum de um RSS morrer hoje
+    nao e dar erro: o site passa a servir HTML de desafio de bot com HTTP
+    200 — e "<html>Just a moment...</html>" e XML perfeitamente valido, que
+    parseia liso e da zero item.
+
+    FEED VALIDO E VAZIO CONTINUA SENDO FEED: semana quieta e resposta
+    legitima da fonte e nao pode acender farol nenhum.
+    """
+    bruto = (corpo or "").strip()
+    if not bruto:
+        return False
+    raiz = None
+    try:
+        raiz = ET.fromstring(bruto)
+    except ET.ParseError:
+        for fecho in ("</rss>", "</feed>", "</rdf:RDF>"):
+            corte = bruto.rfind(fecho)
+            if corte > 0:
+                try:
+                    raiz = ET.fromstring(bruto[:corte + len(fecho)])
+                    break
+                except ET.ParseError:
+                    continue
+    if raiz is None:
+        return False
+    tag = str(getattr(raiz, "tag", "") or "").lower()
+    if "rss" in tag or "feed" in tag or "rdf" in tag:
+        return True
+    return any(str(e.tag).lower().endswith(("item", "entry"))
+               for e in raiz.iter())
+
+
 def parse_feed(xml_bruto: str, fonte: str,
-               agora: Optional[datetime] = None) -> list[dict]:
+               agora: Optional[datetime] = None,
+               dias: Optional[int] = None) -> list[dict]:
     """XML de RSS/Atom -> lista de {"titulo","resumo","fonte","link","data"}.
 
     Separado do download de propósito: assim o teste exercita o parser de
@@ -154,7 +195,10 @@ def parse_feed(xml_bruto: str, fonte: str,
             return []
 
     ref = agora or tempo.agora()
-    corte = ref - timedelta(days=DIAS_DE_FRESCOR)
+    # A JANELA E A FREQUENCIA DA PESSOA (M9.2). Quem recebe de mes em mes
+    # com janela de 8 dias ouviria tres semanas de silencio; quem recebe a
+    # cada 5 dias com a mesma janela ouviria a noticia repetida.
+    corte = ref - timedelta(days=max(1, int(dias or DIAS_DE_FRESCOR)))
     itens = []
     for elem in raiz.iter():
         tag = elem.tag.split("}")[-1].lower()
@@ -206,10 +250,18 @@ def _baixar(url: str) -> str:
 
 
 def buscar(nicho: Optional[str], agora: Optional[datetime] = None,
-           baixar=None) -> list[dict]:
+           baixar=None, dias: Optional[int] = None,
+           relatorio: Optional[dict] = None) -> list[dict]:
     """As notícias da semana do nicho, das três fontes. [] quando não há.
 
     `baixar` é injetável pra teste — nenhum teste desta base toca a rede.
+
+    `relatorio`, quando vem, é preenchido com `{"fontes": N, "falharam": N}`.
+    Sem isso, quem chama não distingue "semana quieta" de "as três fontes
+    caíram": as duas chegam como lista vazia. O farol do painel precisa da
+    diferença — a primeira é o produto funcionando, a segunda é o assunto
+    mudo. O retorno continua sendo só a lista, pra não mexer nos outros
+    chamadores.
 
     UMA FONTE FORA DO AR NÃO DERRUBA O EPISÓDIO: cada feed é tentado dentro
     do seu próprio try, e o que falhou vira zero item daquela fonte. Um
@@ -222,11 +274,25 @@ def buscar(nicho: Optional[str], agora: Optional[datetime] = None,
     ref = agora or tempo.agora()
 
     achados: list[dict] = []
-    for nome, _pagina, rss in podcast.NICHOS[k]["fontes"]:
+    _fontes = podcast.NICHOS[k]["fontes"]
+    _falharam = 0
+    for nome, _pagina, rss in _fontes:
         try:
-            achados.extend(parse_feed(fetch(rss), nome, agora=ref))
+            corpo = fetch(rss)
+            # A FONTE RESPONDEU FEED? Se nao, ela esta caida — mesmo que o
+            # GET tenha dado 200 e o parse nao tenha reclamado.
+            if not parece_feed(corpo):
+                _falharam += 1
+                log.warning("[noticias] %s (%s) respondeu, mas nao com um "
+                            "feed", nome, rss)
+                continue
+            achados.extend(parse_feed(corpo, nome, agora=ref, dias=dias))
         except Exception as e:
+            _falharam += 1
             log.warning("[noticias] %s (%s) falhou: %r", nome, rss, e)
+    if relatorio is not None:
+        relatorio["fontes"] = len(_fontes)
+        relatorio["falharam"] = _falharam
 
     # INTERCALA AS FONTES em vez de concatenar. Sem isto, as três notícias do
     # roteiro sairiam todas do mesmo site sempre que ele publicasse mais —
@@ -267,17 +333,39 @@ def verificar(baixar=None) -> list[dict]:
 
     Existe porque site troca de endereço sem avisar, e feed morto vira
     episódio que nunca sai — em silêncio, que é como uma feature morre sem
-    ninguém perceber. O resultado aparece no /health.
+    ninguém perceber.
+
+    RODA SOB DEMANDA, NÃO NO /health (auditoria M9, 4ª passada). A docstring
+    dizia que o resultado aparecia lá, e não aparecia: a rota nunca chamou
+    esta função. Pendurar aqui seria pior — o /health é o vigia, batido de
+    minuto em minuto por cron externo, e isto vai em 48 feeds de rede.
+    Diagnóstico caro dentro de rota barata é como o vigia morre.
+
+    O sinal de rotina mora no farol do painel (`db.podcast_farois`), que lê o
+    que REALMENTE aconteceu com cliente real em vez de bater nos feeds de
+    novo. Esta função é pra quando esse farol acender e alguém precisar saber
+    QUAL fonte caiu.
     """
     fetch = baixar or _baixar
     saida = []
     for chave, dados in podcast.NICHOS.items():
         for nome, _pagina, rss in dados["fontes"]:
             try:
-                n = len(parse_feed(fetch(rss), nome))
+                corpo = fetch(rss)
+                # "RESPONDEU, MAS NAO E FEED" E OUTRA COISA QUE "FEED SEM
+                # NOTICIA RECENTE" (auditoria M9, 3a passada). As duas caíam
+                # aqui como "feed vazio", e sao diagnosticos opostos: a
+                # primeira e a fonte morta — que e o que esta funcao existe
+                # pra achar —, a segunda e uma semana quieta, que e normal.
+                if not parece_feed(corpo):
+                    saida.append({"nicho": chave, "fonte": nome, "rss": rss,
+                                  "itens": 0, "ok": False,
+                                  "erro": "respondeu, mas nao e feed"})
+                    continue
+                n = len(parse_feed(corpo, nome))
                 saida.append({"nicho": chave, "fonte": nome, "rss": rss,
-                              "itens": n, "ok": n > 0,
-                              "erro": "" if n else "feed vazio"})
+                              "itens": n, "ok": True,
+                              "erro": "" if n else "sem noticia recente"})
             except Exception as e:
                 saida.append({"nicho": chave, "fonte": nome, "rss": rss,
                               "itens": 0, "ok": False, "erro": repr(e)[:120]})

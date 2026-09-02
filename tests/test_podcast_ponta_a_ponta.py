@@ -336,8 +336,20 @@ def test_o_fecho_do_episodio_diz_a_frequencia_e_a_saida(usuario, com_voz,
                         lambda *a, **k: {"enviado": True, "via": "audio",
                                          "motivo": ""}, raising=False)
     r = responder("Quero ouvir")
-    assert "uma vez por semana" in r.lower(), r
+    # NO PRIMEIRO EPISODIO O FECHO PERGUNTA a regularidade em vez de
+    # afirma-la (M9.9): ela passou a ser escolha da pessoa — 5, 7, 15 ou 30
+    # dias. A pergunta vai de carona aqui pra nao gastar uma proativa.
+    assert "1x por semana" in r, r
+    # A SAIDA CONTINUA OBRIGATORIA, e ainda mais aqui: sem ela, a unica
+    # saida da pessoa e bloquear o numero.
     assert "não quero mais" in r.lower(), r
+
+    # E do segundo em diante o fecho afirma o ritmo que ela escolheu.
+    responder("2")
+    db.update_user_fields(usuario["id"], podcast_ultimo=None)
+    r2 = responder("Quero ouvir")
+    assert "uma vez por semana" in r2.lower(), r2
+    assert "não quero mais" in r2.lower(), r2
 # ---------------------------------------------------------------------------
 # 6. guardrails
 # ---------------------------------------------------------------------------
@@ -756,14 +768,42 @@ def test_assunto_que_nao_existe_segue_pro_motor_normal(usuario, com_voz):
     assert db.get_user(usuario["id"])["podcast_nicho"] == "moda"
 
 
-def test_numero_solto_nunca_vira_assinatura_de_podcast(usuario, com_voz):
-    """O menu 1/2 custou a FASE 1 inteira. Um digito e resposta de MENU —
-    do menu de baixa, do menu de confirmacao — e nunca do podcast. A lista
-    de assuntos nem numera as opcoes; o caminho numerico so tinha downside."""
-    responder("quero o áudio")
-    for digito in ("1", "2", "3", "4", "5"):
+def test_numero_fora_da_pergunta_nunca_vira_assinatura(usuario, com_voz):
+    """O menu 1/2 custou a FASE 1 inteira: "2" respondendo "qual deles eu dou
+    baixa?" virava assinatura de podcast e a baixa sumia calada.
+
+    A lista de assuntos passou a ser NUMERADA em 31/08/2026 (decisao do
+    dono), entao digito agora vale — mas so dentro da pergunta. Fora dela,
+    digito continua sendo resposta de menu de OUTRO e tem que ser inerte
+    aqui. E essa a metade da guarda que nao pode cair nunca.
+    """
+    for digito in ("1", "2", "3", "4", "5", "12", "16"):
+        wa_bot.PODCAST_PERGUNTA.pop(TELEFONE, None)   # nenhuma pergunta viva
         responder(digito)
         assert not db.get_user(usuario["id"])["podcast_nicho"], digito
+
+
+def test_dentro_da_pergunta_o_numero_vale(usuario, com_voz):
+    """A outra metade: a lista e numerada justamente pra pessoa responder
+    "1, 6, 12" — se o numero nao valesse, a lista mentiria."""
+    responder("quero o áudio")
+    responder("1")
+    assert db.get_user(usuario["id"])["podcast_nicho"] == "futebol"
+
+
+def test_ate_tres_assuntos_de_uma_vez(usuario, com_voz):
+    """"vamos limitar ate 3 categorias por cliente" (Kevin, 31/08/2026)."""
+    responder("quero o áudio")
+    r = responder("1, 6, 12")
+    escolhidos = podcast.nichos_da_pessoa(db.get_user(usuario["id"]))
+    assert escolhidos == ["futebol", "economia", "horoscopo"], escolhidos
+    assert "3 episódios" in r, r
+
+
+def test_o_teto_de_tres_e_respeitado(usuario, com_voz):
+    responder("quero o áudio")
+    responder("1, 2, 3, 4, 5, 6")
+    assert len(podcast.nichos_da_pessoa(db.get_user(usuario["id"]))) == 3
 
 
 def test_recusa_na_escolha_nao_mexe_nos_lembretes(usuario, com_voz):
@@ -1268,8 +1308,11 @@ def test_toda_opcao_da_landing_e_um_nicho_que_existe(usuario):
     for escolha in _OPCOES_DA_LANDING:
         assert podcast.nicho_valido(escolha), escolha
     # e os cinco nichos do produto estao todos oferecidos no site
+    # SUBCONJUNTO, nao igualdade: o formulario oferece um atalho com os
+    # assuntos mais populares, e a escolha completa (ate 3) acontece na
+    # conversa. O que nao pode e o site oferecer algo que o bot nao conhece.
     oferecidos = {podcast.nicho_valido(o) for o in _OPCOES_DA_LANDING}
-    assert oferecidos == set(podcast.NICHOS), (oferecidos, set(podcast.NICHOS))
+    assert oferecidos <= set(podcast.NICHOS), oferecidos - set(podcast.NICHOS)
 
 
 def test_quem_escolheu_na_landing_nao_e_perguntado_de_novo(usuario, com_voz):

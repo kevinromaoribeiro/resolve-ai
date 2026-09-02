@@ -195,7 +195,11 @@ def falar_audio(telefone: str, dados: bytes, *, user_id=None,
         # vozes — e a Meta recusa o arquivo cujo tipo nao bate.
         try:
             import voz as _voz
-            mime = _voz.MIME
+            # PERGUNTA NA HORA (M9.1): com ffmpeg o episodio sai em OGG/Opus
+            # (nota de voz, com botao de velocidade); sem ffmpeg, em MP3. Ler
+            # a constante fazia o mime mentir sobre o arquivo — e a Meta
+            # recusa quando os dois nao batem.
+            mime = _voz.formato_de_saida()[1]
         except Exception:
             mime = "audio/mpeg"
     try:

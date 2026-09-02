@@ -23,9 +23,21 @@ import tempo
 # os cinco nichos e as fontes
 # ---------------------------------------------------------------------------
 
-def test_os_cinco_nichos_que_o_kevin_definiu():
-    assert set(podcast.NICHOS) == {
-        "futebol", "games", "ia", "moda", "varejo online"}
+def test_os_dezesseis_assuntos_do_catalogo():
+    """Os cinco originais NUNCA saem — gente escolheu esses e o assunto
+    guardado no banco vira lixo se a chave sumir. Os onze de 31/08/2026
+    entraram depois de 48 feeds testados um por um."""
+    originais = {"futebol", "games", "ia", "moda", "varejo online"}
+    assert originais <= set(podcast.NICHOS), originais - set(podcast.NICHOS)
+    assert set(podcast.NICHOS) == originais | {
+        "economia", "brasil", "saude", "celebridades", "carros", "viagens",
+        "horoscopo", "geopolitica", "ciencia", "musica", "gastronomia"}
+
+
+def test_politica_partidaria_ficou_de_fora():
+    """Geopolitica entra; politica domestica polariza, e denuncia no
+    WhatsApp e o risco que ja restringiu este numero duas vezes."""
+    assert "politica" not in podcast.NICHOS
 
 
 @pytest.mark.parametrize("nicho", list(podcast.NICHOS))
@@ -320,6 +332,36 @@ def test_todas_as_urls_tem_dominio_coerente_com_o_nome():
         "Consumidor Moderno": "consumidormoderno.com.br",
         "Meio&Mensagem": "meioemensagem.com.br",
         "NeoFeed": "neofeed.com.br",
+        # M9.0 — os onze assuntos novos. Cada dominio foi conferido contra o
+        # feed que respondeu na validacao de 31/08/2026, uma fonte por vez.
+        "InfoMoney": "infomoney.com.br", "G1 Economia": "g1.globo.com",
+        "Exame": "exame.com",
+        "G1": "g1.globo.com", "Agência Brasil": "agenciabrasil.ebc.com.br",
+        "BBC News Brasil": "bbc.com",
+        "G1 Bem Estar": "g1.globo.com",
+        "Drauzio Varella": "drauziovarella.uol.com.br",
+        "Agência Fiocruz": "agencia.fiocruz.br",
+        "Quem": "revistaquem.globo.com", "Gshow": "gshow.globo.com",
+        "Hugo Gloss": "hugogloss.uol.com.br",
+        "Autoesporte": "autoesporte.globo.com",
+        "Quatro Rodas": "quatrorodas.abril.com.br",
+        "AutoPapo": "autopapo.uol.com.br",
+        "Melhores Destinos": "melhoresdestinos.com.br",
+        "Viagem e Turismo": "viagemeturismo.abril.com.br",
+        "Passageiro de Primeira": "passageirodeprimeira.com",
+        "João Bidu": "joaobidu.com.br", "Terra Horóscopo": "terra.com.br",
+        "Metrópoles Horóscopo": "metropoles.com",
+        "G1 Mundo": "g1.globo.com", "RFI Brasil": "rfi.fr",
+        "Opera Mundi": "operamundi.uol.com.br",
+        "Super Interessante": "super.abril.com.br",
+        "Galileu": "revistagalileu.globo.com",
+        "Agência FAPESP": "agencia.fapesp.br",
+        "Rolling Stone Brasil": "rollingstone.com.br",
+        "POPline": "portalpopline.com.br",
+        "Tenho Mais Discos Que Amigos": "tenhomaisdiscosqueamigos.com",
+        "Paladar": "paladar.estadao.com.br",
+        "Guia da Cozinha": "guiadacozinha.com.br",
+        "VejaSP": "vejasp.abril.com.br",
     }
     vistos = 0
     for dados in podcast.NICHOS.values():
@@ -327,4 +369,4 @@ def test_todas_as_urls_tem_dominio_coerente_com_o_nome():
             assert nome in esperado, "fonte nova sem dominio conferido: %s" % nome
             assert podcast._dominio(url) == esperado[nome], (nome, url)
             vistos += 1
-    assert vistos == 15
+    assert vistos == 3 * len(podcast.NICHOS), vistos

@@ -1461,7 +1461,7 @@ def check_podcast_oferta(ref: Optional[datetime] = None) -> list[dict]:
             "message": (
                 f"🎧 {primeiro}, toda semana eu posso te mandar um resumo em "
                 f"áudio das notícias do assunto que você escolher — duas "
-                f"pessoas conversando, uns dois minutos.\n\n"
+                f"pessoas conversando, poucos minutos.\n\n"
                 f"É de graça, faz parte do seu plano. Quer experimentar?"),
             "botoes": ["Quero ouvir", "Agora não", "Nunca mais"],
             "quando": _fmt_br(agora.date().isoformat()),
@@ -1538,14 +1538,19 @@ def check_podcast(ref: Optional[datetime] = None) -> list[dict]:
         if db.dispatched_today("podcast-convite" if primeiro else "podcast",
                                u["id"]):
             return
-        if not _pod.pode_enviar(u.get("podcast_ultimo"), agora=agora):
+        if not _pod.pode_enviar(u.get("podcast_ultimo"), agora=agora,
+                                dias=db.frequencia_do_podcast(u)):
             return
         # O TETO OLHA O CONVITE TAMBEM (auditoria M4.5, P0). Quem recebeu e
         # nao tocou ficava com `podcast_ultimo` parado, e o convite renascia
         # todo dia — 14 numa quinzena. E cada um comia uma vaga do teto
         # diario, que e compartilhado com o alarme de hora marcada.
+        # O TETO DO CONVITE SEGUE A ESCOLHA DELA (auditoria M9, P2), como
+        # o `pode_enviar` logo acima. Fixo em 7, quem pediu "a cada 5 dias"
+        # era barrado por dois dias que ninguem escolheu — a mesma metade de
+        # feature que o M9.12 fechou no outro caminho.
         if db.podcast_convite_recente(u["id"],
-                                      dias=_pod.DIAS_ENTRE_EPISODIOS,
+                                      dias=db.frequencia_do_podcast(u),
                                       ref=agora):
             return
         convite = _pod.convite(u.get("podcast_nicho"), nome=u.get("nome") or "")

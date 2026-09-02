@@ -80,6 +80,16 @@ def limpo(monkeypatch):
         _c.execute("DELETE FROM msg_log")
         _c.execute("DELETE FROM admin_acoes")
         _c.execute("DELETE FROM dispatches")
+        # `podcast_log` ENTROU AQUI (auditoria M9 2a passada). Ele nasceu como
+        # telemetria dos farois, mas passou a MUDAR COMPORTAMENTO: e ele quem
+        # diz se um lote foi interrompido e o que ja chegou. Deixado sujo, um
+        # teste herdava a falha de envio do anterior e via assuntos serem
+        # pulados — o sintoma foi um fecho citando um episodio que aquele
+        # teste nunca mandou.
+        try:
+            _c.execute("DELETE FROM podcast_log")
+        except Exception:
+            pass          # a tabela so nasce no primeiro registro
 
     enviadas: list[tuple[str, str]] = []
 
@@ -111,6 +121,20 @@ def limpo(monkeypatch):
     assert not hasattr(calendario, "_buscar_feriados_online"), (
         "voltou fonte externa ao calendario: reative o corte de rede aqui")
     yield enviadas
+
+
+@pytest.fixture(autouse=True)
+def sem_espera(monkeypatch):
+    """O espacamento entre envios vale 8-15s em producao — e zero em teste.
+
+    Ele existe porque rajada de mensagem e a assinatura de ritmo que ja
+    rendeu 3h de restricao neste numero, e nao ha nada de errado com ele. Mas
+    um teste que manda tres audios pagaria 30s de relogio pra medir uma coisa
+    que nao e o assunto dele. Quem mede que a pausa EXISTE e um teste
+    dedicado (`test_o_envio_espaca_entre_assuntos`); os outros so nao esperam.
+    """
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0, raising=False)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0, raising=False)
 
 
 @pytest.fixture
@@ -155,6 +179,11 @@ def usuario():
                           # recusa do anterior — e o sintoma era o convite
                           # "nao sair", que parece defeito de producao.
                           podcast_recusado_em=None,
+                          # M9.8, mesmo motivo e sexta coluna com ele: um
+                          # teste que escolhe receber de 30 em 30 dias
+                          # deixava o proximo medindo essa janela, e o
+                          # sintoma era o podcast "buscar noticia velha".
+                          podcast_frequencia=None,
                           dia_resumo="Segunda-feira",
                           lgpd_aceite_em=tempo.agora().isoformat())
     # `data_criacao` DE VOLTA PRA AGORA. A linha de `users` sobrevive entre

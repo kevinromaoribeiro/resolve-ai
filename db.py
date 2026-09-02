@@ -244,7 +244,11 @@ def init_db() -> None:
         # ja restringido duas vezes.
         for _c in ("podcast_nicho", "podcast_dia", "podcast_ultimo",
                    "podcast_convite_em", "podcast_dia_perguntado",
-                   "podcast_recusado_em"):
+                   "podcast_recusado_em",
+                   # M9.2: de quantos em quantos dias ela quer o
+                   # episodio. TEXT como as vizinhas; quem normaliza o
+                   # valor e a funcao frequencia_do_podcast.
+                   "podcast_frequencia"):
             if _c not in _ucols:
                 conn.execute("ALTER TABLE users ADD COLUMN %s TEXT" % _c)
         # v6.5: CHECK antigo de status não conhece 'vencido' -> rebuild
@@ -404,7 +408,7 @@ def update_user_fields(user_id: int, **fields) -> None:
                # convite foi feito.
                "podcast_nicho", "podcast_dia", "podcast_ultimo",
                "podcast_convite_em", "podcast_dia_perguntado",
-               "podcast_recusado_em"}
+               "podcast_recusado_em", "podcast_frequencia"}
     cols = {k: v for k, v in fields.items() if k in allowed}
     # DESCARTE SILENCIOSO ERA UMA ARMADILHA. Coluna nova no banco e esquecida
     # aqui vira UPDATE que não acontece, sem erro e sem log: o chamador acha
@@ -2912,6 +2916,145 @@ def podcast_a_convidar(ref=None, horas: int = 6, limite: int = 20) -> list[dict]
     return [dict(r) for r in linhas]
 
 
+def podcast_registrar_episodio(user_id, nicho: str, segundos: float = 0.0,
+                              ok: bool = True, erro: str = "") -> None:
+    """Grava o que aconteceu numa geracao de episodio.
+
+    NUNCA LEVANTA: e telemetria. Derrubar a entrega do audio pra registrar
+    que o audio foi entregue seria o cumulo.
+    """
+    import logging
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS podcast_log (
+                       id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                       quando   TEXT NOT NULL,
+                       user_id  INTEGER,
+                       nicho    TEXT,
+                       segundos REAL,
+                       ok       INTEGER NOT NULL DEFAULT 1,
+                       erro     TEXT)""")
+            conn.execute(
+                "INSERT INTO podcast_log (quando,user_id,nicho,segundos,ok,erro)"
+                " VALUES (?,?,?,?,?,?)",
+                (_now_iso(), user_id, str(nicho or "")[:40],
+                 float(segundos or 0.0), 1 if ok else 0, str(erro or "")[:120]))
+    except Exception:
+        logging.getLogger("resolveai").warning(
+            "[podcast] nao consegui registrar o episodio", exc_info=True)
+
+
+def podcast_lote_interrompido(user_id, horas: int = 48, ultimo=None) -> set:
+    """Os assuntos que JA CHEGARAM num lote que o canal interrompeu.
+
+    Serve pra uma coisa so: quando o envio cai no meio (a pessoa tem tres
+    assuntos e o segundo audio nao sai), a gente NAO carimba o envio — senao
+    ela ficaria trancada ate a proxima janela por um erro nosso. Sem carimbo
+    ela pode tocar "quero ouvir" de novo, e ai isto evita remandar o que ja
+    tinha chegado: audio repetido e TTS pago duas vezes pelo mesmo conteudo.
+
+    O CORTE E O ULTIMO LOTE CONCLUIDO (`ultimo` = `podcast_ultimo`), nao um
+    prazo. Entrega parcial nao carimba — entao "sem carimbo desde X" e a
+    definicao exata de "lote em aberto", e ela nao vence. Com corte de tempo
+    (6h, que foi a primeira versao), quem voltasse no dia seguinte recebia
+    repetido: um audio duplicado e um TTS pago duas vezes pelo mesmo texto.
+    O `horas` (48) e o piso pra quem NUNCA teve carimbo — quem so tem entrega
+    parcial na vida. Depois de dois dias a noticia envelheceu e reenviar sai
+    mais barato que raciocinar sobre um lote de anteontem.
+
+    E EXIGE UMA FALHA REGISTRADA, que e o que impede dois outros estragos:
+
+      - sem isso, um reenvio que o dono peca de proposito (ele zera o
+        `podcast_ultimo`) nao mandaria nada;
+      - e, principalmente, o episodio do PROXIMO periodo encontraria a
+        entrega do periodo passado e seria pulado — com frequencia semanal,
+        a pessoa parava de receber, calada. Foi assim que a primeira versao
+        disto quase subiu; a suite pegou.
+
+    Sem lote em aberto, devolve conjunto vazio e ninguem e pulado.
+    """
+    import logging
+    vazio: set = set()
+    try:
+        corte = (tempo.agora() - timedelta(hours=max(1, int(horas or 1)))
+                 ).strftime("%Y-%m-%d %H:%M:%S")
+        # O CARIMBO MANDA quando existe e e mais recente que o piso — e vale
+        # a partir do SEGUNDO SEGUINTE. O carimbo e escrito no mesmo segundo
+        # das ultimas linhas do lote que ele fecha; sem o "+1s", essas linhas
+        # entrariam de novo e um lote concluido pareceria em aberto.
+        _carimbo = str(ultimo or "").strip().replace("T", " ")[:19]
+        if _carimbo > corte:
+            try:
+                corte = (datetime.strptime(_carimbo, "%Y-%m-%d %H:%M:%S")
+                         + timedelta(seconds=1)
+                         ).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                corte = _carimbo
+        with get_conn() as conn:
+            existe = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='podcast_log'").fetchone()
+            if not existe:
+                return vazio
+            houve_falha = conn.execute(
+                "SELECT 1 FROM podcast_log "
+                " WHERE user_id = ? AND ok = 0 AND quando >= ? LIMIT 1",
+                (user_id, corte)).fetchone()
+            if not houve_falha:
+                return vazio
+            linhas = conn.execute(
+                "SELECT DISTINCT nicho FROM podcast_log "
+                " WHERE user_id = ? AND ok = 1 AND segundos > 0"
+                "   AND quando >= ?", (user_id, corte)).fetchall()
+        return {l["nicho"] for l in linhas if l["nicho"]}
+    except Exception:
+        logging.getLogger("resolveai").warning(
+            "[podcast] nao consegui ler o lote interrompido", exc_info=True)
+        return vazio
+
+
+def podcast_farois(dias: int = 7) -> dict:
+    """Os tres numeros do dash: esta funcionando, quanto dura, quantos sairam.
+
+    So contagens e medias — nada que identifique pessoa.
+    """
+    import logging
+    vazio = {"estado": "sem dados", "ok": 0, "falhas": 0,
+             "segundos_medio": 0, "na_semana": 0, "ultimo": ""}
+    try:
+        corte = (tempo.agora() - timedelta(days=max(1, dias))
+                 ).strftime("%Y-%m-%d %H:%M:%S")
+        with get_conn() as conn:
+            existe = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='podcast_log'").fetchone()
+            if not existe:
+                return vazio
+            r = conn.execute(
+                "SELECT SUM(ok) AS bons, COUNT(*) AS tudo, "
+                "       AVG(CASE WHEN ok=1 AND segundos>0 THEN segundos END) AS med, "
+                "       MAX(quando) AS ult "
+                "  FROM podcast_log WHERE quando >= ?", (corte,)).fetchone()
+        bons = int(r["bons"] or 0)
+        tudo = int(r["tudo"] or 0)
+        falhas = max(0, tudo - bons)
+        if not tudo:
+            return vazio
+        # VERDE so com tudo saindo. Uma falha ja e sinal: significa que uma
+        # fonte secou ou a voz recusou, e o sintoma disso pro cliente e
+        # simplesmente nao receber — que ele nao reclama, so cancela.
+        estado = ("ok" if falhas == 0 else
+                  "atencao" if bons >= falhas else "quebrado")
+        return {"estado": estado, "ok": bons, "falhas": falhas,
+                "segundos_medio": int(round(r["med"] or 0)),
+                "na_semana": bons, "ultimo": r["ult"] or ""}
+    except Exception:
+        logging.getLogger("resolveai").warning(
+            "[podcast] farois falharam", exc_info=True)
+        return vazio
+
+
 def podcast_a_ofertar(ref=None, horas: int = 24,
                       limite: int = 20) -> list[dict]:
     """Quem NAO escolheu assunto, nao recusou, e ainda nao foi ofertado.
@@ -2959,6 +3102,27 @@ def podcast_assinantes(limite: int = 200) -> list[dict]:
                   AND TRIM(podcast_nicho) <> ''
                   AND podcast_ultimo IS NOT NULL
                 ORDER BY id ASC LIMIT ?""", (limite,)).fetchall()]
+
+
+# AS QUATRO REGULARIDADES. O teto de 5 dias e do dono ("no maximo a cada 5
+# dias"): mais frequente que isso multiplica proativa num numero ja
+# restringido duas vezes, e o custo de voz cresce na mesma proporcao.
+FREQUENCIAS = (5, 7, 15, 30)
+FREQUENCIA_PADRAO = 7
+
+
+def frequencia_do_podcast(user: dict) -> int:
+    """De quantos em quantos dias esta pessoa quer o episodio.
+
+    Vale como JANELA tambem: quem escolheu 15 dias ouve as noticias dos
+    ultimos 15. Valor estranho no banco cai no padrao em vez de virar erro —
+    o episodio sair no ritmo errado e recuperavel, nao sair nao e.
+    """
+    try:
+        n = int((user or {}).get("podcast_frequencia") or 0)
+    except Exception:
+        n = 0
+    return n if n in FREQUENCIAS else FREQUENCIA_PADRAO
 
 
 def podcast_convite_recente(user_id: int, dias: int = 7, ref=None) -> bool:
