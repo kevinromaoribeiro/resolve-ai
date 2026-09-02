@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v29.1-m10-amostra-do-dono-2026-09-02"
+BUILD = "v29.2-audio-que-chega-2026-09-02"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #

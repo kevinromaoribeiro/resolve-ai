@@ -232,12 +232,35 @@ def tem_ffmpeg() -> bool:
     return bool(_FFMPEG)
 
 
-def formato_de_saida() -> tuple:
-    """(extensao, mime) do que o `sintetizar` devolve AGORA.
+def formato_dos_bytes(dados) -> tuple:
+    """(extensao, mime) LENDO O ARQUIVO, nao adivinhando pela capacidade.
 
-    Depende do ffmpeg estar na imagem, entao e funcao e nao constante: o
-    `canal` pergunta na hora de enviar, e um deploy sem ffmpeg nao faz o
-    mime mentir sobre o arquivo.
+    ISTO E O CONSERTO DE UM AUDIO QUE NUNCA CHEGOU (02/09/2026).
+
+    O `formato_de_saida` responde pela pergunta errada: ele diz "tem ffmpeg?",
+    e ter ffmpeg nao garante que o Opus saiu. Quando `_colar_opus` falha, o
+    `_dialogo` cai no MP3 de proposito — e ai a gente mandava BYTES MP3
+    ROTULADOS COMO OGG.
+
+    A Meta aceita, devolve message id, o `send_audio` responde True e o
+    painel diz "80s, 199 palavras". E o audio nao chega no telefone. E o
+    pior tipo de defeito: todo mundo no caminho relata sucesso.
+
+    OggS e o magic number do container Ogg. ID3 e o cabecalho do MP3, e
+    ÿû e o primeiro frame quando nao ha ID3.
+    """
+    b = bytes(dados or b"")[:4]
+    if b[:4] == b"OggS":
+        return ("ogg", "audio/ogg")
+    return ("mp3", "audio/mpeg")
+
+
+def formato_de_saida() -> tuple:
+    """(extensao, mime) do que o `sintetizar` PRETENDE devolver.
+
+    Serve pra decidir o caminho de geracao. NAO serve pra rotular o envio:
+    pra isso existe o `formato_dos_bytes`, que le o arquivo — ver o
+    comentario dele.
     """
     return ("ogg", "audio/ogg") if tem_ffmpeg() else (FORMATO, MIME)
 

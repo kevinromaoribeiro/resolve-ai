@@ -576,7 +576,11 @@ def e_do_assunto(nicho: str, titulo: str, resumo: str = "") -> bool:
 PALAVRAS_POR_MINUTO = 150
 DURACAO_ALVO_MIN = 3
 PALAVRAS_ALVO = PALAVRAS_POR_MINUTO * DURACAO_ALVO_MIN     # 450
-PALAVRAS_TETO = int(PALAVRAS_ALVO * 1.15)                  # 517: 3min27
+# O TETO E 3 MINUTOS, DURO (decisao do dono, 02/09/2026): "o limite das
+# noticias deve ser 3min, entao dai pra baixo podemos usar a vontade". A
+# folga de 15% que existia aqui entregava 3min27 — passar do que se promete
+# e a primeira coisa que faz alguem desativar o recurso.
+PALAVRAS_TETO = PALAVRAS_ALVO                              # 450: 3min cravado
 
 # Três blocos. Menos que isso vira nota solta; mais que isso não cabe em 3 min
 # sem virar manchete lida em voz alta.

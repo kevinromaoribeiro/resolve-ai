@@ -195,11 +195,18 @@ def falar_audio(telefone: str, dados: bytes, *, user_id=None,
         # vozes — e a Meta recusa o arquivo cujo tipo nao bate.
         try:
             import voz as _voz
-            # PERGUNTA NA HORA (M9.1): com ffmpeg o episodio sai em OGG/Opus
-            # (nota de voz, com botao de velocidade); sem ffmpeg, em MP3. Ler
-            # a constante fazia o mime mentir sobre o arquivo — e a Meta
-            # recusa quando os dois nao batem.
-            mime = _voz.formato_de_saida()[1]
+            # LE OS BYTES, NAO A CAPACIDADE (02/09/2026).
+            #
+            # Antes isto perguntava `formato_de_saida()`, que responde "tem
+            # ffmpeg?". Ter ffmpeg nao garante que o Opus saiu: quando a
+            # colagem em Opus falha, o `voz` cai no MP3 de proposito — e a
+            # gente mandava bytes MP3 rotulados como OGG.
+            #
+            # A Meta ACEITA e devolve message id. O `send_audio` responde
+            # True, o painel diz "80s, 199 palavras", e o audio nao chega no
+            # telefone. Foi assim que a primeira amostra do dono sumiu, com
+            # todo mundo no caminho relatando sucesso.
+            mime = _voz.formato_dos_bytes(dados)[1]
         except Exception:
             mime = "audio/mpeg"
     try:
