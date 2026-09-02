@@ -2950,6 +2950,71 @@ def podcast_registrar_episodio(user_id, nicho: str, segundos: float = 0.0,
             "[podcast] nao consegui registrar o episodio", exc_info=True)
 
 
+def podcast_episodio_do_dia(nicho: str, dias: int):
+    """O audio ja gerado hoje pra este tema e esta janela, ou None.
+
+    UM EPISODIO POR TEMA, NAO POR PESSOA (M12). Trinta pessoas em "games" na
+    mesma janela ouviam o mesmo conteudo — e a gente pagava trinta sinteses
+    de TTS por isso, porque o roteiro trazia o primeiro nome de cada uma.
+
+    A chave inclui a JANELA porque ela e o que define o material: quem pediu
+    5 dias e quem pediu 30 recebem episodios diferentes do mesmo tema, e isso
+    e correto.
+
+    NA DUVIDA, DEVOLVE None: gerar de novo custa dinheiro, mas entregar audio
+    errado custa cliente.
+    """
+    import logging
+    try:
+        hoje = tempo.agora().strftime("%Y-%m-%d")
+        with get_conn() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS podcast_episodio (
+                       chave  TEXT PRIMARY KEY,
+                       quando TEXT NOT NULL,
+                       audio  BLOB NOT NULL)""")
+            r = conn.execute(
+                "SELECT audio FROM podcast_episodio WHERE chave = ?",
+                ("%s|%d|%s" % (str(nicho or "")[:40], int(dias or 7), hoje),)
+            ).fetchone()
+        return bytes(r["audio"]) if r and r["audio"] else None
+    except Exception:
+        logging.getLogger("resolveai").warning(
+            "[podcast] nao consegui ler o episodio do dia", exc_info=True)
+        return None
+
+
+def podcast_guardar_episodio_do_dia(nicho: str, dias: int, audio) -> None:
+    """Guarda o audio do dia pra este tema e janela. NUNCA LEVANTA.
+
+    Limpa o que passou: sao arquivos de centenas de KB e o de ontem nao serve
+    mais pra ninguem.
+    """
+    import logging
+    if not audio:
+        return
+    try:
+        agora = tempo.agora()
+        hoje = agora.strftime("%Y-%m-%d")
+        with get_conn() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS podcast_episodio (
+                       chave  TEXT PRIMARY KEY,
+                       quando TEXT NOT NULL,
+                       audio  BLOB NOT NULL)""")
+            conn.execute(
+                "INSERT OR REPLACE INTO podcast_episodio "
+                " (chave, quando, audio) VALUES (?,?,?)",
+                ("%s|%d|%s" % (str(nicho or "")[:40], int(dias or 7), hoje),
+                 _now_iso(), sqlite3.Binary(audio)))
+            conn.execute("DELETE FROM podcast_episodio WHERE quando < ?",
+                         ((agora - timedelta(days=2)
+                           ).strftime("%Y-%m-%d %H:%M:%S"),))
+    except Exception:
+        logging.getLogger("resolveai").warning(
+            "[podcast] nao consegui guardar o episodio do dia", exc_info=True)
+
+
 def podcast_lote_interrompido(user_id, horas: int = 48, ultimo=None) -> set:
     """Os assuntos que JA CHEGARAM num lote que o canal interrompeu.
 

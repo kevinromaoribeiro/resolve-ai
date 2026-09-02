@@ -1346,8 +1346,19 @@ total, contando só o que é falado.
 Pode começar frase com "e", "mas", "olha". Zero "outrossim", "vale ressaltar" \
 e "é importante destacar". Ninguém fala assim, e é isso que faz soar robô.
 
-8. {bia} abre cumprimentando {nome} e se apresentando; {leo} fecha dizendo \
-de quais fontes veio e que semana que vem tem mais.
+8. ENERGIA DE CANAL DE NOTÍCIA DA INTERNET, não de leitura de jornal. \
+Abre com gancho — o que tem de mais interessante hoje, em uma frase, antes \
+de explicar. Reação de verdade ("olha isso", "não acredito", "que \
+interessante"), pergunta que puxa o outro, e opinião curta quando couber. \
+Se as falas pudessem ser lidas na ordem inversa sem estranhar, não é \
+conversa. LINGUAGEM LIMPA: sem gíria pesada e sem palavrão. Animado não é \
+vulgar — isso chega no WhatsApp de gente que não escolheu o tom.
+
+9. {bia} abre apresentando o programa e o assunto do dia — SEM cumprimentar \
+ninguém pelo nome, porque o mesmo episódio vai pra todo mundo que escolheu \
+este tema. {leo} FECHA DIZENDO DE QUAIS FONTES VEIO, uma por uma, e que em \
+breve tem mais. A citação das fontes no fim é obrigatória: é ela que separa \
+notícia de boato, e some primeiro quando o roteiro é apertado.
 
 Devolva SOMENTE as linhas de fala, sem título, sem marcação, sem aspas."""
 

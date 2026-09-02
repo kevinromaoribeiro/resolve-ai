@@ -59,15 +59,32 @@ MIME = "audio/mpeg"
 # "nova" e "echo" têm entonação de quem lê um texto, que é exatamente o
 # "robótico" que ele apontou na primeira amostra.
 VOZ_MULHER = os.environ.get("VOZ_MULHER") or "shimmer"
-VOZ_HOMEM = os.environ.get("VOZ_HOMEM") or "onyx"
+# `onyx` e grave e PLANA — foi ela que o dono ouviu e chamou de zumbi.
+# `ash` tem brilho e variacao no mesmo registro masculino. Fica em variavel
+# de ambiente porque quem julga som e ouvido, e o ouvido e dele.
+VOZ_HOMEM = os.environ.get("VOZ_HOMEM") or "ash"
 
 # A instrução de estilo pesa mais que a escolha da voz. Sem ela o modelo lê
 # como quem narra documentário — e foi assim que soou robótico.
-ESTILO = ("Você está gravando um podcast curto em português do Brasil, "
-          "conversando com outra pessoa. Fale como quem conta uma novidade "
-          "pra um amigo no sofá: ritmo natural, sem pressa, com as pausas "
-          "de quem pensa enquanto fala. Nada de entonação de locutor de "
-          "rádio, nada de voz de propaganda, nada de solenidade.")
+# A INSTRUCAO PESA MAIS QUE A VOZ. A versao anterior pedia "sem pressa,
+# com as pausas de quem pensa" — e entregou exatamente isso: o dono ouviu e
+# disse que dava sono. Ela existia pra consertar um "robotico" anterior e
+# passou do ponto pro outro extremo.
+#
+# O alvo agora e o meio: energia de canal de noticia na internet (o TecMundo
+# foi a referencia que ele deu), nao locutor de radio — que era o problema
+# original. Interesse pelo assunto, nao solenidade sobre ele.
+ESTILO = ("Você apresenta um programa curto de notícias em português do "
+          "Brasil, conversando com a outra pessoa da bancada. O tom é o de "
+          "canal de notícias da internet: animado, curioso, com sorriso na "
+          "voz. Ritmo puxado e frase curta. Sobe o tom no que é surpreendente "
+          "e desce no que é sério — variação de verdade, nunca linha reta. "
+          "Reaja ao que o outro falou como quem se interessa mesmo. "
+          "Nada de locutor de rádio, nada de voz de propaganda, nada de "
+          "solenidade — e nada de arrastado: se soar cansado, errou. "
+          "Soe HUMANO acima de tudo: respire, hesite de leve quando for "
+          "natural, ria quando a notícia pedir. Linguagem limpa, sem gíria "
+          "pesada e sem palavrão — animado não é vulgar.")
 
 # Teto de segurança em caracteres. Três minutos de locução são ~2.500
 # caracteres; 6.000 é o dobro com folga. Acima disso alguma coisa deu errado

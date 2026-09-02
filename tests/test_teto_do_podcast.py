@@ -45,10 +45,21 @@ def com_voz(monkeypatch):
 
 @pytest.fixture
 def conta_tts(monkeypatch):
-    """Cada chamada aqui e dinheiro: TTS e cobrado por caractere."""
+    """Quantos audios CHEGARAM nesta pessoa.
+
+    Contava chamadas de TTS ate o M12, quando o episodio passou a ser um por
+    TEMA e nao por pessoa: a segunda pessoa do mesmo tema recebe o audio do
+    cache e nao gera sintese nenhuma. Contar sintese passou a ler "ninguem
+    recebeu" onde o audio tinha sido entregue.
+
+    O que estes testes medem e o TETO — "ela recebeu de novo dentro da
+    janela?" —, e isso se mede no envio. O gasto de TTS tem teste proprio.
+    """
     chamadas = []
     monkeypatch.setattr(voz, "sintetizar",
-                        lambda *a, **k: chamadas.append(1) or b"OggS" + b"x" * 900)
+                        lambda *a, **k: b"OggS" + b"x" * 900)
+    monkeypatch.setattr(wa_bot.wasender, "falar_audio",
+                        lambda tel, a, **k: chamadas.append(1) or {"enviado": True})
     return chamadas
 
 

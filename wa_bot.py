@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v29.2-audio-que-chega-2026-09-02"
+BUILD = "v29.3-um-episodio-por-tema-2026-09-02"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -3010,11 +3010,13 @@ def _amostra_de_podcast(user: dict, phone: str, nicho: str = "",
         else:
             linhas.append(f"• {rotulo}: não saiu ({res.get('motivo')})")
 
-    return (f"Amostra pronta: *{ok} de {len(alvos)}* nicho(s)"
-            f"{(' — voz: ' + provedor) if provedor else ''}. 🎙️\n\n"
-            + "\n".join(linhas)
-            + "\n\n_Nada foi marcado como enviado — isso é inspeção, não "
-              "entrega._")
+    # SO O AUDIO, SEM RELATORIO (pedido do dono, 02/09/2026: "mande apenas
+    # o audio e nao esse texto que veio abaixo"). Ele ja ve a legenda com o
+    # nome do tema antes da faixa; o resto era ruido de bastidor na conversa
+    # dele. Quando algo NAO sai, ai sim o texto tem serventia — e so ai.
+    if ok == len(alvos):
+        return ""
+    return ("Nem tudo saiu:\n\n" + "\n".join(linhas))
 
 
 # O dia gravado tem que bater com o que o `scheduler` compara. Sem
@@ -3449,7 +3451,11 @@ def _mandar_podcast(user: dict, phone: str) -> str:
         _fontes_mudas = (_diag.get("falharam", 0) >= _diag.get("fontes", 3)
                          and _diag.get("fontes", 0) > 0)
 
-        roteiro = podcast.locucao(_k, itens, nome=user.get("nome") or "")
+        # SEM O NOME DELA NO ROTEIRO (M12). Ele era o unico pedaco que
+        # diferia entre duas pessoas do mesmo tema — e era ele que obrigava
+        # a pagar uma sintese por pessoa. O nome continua na mensagem de
+        # texto que acompanha; o audio virou o mesmo pra todo mundo.
+        roteiro = podcast.locucao(_k, itens)
         if not roteiro:
             _vazios.append(podcast.rotulo(_k).lower())
             # SEMANA QUIETA NAO E FALHA (auditoria M9, P2) — mas fonte
@@ -3463,7 +3469,14 @@ def _mandar_podcast(user: dict, phone: str) -> str:
                 else "sem noticia na janela")
             continue
 
-        audio = voz.sintetizar(roteiro)
+        # O EPISODIO DO DIA E DE TODO MUNDO (M12). Mesma chave = mesmo
+        # tema, mesma janela, mesmo dia — entao e o mesmo audio, e pagar
+        # sintese de novo seria pagar duas vezes pelo mesmo arquivo.
+        audio = db.podcast_episodio_do_dia(_k, _janela)
+        if not audio:
+            audio = voz.sintetizar(roteiro)
+            if audio:
+                db.podcast_guardar_episodio_do_dia(_k, _janela, audio)
         if not audio:
             db.podcast_registrar_episodio(user["id"], _k, 0, False,
                                           "voz nao sintetizou")
@@ -6260,6 +6273,24 @@ def _enviar_template_manual(user_id: int, nome_template: str):
     return True, ""
 
 
+def _diagnostico_de_audio() -> dict:
+    """O episodio consegue sair como NOTA DE VOZ?
+
+    So o OGG/Opus mostra os botoes de 1x / 1,5x / 2x no WhatsApp, e o Opus
+    depende do ffmpeg estar na imagem. Quando ele falta, o episodio sai em
+    MP3: toca, mas sem acelerador — que foi exatamente a pergunta do dono
+    ("cade o acelerador de velocidade?").
+    """
+    try:
+        import voz as _voz
+        tem = _voz.tem_ffmpeg()
+        return {"ffmpeg": tem,
+                "formato": _voz.formato_de_saida()[1],
+                "acelerador": "sim" if tem else "nao (sai em mp3)"}
+    except Exception:
+        return {"ffmpeg": None, "formato": "?", "acelerador": "?"}
+
+
 def _dados_do_painel() -> dict:
     """M2.3 — os números do painel, num lugar só e testável.
 
@@ -7462,6 +7493,12 @@ try:
                 # Nome de template nao e segredo. O valor das credenciais
                 # continua fora daqui.
                 "templates": _estado_dos_templates(),
+                # O BOTAO DE VELOCIDADE DEPENDE DO OPUS, e o Opus depende
+                # do ffmpeg estar na imagem. Sem este campo, "cade o
+                # acelerador?" so se responde abrindo o log do container —
+                # que e canvas e nao da pra ler. Sinal que so existe no log
+                # e sinal que ninguem le.
+                "audio": _diagnostico_de_audio(),
                 "painel": "protegido" if PAINEL_TOKEN else "SEM TOKEN",
                 "alerta_dono": "armado" if ADMIN_PHONE else "SEM ADMIN_PHONE"}
         # o diagnóstico do v8 carrega trecho de mensagem de usuário —

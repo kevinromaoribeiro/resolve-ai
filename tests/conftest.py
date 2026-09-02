@@ -96,6 +96,14 @@ def limpo(monkeypatch):
             _c.execute("DELETE FROM podcast_log")
         except Exception:
             pass          # a tabela so nasce no primeiro registro
+        #  PELO MESMO MOTIVO (M12): o episodio do dia e
+        # compartilhado por tema, entao um audio guardado por um teste era
+        # entregue ao seguinte sem passar pela sintese — e o seguinte media
+        # "a voz falhou e mandou audio assim mesmo".
+        try:
+            _c.execute("DELETE FROM podcast_episodio")
+        except Exception:
+            pass
 
     enviadas: list[tuple[str, str]] = []
 
