@@ -357,6 +357,37 @@ COBRANCA_LINK = Template(
     botoes=["Já paguei", "Assinar"],
 )
 
+NOVIDADE = Template(
+    nome="resolveai_novidade",
+    rotulo="Anuncia uma funcionalidade nova (serve pra qualquer lançamento)",
+    # MARKETING, assumido. Anunciar funcionalidade e falar do produto, nao
+    # cumprir um compromisso que a pessoa cadastrou — e a regua da Meta separa
+    # pelo MOTIVO, nao pelo tom. Tentar passar como utilidade so gastaria uma
+    # recusa, que foi o que aconteceu com os dois primeiros de cobranca.
+    categoria="MARKETING",
+    idioma="pt_BR",
+    # O NOME E A EXPLICACAO SAO VARIAVEIS pra este template servir ao proximo
+    # lancamento tambem, sem nova submissao. O que nao muda e a ultima linha:
+    # de graca, ja no plano, e com saida.
+    corpo=("Oi {{1}}, novidade no Resolve AI: *{{2}}*.\n\n"
+           "{{3}}\n\n"
+           "É de graça e já faz parte do seu plano. Quer experimentar?"),
+    variaveis=["primeiro_nome", "nome_da_novidade", "o_que_ela_faz"],
+    justificativa=(
+        "Aviso de funcionalidade nova incluída no plano que o usuário já "
+        "assina ou testa. Enviado uma vez por lançamento, apenas para a "
+        "base ativa e sempre por ação manual do administrador. A mensagem "
+        "traz botão de recusa permanente, e quem recusa não recebe o "
+        "próximo aviso."),
+    exemplo=["Ana", "mini podcast em áudio",
+             "Duas pessoas conversando sobre as notícias dos assuntos que "
+             "você escolher, direto aqui no WhatsApp."],
+    # OS TRES TITULOS JA SAO ENTENDIDOS pelo bot: "Quero experimentar" cai no
+    # aceite da oferta, "Agora nao" adia sem apagar, "Nunca mais" recusa de
+    # vez. Botao que o bot nao entende e pior que botao nenhum.
+    botoes=["Quero experimentar", "Agora não", "Nunca mais"],
+)
+
 REATIVAR_BOAS_VINDAS = Template(
     # SEM o prefixo `resolveai_`: este template foi criado direto no Business
     # Manager pelo Kevin em 05/08/2026, e o nome no catálogo TEM que ser o
@@ -400,6 +431,7 @@ REATIVAR_BOAS_VINDAS = Template(
 
 _reg(TRIAL_ESTENDIDO)
 _reg(COBRANCA_LINK)
+_reg(NOVIDADE)
 _reg(REATIVAR_BOAS_VINDAS)
 
 KIND_TEMPLATE = {
@@ -412,6 +444,11 @@ KIND_TEMPLATE = {
     # painel. Automatizar isso seria o bot decidindo sozinho reabrir janela
     # com a base inteira — o caminho mais curto pra terceira restricao.
     "reativacao": "reativar_boas_vindas",
+    # Aviso de novidade. Como o `reativacao`, NAO tem checagem no scheduler de
+    # proposito: quem decide anunciar uma funcionalidade e o dono, no botao de
+    # lote do painel. Bot decidindo sozinho quando falar de produto pra base
+    # inteira e o caminho mais curto pra terceira restricao.
+    "novidade": "resolveai_novidade",
     "vencido": "resolveai_item_vencido",
     "resumo": "resolveai_resumo_do_dia",
     "anti-churn": "resolveai_reengajamento_pendentes",

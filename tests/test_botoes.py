@@ -332,3 +332,33 @@ def test_nao_promete_dias_a_quem_nao_tem(usuario):
     ok, motivo = wa_bot._variaveis_do_template(
         "resolveai_trial_estendido", db.get_user(usuario["id"]))
     assert not ok, "prometeu dias pra quem tem trial vencido: %r" % (motivo,)
+
+
+def test_botao_de_mensagem_livre_tambem_e_comando_conhecido():
+    """A varredura de botões parava nos TEMPLATES — e a oferta do podcast
+    não é template, é mensagem livre dentro da janela.
+
+    Resultado: "Nunca mais" saía como botão desde o M5.4 e o bot não o
+    reconhecia. Quem tocasse caía no LLM e podia levar "não entendi" —
+    logo depois de pedir pra nunca mais receber, que é a pior hora possível
+    pra parecer que o bot ignorou.
+
+    Este teste lê os botões que o `scheduler` monta de verdade, sem lista
+    paralela: lista à mão envelhece e para de cobrir o que foi adicionado
+    depois.
+    """
+    import inspect
+    import re as _re
+    import scheduler as _s
+
+    fonte = inspect.getsource(_s)
+    achados = set()
+    for bloco in _re.findall(r'"botoes":\s*\[([^\]]*)\]', fonte):
+        for titulo in _re.findall(r'"([^"]+)"', bloco):
+            achados.add(titulo)
+
+    assert achados, "nenhum botão encontrado — o teste parou de cobrir algo"
+    ruins = [b for b in sorted(achados) if not wa_bot.entende_comando(b)]
+    assert not ruins, (
+        "botão que o bot não entende (a pessoa clica e leva 'não entendi'): %s"
+        % ruins)

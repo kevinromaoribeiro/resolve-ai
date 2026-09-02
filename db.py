@@ -245,6 +245,10 @@ def init_db() -> None:
         for _c in ("podcast_nicho", "podcast_dia", "podcast_ultimo",
                    "podcast_convite_em", "podcast_dia_perguntado",
                    "podcast_recusado_em",
+                   # M11: quem tocou "Nunca mais" num aviso de novidade
+                   # nao recebe o proximo. E a promessa que foi escrita
+                   # na justificativa submetida a Meta.
+                   "novidade_recusada_em",
                    # M9.2: de quantos em quantos dias ela quer o
                    # episodio. TEXT como as vizinhas; quem normaliza o
                    # valor e a funcao frequencia_do_podcast.
@@ -408,7 +412,8 @@ def update_user_fields(user_id: int, **fields) -> None:
                # convite foi feito.
                "podcast_nicho", "podcast_dia", "podcast_ultimo",
                "podcast_convite_em", "podcast_dia_perguntado",
-               "podcast_recusado_em", "podcast_frequencia"}
+               "podcast_recusado_em", "podcast_frequencia",
+               "novidade_recusada_em"}
     cols = {k: v for k, v in fields.items() if k in allowed}
     # DESCARTE SILENCIOSO ERA UMA ARMADILHA. Coluna nova no banco e esquecida
     # aqui vira UPDATE que não acontece, sem erro e sem log: o chamador acha

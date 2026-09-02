@@ -633,3 +633,25 @@ def test_a_contagem_comeca_em_um_com_tudo_saindo(usuario, com_voz, monkeypatch):
     responder("quero ouvir")
     assert any("Futebol" in t and "1 de 3" in t for t in textos), textos
     assert any("Moda" in t and "3 de 3" in t for t in textos), textos
+
+
+# ---------------------------------------------------------------------------
+# 10. todo rótulo do catálogo fecha o ciclo com a landing
+# ---------------------------------------------------------------------------
+
+def test_todo_rotulo_volta_pra_propria_chave():
+    """A landing manda o RÓTULO ("Saúde e bem-estar") e o bot precisa
+    devolver a chave. `_chave` peneirava o texto da pessoa (hífen virava
+    espaço) e não peneirava o rótulo — então o único rótulo com hífen nunca
+    casava, e quem escolhesse esse tema era cadastrado sem tema nenhum,
+    calado."""
+    for chave, dados in podcast.NICHOS.items():
+        assert podcast.nicho_valido(dados["rotulo"]) == chave, dados["rotulo"]
+        assert podcast.nicho_valido(dados["rotulo"].lower()) == chave
+
+
+def test_a_frase_da_landing_com_tres_temas():
+    """É o formato exato que o formulário monta."""
+    assert podcast.nichos_do_texto(
+        "futebol, economia e seu bolso, saúde e bem-estar") == [
+            "futebol", "economia", "saude"]

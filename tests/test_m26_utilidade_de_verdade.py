@@ -144,6 +144,11 @@ def test_o_resumo_de_gastos_continua_saindo_dentro_da_janela(usuario,
 # disse. Template novo entra sem veredito e o teste cobra que alguem submeta
 # e anote o resultado.
 VEREDITO_DA_META = {
+    # Submetido em 02/09/2026 como MARKETING, id 1637468677982001, e a Meta
+    # devolveu PENDING na hora. MARKETING assumido de proposito: anunciar
+    # funcionalidade e falar do produto, e a regua dela separa pelo motivo,
+    # nao pelo tom — tentar como utilidade so gastaria uma recusa.
+    "resolveai_novidade": "em_analise",
     "resolveai_lembrete_hora": "em_analise",
     "resolveai_item_vencido": "em_analise",
     "resolveai_resumo_do_dia": "em_analise",
@@ -363,6 +368,14 @@ MARKETING_AUTORIZADO = {
     # isso utilidade, e tentar so gastaria uma rodada de recusa. So sai por
     # acao manual do dono, pra quem pediu o link.
     "resolveai_cobranca_link",
+    # Aviso de funcionalidade nova (02/09/2026). Anunciar feature e falar do
+    # PRODUTO, nao cumprir um compromisso que a pessoa cadastrou — e a regua
+    # da Meta separa pelo motivo, nao pelo tom. Tentar como utilidade so
+    # gastaria uma recusa, igual aos dois primeiros de cobranca. Generico de
+    # proposito (o nome e a explicacao sao variaveis), pra servir ao proximo
+    # lancamento sem nova submissao. Sai UMA vez por lancamento, so por acao
+    # manual do dono, e traz saida permanente no botao.
+    "resolveai_novidade",
     # Reativacao pos-apagao, criada pelo Kevin no Business Manager em
     # 05/08/2026 e ja APROVADA. Pede desculpa, diz que os 14 dias estao
     # valendo e ensina a usar com dois exemplos. E marketing pela regua da

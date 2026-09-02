@@ -304,6 +304,41 @@ Se já pagou, me avisa que eu libero na hora. Se preferir, posso te mandar o lin
 
 ---
 
+## `resolveai_novidade`
+
+- **Nome:** `resolveai_novidade`
+- **O que faz:** Anuncia uma funcionalidade nova (serve pra qualquer lançamento)
+- **Categoria:** MARKETING
+- **Idioma:** pt_BR
+
+**Botões — tipo `Resposta rápida`, um por linha:**
+
+  - `Quero experimentar`
+  - `Agora não`
+  - `Nunca mais`
+
+**Corpo:**
+
+```
+Oi {{1}}, novidade no Resolve AI: *{{2}}*.
+
+{{3}}
+
+É de graça e já faz parte do seu plano. Quer experimentar?
+```
+
+**Variáveis (exemplo para a submissão):**
+
+  - `{{1}}` -> `Ana`
+  - `{{2}}` -> `mini podcast em áudio`
+  - `{{3}}` -> `Duas pessoas conversando sobre as notícias dos assuntos que você escolher, direto aqui no WhatsApp.`
+
+**Justificativa (cole no campo de descrição, se pedido):**
+
+> Aviso de funcionalidade nova incluída no plano que o usuário já assina ou testa. Enviado uma vez por lançamento, apenas para a base ativa e sempre por ação manual do administrador. A mensagem traz botão de recusa permanente, e quem recusa não recebe o próximo aviso.
+
+---
+
 ## `reativar_boas_vindas`
 
 - **Nome:** `reativar_boas_vindas`

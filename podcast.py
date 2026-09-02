@@ -618,6 +618,14 @@ def _chave(nicho: Optional[str]) -> Optional[str]:
     for chave, dados in NICHOS.items():
         alvo = "".join(c for c in unicodedata.normalize("NFD", dados["rotulo"])
                        if unicodedata.category(c) != "Mn").lower()
+        # O ROTULO PASSA PELA MESMA PENEIRA DO TEXTO DA PESSOA.
+        #
+        # O texto dela ja vinha com "[^a-z ]" virando espaco, e o rotulo nao:
+        # entao "Saude e bem-estar" (o unico com hifen) NUNCA casava — o
+        # hifen virava espaco de um lado so. Quem escolhesse esse tema na
+        # landing era cadastrado sem tema nenhum, calado.
+        alvo = re.sub(r"[^a-z ]+", " ", alvo)
+        alvo = re.sub(r"\s+", " ", alvo).strip()
         if t == chave or t == alvo:
             return chave
     return None

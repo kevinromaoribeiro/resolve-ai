@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v29.0-m9-podcast-multiassunto-2026-09-01"
+BUILD = "v29.1-m10-amostra-do-dono-2026-09-02"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -844,11 +844,82 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
             and _AMOSTRA_PODCAST_RE.match(text)):
         return _amostra_de_podcast(user, phone)
 
+    # --- O DONO PEDE AUDIO QUANDO QUISER (M10) ---------------------------
+    #
+    # Ele valida o produto na mao, entao precisa gerar na hora, do tema que
+    # ele escolher, sem esbarrar no teto de uma vez por janela — que existe
+    # pra proteger CLIENTE de rajada, nao pra impedir inspecao.
+    #
+    # VEM ANTES do caminho do cliente de proposito: senao o "quero ouvir"
+    # dele cairia no fluxo normal e ele levaria "voce ja ouviu o episodio
+    # deste periodo" justamente quando quer conferir.
+    if ADMIN_PHONE and phone == ADMIN_PHONE:
+        # DECISAO VIVA MATA A PERGUNTA, NA RESPOSTA (auditoria M10, P0).
+        #
+        # Eu tinha posto a guarda so no ramo de ARMAR — e e na resposta que
+        # ela importa. `_handle_commands` so roda com `kind == "texto"`, entao
+        # foto e audio nao passam por aqui: nao popam o slot, e ainda assim
+        # armam decisao. Sem esta linha, "quero audio" -> foto ambigua -> "1"
+        # gerava a amostra, deixava o PENDING pendurado e o item da pessoa
+        # sumia. E a baixa de 30/08 outra vez, com outro slot.
+        if _pergunta_de_amostra_viva(phone) and _decisao_de_conversa_viva(phone):
+            PODCAST_AMOSTRA_PERGUNTA.pop(phone, None)
+        if _pergunta_de_amostra_viva(phone):
+            _k = _assunto_por_numero(text) or podcast.nicho_valido(text)
+            if _k:
+                PODCAST_AMOSTRA_PERGUNTA.pop(phone, None)
+                return _amostra_de_podcast(user, phone, nicho=_k)
+            # DIGITO FORA DA FAIXA REPERGUNTA, nao desiste. "17" num menu
+            # de 16 e engano de dedo, nao mudanca de assunto — e desistir
+            # ali jogava a frase no motor de anotacao, que respondia "nao
+            # identifiquei conta, data nem valor" pra quem so errou o numero.
+            if text.strip().rstrip(".)").isdigit():
+                return ("Esse número não está na lista — é de *1* a *%d*."
+                        % len(podcast.NICHOS))
+            # Fora a escolha e o engano de dedo, ele esta falando de outra
+            # coisa: nao insiste.
+            PODCAST_AMOSTRA_PERGUNTA.pop(phone, None)
+        # DUAS PORTAS, NAO UMA (auditoria M10, P2). O `elif` engolia tambem
+        # "quero ouvir" — que e o TITULO DO BOTAO do convite semanal — e com
+        # isso o dono perdia o caminho do cliente: `_mandar_podcast` (com
+        # multi-assunto, legenda "N de M", pergunta de frequencia e o farol)
+        # virava inalcancavel pra ele, que e justamente quem precisa validar
+        # esse caminho. Agora "quero audio" e a amostra dele e "quero ouvir"
+        # e o produto de verdade.
+        elif _AMOSTRA_PEDIDO_RE.match(text):
+            if _decisao_de_conversa_viva(phone):
+                return ("Só um instante — me responde a de cima primeiro. 🙂"
+                        "\n\nDepois é só mandar *quero áudio* de novo.")
+            PODCAST_AMOSTRA_PERGUNTA[phone] = tempo.agora()
+            return ("🎧 De qual tema? Responde o número — eu gero na hora, "
+                    "com as notícias dos últimos %d dias.\n\n%s"
+                    % (AMOSTRA_JANELA_DIAS,
+                       "\n".join("*%d* — %s %s" % (i, d["emoji"], d["rotulo"])
+                                 for i, d in enumerate(
+                                     podcast.NICHOS.values(), 1))))
+
     # --- MINI-PODCAST: as tres respostas do convite -----------------------
     #
     # O audio SO sai daqui, como resposta a um toque. Nunca proativo: audio de
     # 3 min chegando sozinho e a mensagem mais intrusiva que existe no
     # WhatsApp, e este numero ja foi restringido duas vezes.
+    # "QUERO EXPERIMENTAR", o botao do template de novidade (M11).
+    #
+    # Ele existia so no `entende_comando` — que nao tem chamador em producao —
+    # entao o botao principal do lancamento era decorativo: a pessoa clicava e
+    # levava "nao identifiquei conta, data nem valor". Botao que o bot nao
+    # atende e a regra que ja custou um P0 nesta base.
+    #
+    # Cai no mesmo aceite da oferta, que e a lista de assuntos: hoje a unica
+    # novidade anunciada por esse template e o podcast, e a lista e o proximo
+    # passo da jornada que o dono desenhou.
+    if _NOVIDADE_ACEITE_RE.match(text):
+        if _decisao_de_conversa_viva(phone):
+            return ("Só um instante — me responde a de cima primeiro. 🙂"
+                    "\n\nDepois é só mandar *quero o áudio* de novo.")
+        PODCAST_PERGUNTA[phone] = tempo.agora()
+        return _pergunta_do_nicho()
+
     if _PODCAST_NAO_QUERO_RE.match(text):
         # CARIMBA A RECUSA (auditoria M5.4, P1-5). Zerar o nicho deixava
         # "disse nao" identico a "nunca escolheu", e o convite voltava. A
@@ -858,9 +929,17 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         # ela seguia viva por 20 min: um "games" solto logo depois re-assinava
         # quem tinha acabado de cancelar E apagava o carimbo da recusa.
         PODCAST_PERGUNTA.pop(phone, None)
+        # CARIMBA A NOVIDADE JUNTO (auditoria M11). "Nunca mais" e titulo
+        # de botao em DOIS lugares: na oferta do podcast e no template de
+        # novidade. Como o texto e o mesmo, o bot nao sabe de qual veio — e
+        # entre recusar de menos e recusar de mais, recusar de mais e o lado
+        # seguro: quem pediu pra nunca mais receber um aviso de audio nao
+        # quer o audio nem o proximo anuncio. A justificativa submetida a
+        # Meta promete exatamente isso.
         db.update_user_fields(user["id"], podcast_nicho=None,
                               podcast_dia=None,
-                              podcast_recusado_em=tempo.agora().isoformat())
+                              podcast_recusado_em=tempo.agora().isoformat(),
+                              novidade_recusada_em=tempo.agora().isoformat())
         return ("Beleza, cancelei o mini podcast. 👍\n\n"
                 "Seus lembretes continuam normais — isso aqui era só um "
                 "extra.\n\nSe mudar de ideia um dia, é só me mandar "
@@ -1184,6 +1263,12 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
             return "Tranquilo! 👍 Se quiser marcar depois, é só me dizer."
 
         if _low.startswith(("outra data", "ajust", "corrig")):
+            # CARIMBA JUNTO (auditoria M10, P1): sem `PENDING_EM`, o
+            # `_pending_vencido` trata a decisao como ja vencida e
+            # `_decisao_de_conversa_viva` devolve False pra uma decisao
+            # recem-nascida — que e o que deixa um slot de menu
+            # atropela-la.
+            PENDING_EM[phone] = tempo.agora()
             PENDING[phone] = {"tipo": "ajustar_retorno", "descricao": _desc,
                               "quando": tempo.agora()}
             return (f"Beleza! Me diz a data que você prefere pra *{_desc}* — "
@@ -1226,6 +1311,12 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
             # NÃO tenta adivinhar a correção. Devolve a bola pra pessoa, que é
             # quem tem o documento na mão — chutar de novo depois de ela dizer
             # que está errado é o jeito mais rápido de perder a confiança.
+            # CARIMBA JUNTO (auditoria M10, P1): sem `PENDING_EM`, o
+            # `_pending_vencido` trata a decisao como ja vencida e
+            # `_decisao_de_conversa_viva` devolve False pra uma decisao
+            # recem-nascida — que e o que deixa um slot de menu
+            # atropela-la.
+            PENDING_EM[phone] = tempo.agora()
             PENDING[phone] = {"tipo": "ajustar_documento", "doc": _doc,
                               "quando": tempo.agora()}
             return (f"Beleza! Me diz do seu jeito o que é e quando vence.\n\n"
@@ -1234,6 +1325,12 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
 
         # --- Confirmar ---
         if not _doc.get("data"):
+            # CARIMBA JUNTO (auditoria M10, P1): sem `PENDING_EM`, o
+            # `_pending_vencido` trata a decisao como ja vencida e
+            # `_decisao_de_conversa_viva` devolve False pra uma decisao
+            # recem-nascida — que e o que deixa um slot de menu
+            # atropela-la.
+            PENDING_EM[phone] = tempo.agora()
             PENDING[phone] = {"tipo": "ajustar_documento", "doc": _doc,
                               "quando": tempo.agora()}
             return ("Só falta a data. 📅\n\n"
@@ -1248,6 +1345,12 @@ def _handle_commands(user: dict, phone: str, text: str) -> Optional[str]:
         # tipos em que ela já é a data certa.
         _venc = documento.vencimento(_doc)
         if not _venc:
+            # CARIMBA JUNTO (auditoria M10, P1): sem `PENDING_EM`, o
+            # `_pending_vencido` trata a decisao como ja vencida e
+            # `_decisao_de_conversa_viva` devolve False pra uma decisao
+            # recem-nascida — que e o que deixa um slot de menu
+            # atropela-la.
+            PENDING_EM[phone] = tempo.agora()
             PENDING[phone] = {"tipo": "ajustar_documento", "doc": _doc,
                               "quando": tempo.agora()}
             return ("Só falta a data. 📅\n\nMe diz quando vence que eu guardo.")
@@ -1861,7 +1964,11 @@ def entende_comando(texto: str) -> bool:
         # pediu. O teste que varre os botoes dos templates cobra isto.
         or _PODCAST_QUERO_RE.match(t)
         or _PODCAST_DEPOIS_RE.match(t)
-        or _PODCAST_NAO_QUERO_RE.match(t))
+        or _PODCAST_NAO_QUERO_RE.match(t)
+        # "Quero experimentar", do template de novidade (M11). Mesmo motivo:
+        # e botao de template APROVADO, entao o clique chega fora da janela e
+        # nao pode cair no LLM.
+        or _NOVIDADE_ACEITE_RE.match(t))
 
 
 # OS TRÊS BOTÕES DA FOTO DE DOCUMENTO (M3.5).
@@ -1958,10 +2065,36 @@ _NICHO_DA_LANDING_RE = re.compile(
 #
 # Ancoradas na frase inteira de propósito: "quero ouvir a música que você
 # mandou" não pode virar um episódio de podcast.
+# O ACEITE DO TEMPLATE DE NOVIDADE (M11).
+#
+# O corpo e generico ("novidade: {{2}}") pra servir a qualquer lancamento,
+# entao o botao tambem e generico. Hoje a unica novidade que sai por ele e o
+# podcast, e por isso ele cai no mesmo aceite da oferta — quem clica recebe a
+# lista de assuntos, que e o proximo passo da jornada.
+#
+# QUANDO HOUVER UMA SEGUNDA NOVIDADE, este roteamento precisa saber qual foi
+# anunciada. Enquanto so ha uma, apontar pra ela e honesto; inventar um
+# registro de "ultima novidade anunciada" agora seria estrutura sem uso.
+_NOVIDADE_ACEITE_RE = re.compile(
+    r"^\s*(quero\s+experimentar|vou\s+experimentar|quero\s+testar)"
+    r"\s*[.!?]?\s*$", re.I)
+
+# A FRASE DA AMOSTRA DO DONO (M10), separada da do cliente de proposito.
+#
+# "quero ouvir" e o titulo do botao do convite semanal: se ela abrisse a
+# amostra, o dono perderia o unico jeito de validar o caminho que o cliente
+# percorre — que e exatamente o que ele pediu pra conferir.
+_AMOSTRA_PEDIDO_RE = re.compile(
+    r"^\s*(quero\s+[áa]udio|quero\s+um\s+[áa]udio|"
+    r"me\s+manda\s+um\s+[áa]udio)\s*[.!?]?\s*$", re.I)
+
 _PODCAST_QUERO_RE = re.compile(
     r"^\s*(quero\s+ouvir|manda\s+o\s+(mini\s+)?podcast|"
     r"quero\s+o\s+(mini\s+)?podcast|pode\s+mandar\s+o\s+[áa]udio|"
-    r"quero\s+o\s+[áa]udio|"
+    # O ARTIGO E OPCIONAL (M10): o dono digita "quero audio" pra colher a
+    # amostra dele, e "quero o audio" nao casava com isso — a frase caía no
+    # motor de anotacao e voltava "nao identifiquei conta, data nem valor".
+    r"quero\s+(o\s+)?[áa]udio|"
     # A FRASE DE VOLTA (M7.7). Toda saida do recurso termina dizendo
     # "quero os audios" — entao ela TEM que ser reconhecida aqui. Prometer
     # uma palavra que o Python nao entende e a regra que custou um P0.
@@ -1995,7 +2128,15 @@ _PODCAST_DEPOIS_RE = re.compile(
 _PODCAST_NAO_QUERO_RE = re.compile(
     r"^\s*(n[ãa]o\s+quero\s+mais(\s+o\s+podcast)?|"
     r"cancela(r)?\s+o\s+(mini\s+)?podcast|"
-    r"para(r)?\s+(o\s+)?podcast|sem\s+podcast)\s*[.!?]?\s*$", re.I)
+    r"para(r)?\s+(o\s+)?podcast|sem\s+podcast|"
+    # "NUNCA MAIS" E O TITULO DO BOTAO, e ele nao era reconhecido.
+    #
+    # A oferta do podcast sai com [Quero ouvir | Agora nao | Nunca mais]
+    # desde o M5.4, e quem tocasse no terceiro caía no LLM e podia levar
+    # "nao entendi" — logo depois de pedir pra nunca mais receber, que e a
+    # pior hora possivel pra parecer que o bot ignorou. O teste que varria
+    # botao de template nao pegava: a oferta e mensagem livre, nao template.
+    r"nunca\s+mais)\s*[.!?]?\s*$", re.I)
 
 # A RESPOSTA DA PERGUNTA DO DIA (M4.7).
 #
@@ -2837,7 +2978,7 @@ def _amostra_de_podcast(user: dict, phone: str, nicho: str = "",
     for chave in alvos:
         rotulo = podcast.rotulo(chave)
         try:
-            itens = noticias.buscar(chave)
+            itens = noticias.buscar(chave, dias=AMOSTRA_JANELA_DIAS)
         except Exception:
             import logging
             logging.getLogger("resolveai").warning(
@@ -2906,6 +3047,15 @@ PODCAST_PERGUNTA: dict = {}
 # escolha quando quer receber") e so entao os numeros 1 a 4 valem.
 PODCAST_FREQ_PERGUNTA: dict = {}
 
+# "Qual tema?" esperando resposta do DONO (M10). Slot proprio, como os outros
+# dois: numero so vira escolha enquanto a pergunta esta viva.
+PODCAST_AMOSTRA_PERGUNTA: dict = {}
+
+# A janela da amostra do dono e FIXA em 7 dias. A do cliente varia (5, 7, 15
+# ou 30) conforme a escolha de cada um; amostra com janela variavel nao
+# compara com nada de uma semana pra outra.
+AMOSTRA_JANELA_DIAS = 7
+
 
 def _decisao_de_conversa_viva(phone: str) -> bool:
     """Tem alguma coisa esperando resposta desta pessoa AGORA?
@@ -2950,6 +3100,18 @@ def _pergunta_de_nicho_viva(phone: str) -> bool:
         return False
     if (tempo.agora() - quando).total_seconds() > AJUSTE_TTL_S:
         PODCAST_PERGUNTA.pop(phone, None)
+        return False
+    return True
+
+
+def _pergunta_de_amostra_viva(phone: str) -> bool:
+    """Mesma regra dos outros dois slots, e pelo mesmo motivo: fora da
+    pergunta, digito e resposta de menu de OUTRO."""
+    quando = PODCAST_AMOSTRA_PERGUNTA.get(phone)
+    if not quando:
+        return False
+    if (tempo.agora() - quando).total_seconds() > AJUSTE_TTL_S:
+        PODCAST_AMOSTRA_PERGUNTA.pop(phone, None)
         return False
     return True
 
@@ -5306,6 +5468,12 @@ def handle_incoming(payload: dict) -> Optional[dict]:
         # interpretação — e item errado na lista é pior que item nenhum.
         _prop = documento.pergunta_de_confirmacao(documento.reconhecer(ocr))
         if _prop:
+            # CARIMBA JUNTO (auditoria M10, P1): sem `PENDING_EM`, o
+            # `_pending_vencido` trata a decisao como ja vencida e
+            # `_decisao_de_conversa_viva` devolve False pra uma decisao
+            # recem-nascida — que e o que deixa um slot de menu
+            # atropela-la.
+            PENDING_EM[phone] = tempo.agora()
             PENDING[phone] = {"tipo": "confirmar_documento",
                               "doc": _prop["doc"],
                               "quando": tempo.agora()}
@@ -6292,6 +6460,15 @@ PODERES = [
              "frequência_, ou _não quero mais o podcast_. "
              "Custa ~US$ 0,03 por áudio. Você testa com "
              "_amostra do podcast_ e acompanha nos 3 faróis do painel."},
+    {"grupo": "Sai aviso", "titulo": "Aviso de novidade",
+     "desc": "Template aprovado pra anunciar funcionalidade nova. O nome da "
+             "novidade e a frase que explica são variáveis, então o mesmo "
+             "template serve pro próximo lançamento sem nova submissão. "
+             "MARKETING, assumido: anunciar feature é falar do produto, e a "
+             "régua da Meta separa pelo motivo, não pelo tom. Sai UMA vez "
+             "por lançamento, só quando VOCÊ dispara no botão de lote — não "
+             "tem checagem automática de propósito. Traz \"Nunca mais\", que "
+             "desliga o aviso pra sempre pra quem tocar."},
     {"grupo": "Sai aviso", "titulo": "Arquivamento com aviso",
      "desc": "Item parado 15 dias sai da lista, mas só DEPOIS que o aviso "
              "comprovadamente saiu. Nunca some calado."},

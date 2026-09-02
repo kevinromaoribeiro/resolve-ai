@@ -52,7 +52,13 @@ def limpo(monkeypatch):
                  # M5.4: a pergunta do nicho tem slot proprio, fora do
                  # PENDING. Fora desta lista ela vazava de um teste pro
                  # outro e o seguinte media a pergunta do anterior.
-                 "PODCAST_PERGUNTA"):
+                 # M9/M10: os outros dois slots do podcast tem o MESMO
+                 # problema e ficaram de fora quando nasceram. Cada arquivo
+                 # de teste limpava o seu na mao, o que cobre o proprio
+                 # arquivo e nao o vizinho — e vazamento de slot foi o que
+                 # escondeu dois defeitos nesta fase.
+                 "PODCAST_PERGUNTA", "PODCAST_FREQ_PERGUNTA",
+                 "PODCAST_AMOSTRA_PERGUNTA"):
         alvo = getattr(wa_bot, nome, None)
         if isinstance(alvo, dict):
             alvo.clear()
