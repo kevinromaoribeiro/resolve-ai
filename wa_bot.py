@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v29.3-um-episodio-por-tema-2026-09-02"
+BUILD = "v29.4-a-prosa-nao-vira-silencio-2026-09-02"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6284,9 +6284,15 @@ def _diagnostico_de_audio() -> dict:
     try:
         import voz as _voz
         tem = _voz.tem_ffmpeg()
+        falha = getattr(_voz, "_ULTIMA_FALHA_OPUS", "") or ""
         return {"ffmpeg": tem,
                 "formato": _voz.formato_de_saida()[1],
-                "acelerador": "sim" if tem else "nao (sai em mp3)"}
+                "acelerador": ("sim" if tem and not falha
+                               else "nao (sai em mp3)"),
+                # O MOTIVO, quando a colagem falhou. Sem ele o diagnostico
+                # diz "tem ffmpeg: sim" e o audio chega sem acelerador, e
+                # nao ha por onde comecar.
+                "ultima_falha_opus": falha[:200]}
     except Exception:
         return {"ffmpeg": None, "formato": "?", "acelerador": "?"}
 

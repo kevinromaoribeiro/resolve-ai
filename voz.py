@@ -282,6 +282,14 @@ def formato_de_saida() -> tuple:
     return ("ogg", "audio/ogg") if tem_ffmpeg() else (FORMATO, MIME)
 
 
+# O ULTIMO MOTIVO PELO QUAL A COLAGEM EM OPUS FALHOU, ou "".
+#
+# Sem Opus nao ha botao de 1x/1,5x/2x — o episodio sai em MP3, toca e nao
+# acelera. Este campo aparece no /health porque o log do container e canvas
+# e nao da pra ler.
+_ULTIMA_FALHA_OPUS = ""
+
+
 def _colar_opus(pedacos: list) -> Optional[bytes]:
     """Junta os trechos num OGG/Opus so — o formato de nota de voz.
 
@@ -292,6 +300,7 @@ def _colar_opus(pedacos: list) -> Optional[bytes]:
     if not pedacos or not tem_ffmpeg():
         return None
     import os as _os
+    global _ULTIMA_FALHA_OPUS
     import subprocess
     import tempfile
     pasta = tempfile.mkdtemp(prefix="voz_")
@@ -313,13 +322,21 @@ def _colar_opus(pedacos: list) -> Optional[bytes]:
              saida],
             capture_output=True, timeout=180)
         if r.returncode != 0 or not _os.path.exists(saida):
+            # GUARDA O MOTIVO PRA QUEM NAO LE LOG DE CONTAINER. O painel de
+            # logs da hospedagem e canvas: nao da pra copiar, nao da pra
+            # buscar. Sem isto, "cade o acelerador de velocidade?" so se
+            # responde por adivinhacao.
+            _ULTIMA_FALHA_OPUS = "rc=%s %s" % (
+                r.returncode,
+                (r.stderr or b"").decode("utf-8", "replace")[:200])
             log.warning("[voz] ffmpeg falhou (%s) — episodio sai em mp3: %s",
                         r.returncode, (r.stderr or b"")[:180])
             return None
         with open(saida, "rb") as f:
             dados = f.read()
         return dados or None
-    except Exception:
+    except Exception as e:
+        _ULTIMA_FALHA_OPUS = repr(e)[:200]
         log.warning("[voz] nao consegui colar em opus — episodio sai em mp3",
                     exc_info=True)
         return None

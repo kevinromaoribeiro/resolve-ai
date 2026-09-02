@@ -413,7 +413,7 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
                   + ([{"role": "user",
                        "content": "Responda SOMENTE o JSON pedido."}]
                      if tentativa else []),
-            )
+                **_forcar_json())
             bruto = resp.choices[0].message.content
             bruto = re.sub(r"```(?:json)?|```", "", bruto).strip()
             try:
@@ -436,6 +436,24 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
                     # JSON ("Extra data"). Pega so o primeiro objeto.
                     data = _primeiro_json(bruto)
                     if data is None:
+                        # A PROSA VIRA RESPOSTA (M14). Em 02/09 um cliente
+                        # perguntou a lista de compras, o modelo respondeu
+                        # CERTO — em prosa — e a pessoa nao recebeu nada,
+                        # porque o motor so aceitava JSON. Resposta boa
+                        # jogada fora e a pior troca possivel: o cliente
+                        # fica sem nada e a gente paga o token do mesmo
+                        # jeito.
+                        #
+                        # Vem com intencao NEUTRA de proposito: ela responde
+                        # e nao age. Agir a partir de texto que a gente nao
+                        # conseguiu interpretar seria adivinhar em cima da
+                        # lista de alguem.
+                        _texto = _prosa_aproveitavel(bruto)
+                        if _texto:
+                            _registrar_falha(
+                                f"json invalido ({e}) — usei a prosa "
+                                f":: {bruto[:200]}")
+                            return {"intent": "conversa", "reply": _texto}
                         _registrar_falha(
                             f"json invalido ({e}) :: {bruto[:400]}")
                         continue
@@ -447,6 +465,55 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
     except Exception as e:
         _registrar_falha(f"excecao no LLM: {e!r}")
         return None
+
+
+def _forcar_json() -> dict:
+    """O parametro que faz a API devolver JSON valido, quando ela aceita.
+
+    E a cura de raiz do "modelo respondeu em prosa": nao ha o que remendar
+    quando o formato nao pode vir errado. Fica opcional porque nem todo
+    provedor suporta — e perder a resposta inteira por causa de um parametro
+    seria trocar um defeito por um pior.
+    """
+    if (os.environ.get("LLM_JSON_ESTRITO", "1") or "1").strip().lower() in (
+            "0", "nao", "não", "false", "off"):
+        return {}
+    return {"response_format": {"type": "json_object"}}
+
+
+def _prosa_aproveitavel(bruto: str) -> str:
+    """O texto que da pra mandar pra pessoa, ou "" se nao der.
+
+    CORTA NA ULTIMA FRASE FECHADA. A resposta que o modelo devolveu no
+    incidente terminava em "Qual item voce " — mandar isso no WhatsApp de
+    alguem e pior que nao mandar: parece que o bot travou no meio.
+
+    Recusa o que parece JSON quebrado: ali o modelo TENTOU o formato e
+    falhou, e o pedaco solto nao e uma resposta, e um fragmento de dado.
+    """
+    t = (bruto or "").strip()
+    if not t or t[0] in "{[" or '"reply"' in t or '"intent"' in t:
+        return ""
+    if len(t) < 15:
+        return ""
+    # DESCARTA SO A ULTIMA LINHA INACABADA, nao corta na pontuacao.
+    #
+    # Cortar na ultima pontuacao jogava fora a lista inteira do incidente: o
+    # ultimo ponto estava no "Anotado." da primeira linha, e tudo depois
+    # dele — que era a resposta — sumia. O que sobrava era so a promessa sem
+    # o conteudo.
+    #
+    # O defeito real era a ULTIMA linha, "Qual item voce ", cortada no meio.
+    # Entao e ela que sai, e o resto fica.
+    linhas = [l for l in t.split(chr(10))]
+    while linhas and not linhas[-1].strip():
+        linhas.pop()
+    if len(linhas) > 1:
+        fim = linhas[-1].strip()
+        if fim and fim[-1] not in '.!?:)"\'':
+            linhas.pop()
+    t = chr(10).join(linhas).strip()
+    return t[:900] if len(t) >= 15 else ""
 
 
 def _preparar_item(novo: dict, ai_engine, texto_origem: str = "",
