@@ -575,12 +575,17 @@ def e_do_assunto(nicho: str, titulo: str, resumo: str = "") -> bool:
 # entrega 6 é a primeira coisa que faz alguém desativar o recurso.
 PALAVRAS_POR_MINUTO = 150
 DURACAO_ALVO_MIN = 3
-PALAVRAS_ALVO = PALAVRAS_POR_MINUTO * DURACAO_ALVO_MIN     # 450
+# O ALVO FICA ABAIXO DO TETO, e nao colado nele (auditoria M16, P2). Quando
+# os dois eram 450, o prompt pedia "ate 450" e qualquer estouro reprovava o
+# roteiro do LLM — caindo no deterministico, que e justamente o texto seco
+# que o dono chamou de zumbi. E o fim do roteiro e onde moram as FONTES: era
+# a primeira coisa a se perder.
+PALAVRAS_ALVO = 400
 # O TETO E 3 MINUTOS, DURO (decisao do dono, 02/09/2026): "o limite das
 # noticias deve ser 3min, entao dai pra baixo podemos usar a vontade". A
 # folga de 15% que existia aqui entregava 3min27 — passar do que se promete
 # e a primeira coisa que faz alguem desativar o recurso.
-PALAVRAS_TETO = PALAVRAS_ALVO                              # 450: 3min cravado
+PALAVRAS_TETO = PALAVRAS_POR_MINUTO * DURACAO_ALVO_MIN     # 450: 3min cravado
 
 # Três blocos. Menos que isso vira nota solta; mais que isso não cabe em 3 min
 # sem virar manchete lida em voz alta.

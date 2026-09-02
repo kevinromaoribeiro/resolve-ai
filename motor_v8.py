@@ -366,6 +366,18 @@ def _registrar_falha(motivo: str) -> None:
     /health para diagnóstico em 1 request.
     """
     global ULTIMA_FALHA
+    # ATRIBUICAO SIMPLES, DE PROPOSITO (auditoria M16, 3a rodada).
+    #
+    # Eu tinha feito isto ACUMULAR pra nao perder o motivo especifico debaixo
+    # do generico. Saiu pior: `ULTIMA_FALHA` e global de PROCESSO e nao zera
+    # entre requisicoes — entao o que acumulava era de UM CLIENTE PRO OUTRO,
+    # e quem le esta string e o alerta do dono. Uma falha antiga contendo
+    # "reconsultando" passou a SUPRIMIR o alerta da falha nova de outra
+    # pessoa; a assinatura de dedup colou nos 80 primeiros chars, que eram os
+    # velhos; e o `motivo[:220]` do aviso mostrava o motivo errado.
+    #
+    # O problema original se resolve na ORIGEM: quem ja registrou o motivo
+    # especifico simplesmente nao registra o generico por cima.
     ULTIMA_FALHA = motivo[:600]
     try:
         import logging
@@ -449,13 +461,42 @@ def _llm(text, nome, itens, fatos, historico, ai_engine, situacao="",
                         # conseguiu interpretar seria adivinhar em cima da
                         # lista de alguem.
                         _texto = _prosa_aproveitavel(bruto)
+                        # AS DUAS GUARDAS VALEM PRA PROSA TAMBEM (auditoria
+                        # M16, P1). Elas sao chaveadas por `intent`, e a
+                        # intencao neutra que eu dei pra prosa escapava das
+                        # duas:
+                        #
+                        #   - PROMESSA: "Anotado! Vou te lembrar da luz dia
+                        #     12" voltava como conversa, nada era gravado e
+                        #     ninguem reconsultava. Antes do M14 isso era
+                        #     silencio; virou MENTIRA, que e pior. Agora a
+                        #     prosa e recusada e o laco reconsulta.
+                        #   - CONFERENCIA: valor em reais tem que bater com
+                        #     o banco, venha em JSON ou em prosa.
+                        _ja_explicado = False
+                        if _texto and _promete_guardar(_texto):
+                            _registrar_falha(
+                                "prosa prometia guardar — reconsultando "
+                                ":: %s" % _texto[:120])
+                            _texto, _ja_explicado = "", True
+                        if _texto and _consulta_confere(_texto, itens):
+                            _registrar_falha(
+                                "prosa nao bate com o banco :: %s"
+                                % _texto[:120])
+                            _texto, _ja_explicado = "", True
                         if _texto:
                             _registrar_falha(
                                 f"json invalido ({e}) — usei a prosa "
                                 f":: {bruto[:200]}")
                             return {"intent": "conversa", "reply": _texto}
-                        _registrar_falha(
-                            f"json invalido ({e}) :: {bruto[:400]}")
+                        # SO REGISTRA O GENERICO SE NINGUEM JA EXPLICOU
+                        # MELHOR. As guardas acima gravam o motivo especifico
+                        # ("prosa prometia guardar", "prosa nao bate com o
+                        # banco"); sobrescrever com "json invalido" apagaria
+                        # justamente o que ajuda a entender o que houve.
+                        if not _ja_explicado:
+                            _registrar_falha(
+                                f"json invalido ({e}) :: {bruto[:400]}")
                         continue
                     _registrar_falha("json com texto extra — recortado")
             if data.get("reply") and data.get("intent"):
@@ -479,6 +520,10 @@ def _forcar_json() -> dict:
             "0", "nao", "não", "false", "off"):
         return {}
     return {"response_format": {"type": "json_object"}}
+
+
+# O que FECHA uma frase. Fora disto, a linha foi cortada no meio.
+_FIM_DE_FRASE = '.!?:)' + chr(34) + chr(39)
 
 
 def _prosa_aproveitavel(bruto: str) -> str:
@@ -508,12 +553,42 @@ def _prosa_aproveitavel(bruto: str) -> str:
     linhas = [l for l in t.split(chr(10))]
     while linhas and not linhas[-1].strip():
         linhas.pop()
-    if len(linhas) > 1:
+    # UM CRITERIO SO, PRAS DUAS FORMAS (auditoria M16, 3a rodada).
+    #
+    # Eu tinha consertado so o ramo de uma linha e deixado o de varias com a
+    # regra estrita — e ela COMIA O ULTIMO ITEM DA LISTA do cliente:
+    #
+    #   "Voce tem 3 contas:
+    #    • Luz — R$ 187,00 · *12/08*
+    #    • Net — R$ 129,00 · *15/08*"   -> a linha da Net sumia
+    #
+    # `*` e emoji nao fecham frase pela pontuacao, e e exatamente assim que
+    # este produto escreve: `_item_linha` monta a data em negrito, e a regra
+    # 17 do prompt manda formatar assim. Lista chegando incompleta, sem
+    # nenhum sinal disso, e pior que nao chegar.
+    #
+    # A assinatura de quem foi CORTADO NO MEIO e outra: termina em letra ou
+    # digito e nao tem nenhum fechamento na propria linha. E o "Qual item
+    # voce " do incidente — e nao o "• Net — R$ 129,00 · *15/08*".
+    if linhas:
         fim = linhas[-1].strip()
-        if fim and fim[-1] not in '.!?:)"\'':
+        if (fim and fim[-1].isalnum()
+                and not any(c in fim for c in _FIM_DE_FRASE)):
             linhas.pop()
     t = chr(10).join(linhas).strip()
-    return t[:900] if len(t) >= 15 else ""
+    if len(t) < 15:
+        return ""
+    # FRAGMENTO DE JSON NO MEIO TAMBEM NAO E RESPOSTA. A guarda de cima so
+    # olha o COMECO do texto; 'Aqui esta o resumo: {"itens": [{...' passava
+    # inteiro pro cliente.
+    if '{"' in t or "[{" in t:
+        return ""
+    if len(t) <= 900:
+        return t
+    # CORTA NO ESPACO, nao no meio da palavra: o teto de 900 reintroduzia o
+    # mesmo "bot travado" que esta funcao existe pra impedir.
+    corte = t.rfind(" ", 0, 900)
+    return (t[:corte] if corte > 400 else t[:900]).rstrip() + "..."
 
 
 def _preparar_item(novo: dict, ai_engine, texto_origem: str = "",

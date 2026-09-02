@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v29.4-a-prosa-nao-vira-silencio-2026-09-02"
+BUILD = "v29.5-audio-acelera-e-prosa-nao-mente-2026-09-02"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -2984,7 +2984,10 @@ def _amostra_de_podcast(user: dict, phone: str, nicho: str = "",
             logging.getLogger("resolveai").warning(
                 "[amostra] feed de %s falhou", chave, exc_info=True)
             itens = []
-        roteiro = podcast.locucao(chave, itens, nome=user.get("nome") or "")
+        # SEM NOME, IGUAL AO CLIENTE (auditoria M16, P2). O roteiro do
+        # cliente perdeu o nome no M12; se a amostra mantivesse, ela deixaria
+        # de ser "o que o cliente ouviria" — que e a unica razao dela existir.
+        roteiro = podcast.locucao(chave, itens)
         if not roteiro:
             linhas.append(f"• {rotulo}: sem notícia da semana")
             continue
@@ -3015,7 +3018,10 @@ def _amostra_de_podcast(user: dict, phone: str, nicho: str = "",
     # nome do tema antes da faixa; o resto era ruido de bastidor na conversa
     # dele. Quando algo NAO sai, ai sim o texto tem serventia — e so ai.
     if ok == len(alvos):
-        return ""
+        # O audio e a legenda ja sairam; nao ha texto a acrescentar. Mas
+        # devolver "" faria a mensagem seguir pro motor de IA como nao
+        # tratada — ver `SEM_RESPOSTA`.
+        return SEM_RESPOSTA
     return ("Nem tudo saiu:\n\n" + "\n".join(linhas))
 
 
@@ -3052,6 +3058,15 @@ PODCAST_FREQ_PERGUNTA: dict = {}
 # "Qual tema?" esperando resposta do DONO (M10). Slot proprio, como os outros
 # dois: numero so vira escolha enquanto a pergunta esta viva.
 PODCAST_AMOSTRA_PERGUNTA: dict = {}
+
+# "TRATEI, E NAO HA O QUE DIZER" — precisa ser dizivel (M15).
+#
+# String vazia nao diz isso: os chamadores testam `if resposta:`, e vazio e
+# indistinguivel de "nao tratei". Foi assim que a amostra do dono, que passou
+# a nao mandar relatorio, deixou o "13" seguir pro motor de IA — e ele
+# respondeu por conta propria com uma lista de noticias INVENTADA, de outro
+# assunto, logo abaixo do audio certo.
+SEM_RESPOSTA = "\x00sem-resposta"
 
 # A janela da amostra do dono e FIXA em 7 dias. A do cliente varia (5, 7, 15
 # ou 30) conforme a escolha de cada um; amostra com janela variavel nao
@@ -3436,54 +3451,68 @@ def _mandar_podcast(user: dict, phone: str) -> str:
             _saiu += 1
             continue
 
-        _diag: dict = {}
-        try:
-            itens = noticias.buscar(_k, dias=_janela, relatorio=_diag)
-        except Exception:
-            _log.warning("[podcast] falha ao buscar noticia de %s", _k,
-                         exc_info=True)
-            itens = []
-            _diag = {"fontes": 3, "falharam": 3}
-        # AS TRES FONTES CAIRAM E "NAO TEVE NOTICIA" SAO COISAS DIFERENTES.
-        # A primeira e o assunto mudo e tem que acender o farol; a segunda e
-        # o produto se comportando ("prefiro nao te mandar audio so pra
-        # cumprir tabela") e nao pode acender nada.
-        _fontes_mudas = (_diag.get("falharam", 0) >= _diag.get("fontes", 3)
-                         and _diag.get("fontes", 0) > 0)
-
-        # SEM O NOME DELA NO ROTEIRO (M12). Ele era o unico pedaco que
-        # diferia entre duas pessoas do mesmo tema — e era ele que obrigava
-        # a pagar uma sintese por pessoa. O nome continua na mensagem de
-        # texto que acompanha; o audio virou o mesmo pra todo mundo.
-        roteiro = podcast.locucao(_k, itens)
-        if not roteiro:
-            _vazios.append(podcast.rotulo(_k).lower())
-            # SEMANA QUIETA NAO E FALHA (auditoria M9, P2) — mas fonte
-            # caida e. Contando as duas como falha, o farol acenderia laranja
-            # em rotina ate o dono aprender a ignora-lo, que e o oposto do
-            # motivo dele existir; contando as duas como sucesso, ele nunca
-            # avisaria que um assunto ficou mudo.
-            db.podcast_registrar_episodio(
-                user["id"], _k, 0, not _fontes_mudas,
-                "fontes fora do ar" if _fontes_mudas
-                else "sem noticia na janela")
-            continue
-
-        # O EPISODIO DO DIA E DE TODO MUNDO (M12). Mesma chave = mesmo
-        # tema, mesma janela, mesmo dia — entao e o mesmo audio, e pagar
-        # sintese de novo seria pagar duas vezes pelo mesmo arquivo.
+        # O EPISODIO DO DIA VEM ANTES DE TUDO (auditoria M16, P2). A leitura
+        # do cache estava DEPOIS do "sem noticia, continue": se o feed da
+        # pessoa voltasse vazio naquele instante, ela ficava sem audio embora
+        # existisse episodio valido do tema+janela dela guardado hoje. E, no
+        # acerto, a busca de RSS e a chamada paga de LLM ja tinham rodado pra
+        # ser jogadas fora — o M12 economizava TTS e desperdicava o resto.
+        # UM BLOCO DE ENVIO SO (auditoria M16, 3a rodada). Eu tinha
+        # duplicado o envio inteiro aqui e esqueci o freio anti-rajada
+        # na copia — justamente no caminho que a maioria percorre,
+        # porque o M12 existe pra maioria acertar o cache. Duas copias
+        # significam lembrar da proxima correcao duas vezes, e foi isso
+        # que falhou. Agora o cache so preenche `audio`; quem envia e um
+        # trecho unico, la embaixo.
         audio = db.podcast_episodio_do_dia(_k, _janela)
+        roteiro = ""
+
+        # SO PAGA RSS, LLM E TTS QUEM NAO TEM EPISODIO PRONTO.
         if not audio:
+            _diag: dict = {}
+            try:
+                itens = noticias.buscar(_k, dias=_janela, relatorio=_diag)
+            except Exception:
+                _log.warning("[podcast] falha ao buscar noticia de %s", _k,
+                             exc_info=True)
+                itens = []
+                _diag = {"fontes": 3, "falharam": 3}
+            # AS TRES FONTES CAIRAM E "NAO TEVE NOTICIA" SAO COISAS DIFERENTES.
+            # A primeira e o assunto mudo e tem que acender o farol; a segunda e
+            # o produto se comportando ("prefiro nao te mandar audio so pra
+            # cumprir tabela") e nao pode acender nada.
+            _fontes_mudas = (_diag.get("falharam", 0) >= _diag.get("fontes", 3)
+                             and _diag.get("fontes", 0) > 0)
+
+            # SEM O NOME DELA NO ROTEIRO (M12). Ele era o unico pedaco que
+            # diferia entre duas pessoas do mesmo tema — e era ele que obrigava
+            # a pagar uma sintese por pessoa. O nome continua na mensagem de
+            # texto que acompanha; o audio virou o mesmo pra todo mundo.
+            roteiro = podcast.locucao(_k, itens)
+            if not roteiro:
+                _vazios.append(podcast.rotulo(_k).lower())
+                # SEMANA QUIETA NAO E FALHA (auditoria M9, P2) — mas fonte
+                # caida e. Contando as duas como falha, o farol acenderia laranja
+                # em rotina ate o dono aprender a ignora-lo, que e o oposto do
+                # motivo dele existir; contando as duas como sucesso, ele nunca
+                # avisaria que um assunto ficou mudo.
+                db.podcast_registrar_episodio(
+                    user["id"], _k, 0, not _fontes_mudas,
+                    "fontes fora do ar" if _fontes_mudas
+                    else "sem noticia na janela")
+                continue
+
+            # O EPISODIO DO DIA E DE TODO MUNDO (M12). Mesma chave = mesmo
+            # tema, mesma janela, mesmo dia — entao e o mesmo audio, e pagar
+            # sintese de novo seria pagar duas vezes pelo mesmo arquivo.
             audio = voz.sintetizar(roteiro)
             if audio:
                 db.podcast_guardar_episodio_do_dia(_k, _janela, audio)
-        if not audio:
-            db.podcast_registrar_episodio(user["id"], _k, 0, False,
-                                          "voz nao sintetizou")
-            continue
+            if not audio:
+                db.podcast_registrar_episodio(user["id"], _k, 0, False,
+                                              "voz nao sintetizou")
+                continue
 
-        # O NOME ANTES DO AUDIO, e so quando ha mais de um: com um assunto
-        # so, a legenda vira ruido — a pessoa sabe o que pediu.
         # ESPACAMENTO, como em todo envio em lote desta casa (auditoria M9,
         # P1-4). Tres assuntos sao ate sete mensagens; manda-las de enfiada e
         # a assinatura de ritmo que ja rendeu 3h de restricao neste numero
@@ -3907,6 +3936,8 @@ def _reprocessar_fila(user: dict, phone: str, fila: list):
     try:
         for texto in fila:
             resposta = _handle_commands(user, phone, texto)
+            if resposta == SEM_RESPOSTA:
+                continue          # tratado, e sem texto a mandar
             if resposta:
                 respostas.append(resposta)
             else:
@@ -5056,6 +5087,8 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     if user.get("onboarding_step") in LGPD_STEPS:
         cmd_pre = (_handle_commands(user, phone, content)
                    if kind == "texto" else None)
+        if cmd_pre == SEM_RESPOSTA:
+            return None           # tratado, e sem texto a mandar
         if cmd_pre:
             return {"number": phone, "text": cmd_pre}
         resposta, reprocessar = _resolver_aceite(user, phone, kind, content)
@@ -5152,6 +5185,8 @@ def handle_incoming(payload: dict) -> Optional[dict]:
     # --- 1. comandos globais e onboarding --------------------------------
     if kind == "texto":
         cmd_reply = _handle_commands(user, phone, content)
+        if cmd_reply == SEM_RESPOSTA:
+            return None           # tratado, e sem texto a mandar
         if cmd_reply:
             return {"number": phone, "text": cmd_reply}
         _step_antes = user.get("onboarding_step")
@@ -8963,8 +8998,14 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
                     log.warning("[painel] amostra do podcast falhou",
                                 exc_info=True)
                     return JSONResponse({"ok": False, "erro": repr(e)[:200]})
-                send_whatsapp(_alvo, _txt)
-                return JSONResponse({"ok": True, "resumo": _txt})
+                # O SENTINELA NAO E TEXTO (auditoria M16, P0). Aqui a
+                # amostra e mandada pra OUTRA pessoa avaliar junto, entao um
+                # "\x00sem-resposta" iria pro telefone de um terceiro.
+                if _txt and _txt != SEM_RESPOSTA:
+                    send_whatsapp(_alvo, _txt)
+                return JSONResponse({"ok": True,
+                                     "resumo": "" if _txt == SEM_RESPOSTA
+                                     else _txt})
             uid = int(body.get("user_id"))
             acao = body.get("acao")
             ok = False

@@ -353,3 +353,74 @@ def test_a_palavra_ambigua_nao_entra_sozinha(tema, titulo):
 ])
 def test_com_o_contexto_do_assunto_ela_vale(tema, titulo):
     assert podcast.e_do_assunto(tema, titulo, ""), titulo
+
+
+def test_o_envio_espaca_tambem_com_o_cache_quente(usuario, com_voz,
+                                                  monkeypatch):
+    """O freio some justamente no caminho MAJORITÁRIO (auditoria M16).
+
+    O M12 existe pra maioria acertar o cache — e o bloco de envio do acerto,
+    que eu dupliquei, não trouxe o `sleep` junto. Pior que uma rajada comum:
+    sem cache, a busca de RSS e a chamada de LLM espaçavam o laço por
+    acidente; com ele, seis mensagens saíam em milissegundos, num número que
+    a Meta já restringiu duas vezes.
+
+    O teste antigo continuava verde porque o `conftest` limpa
+    `podcast_episodio` antes de cada teste: ele só exercitava a síntese.
+    """
+    import time as _t
+    esperas = []
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 8.0)
+    monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 15.0)
+    monkeypatch.setattr(_t, "sleep", lambda s: esperas.append(s))
+    gerou = []
+    monkeypatch.setattr(noticias, "buscar",
+                        lambda *a, **k: gerou.append("rss") or [
+                            {"titulo": "N", "resumo": "r", "fonte": "F",
+                             "link": "http://x", "data": None}])
+    monkeypatch.setattr(podcast, "locucao",
+                        lambda *a, **k: gerou.append("llm") or "BIA: oi.")
+    monkeypatch.setattr(wa_bot.wasender, "falar_audio",
+                        lambda tel, a, **k: {"enviado": True})
+    monkeypatch.setattr(wa_bot.wasender, "falar",
+                        lambda tel, t, **k: {"enviado": True})
+
+    # o episódio do dia já existe pros três temas — é o caso comum
+    for _k in ("futebol", "economia", "moda"):
+        db.podcast_guardar_episodio_do_dia(_k, 7, b"OggS" + b"x" * 900)
+
+    _pronto(usuario, "futebol,economia,moda")
+    db.update_user_fields(usuario["id"], podcast_frequencia="7")
+    responder("quero ouvir")
+
+    assert len(esperas) == 2, ("rajada no caminho do cache", esperas)
+    assert all(8.0 <= s <= 15.0 for s in esperas), esperas
+    # E PROVA QUE PASSOU MESMO PELO CACHE. Sem isto o teste ficaria verde
+    # ainda que o cache falhasse: o caminho de geracao tambem espaca, entao
+    # dois sleeps sozinhos nao distinguem os dois.
+    assert not gerou, ("nao passou pelo cache", gerou)
+
+
+def test_o_cache_quente_nao_gasta_tts(usuario, com_voz, monkeypatch):
+    """A leitura subiu pra antes do RSS e do LLM: no acerto, nada disso
+    roda. O M12 economizava só TTS e desperdiçava o resto."""
+    gastou = []
+    monkeypatch.setattr(voz, "sintetizar",
+                        lambda *a, **k: gastou.append("tts") or b"OggS")
+    monkeypatch.setattr(noticias, "buscar",
+                        lambda *a, **k: gastou.append("rss") or [
+                            {"titulo": "N", "resumo": "r",
+                             "fonte": "F", "link": "x",
+                             "data": None}])
+    monkeypatch.setattr(podcast, "locucao",
+                        lambda *a, **k: gastou.append("llm") or "BIA: oi.")
+    monkeypatch.setattr(wa_bot.wasender, "falar_audio",
+                        lambda tel, a, **k: {"enviado": True})
+    monkeypatch.setattr(wa_bot.wasender, "falar",
+                        lambda tel, t, **k: {"enviado": True})
+
+    db.podcast_guardar_episodio_do_dia("futebol", 7, b"OggS" + b"x" * 900)
+    _pronto(usuario, "futebol")
+    db.update_user_fields(usuario["id"], podcast_frequencia="7")
+    responder("quero ouvir")
+    assert not gastou, gastou

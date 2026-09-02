@@ -256,7 +256,7 @@ def test_o_parser_continua_nunca_levantando():
 # ===========================================================================
 
 def test_nenhum_texto_promete_dois_minutos(usuario):
-    """O motor mira 3 min (PALAVRAS_ALVO=450, teto 3min27). O convite evita
+    """O motor mira 3 min (PALAVRAS_ALVO=400, teto 450 = 3min cravados). O convite evita
     prometer duracao DE PROPOSITO; os outros textos desfaziam isso."""
     import inspect
     for fonte in (inspect.getsource(wa_bot), inspect.getsource(scheduler)):

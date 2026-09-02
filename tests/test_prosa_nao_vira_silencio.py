@@ -91,3 +91,98 @@ def test_a_prosa_nao_age_sozinha():
 
 def test_o_texto_longo_e_limitado():
     assert len(motor_v8._prosa_aproveitavel("Frase. " * 500)) <= 900
+
+
+# ---------------------------------------------------------------------------
+# As guardas valem pra prosa também (auditoria M16, P1)
+# ---------------------------------------------------------------------------
+# A intenção neutra que eu dei pra prosa desligava as duas verificações que o
+# motor faz por `intent`. Antes do M14 esses casos eram silêncio; viraram
+# MENTIRA, que é pior.
+
+def test_prosa_que_promete_guardar_e_recusada():
+    """"Anotado! Vou te lembrar da luz dia 12" voltava como conversa, nada
+    era gravado e ninguém reconsultava. O docstring da própria função do
+    motor chama isso de "a única falha que destrói a confiança de vez"."""
+    assert motor_v8._promete_guardar("Anotado! Vou te lembrar da luz dia 12.")
+
+
+def test_a_recusa_esta_no_caminho_da_prosa():
+    import inspect
+    fonte = inspect.getsource(motor_v8._llm)
+    assert "_promete_guardar(_texto)" in fonte, (
+        "a prosa voltou a prometer sem gravar")
+    assert "_consulta_confere(_texto, itens)" in fonte, (
+        "valor em reais na prosa não é mais batido contra o banco")
+
+
+@pytest.mark.parametrize("bruto", [
+    "Vou conferir o valor da sua conta de luz e te",
+    "Deixa eu ver aqui a sua lista de",
+])
+def test_prosa_de_uma_linha_cortada_no_meio_nao_sai(bruto):
+    """A guarda estava dentro de `len(linhas) > 1` — então a forma MAIS
+    provável do defeito (resposta curta truncada) passava inteira."""
+    assert motor_v8._prosa_aproveitavel(bruto) == ""
+
+
+def test_fragmento_de_json_no_meio_nao_sai():
+    """A guarda só olhava o começo do texto."""
+    assert motor_v8._prosa_aproveitavel(
+        'Aqui esta o resumo: {"itens": [{"descricao": "luz"') == ""
+
+
+def test_o_teto_corta_na_palavra_inteira():
+    """Cortar em 900 no meio da palavra reintroduz o mesmo "bot travado"
+    que esta função existe pra impedir."""
+    saida = motor_v8._prosa_aproveitavel("palavra completa. " * 100)
+    assert saida.endswith("...")
+    assert not saida.replace("...", "").endswith("palavr")
+    assert len(saida) <= 905
+
+
+# ---------------------------------------------------------------------------
+# As guardas EXERCITADAS, não conferidas por string no fonte
+# ---------------------------------------------------------------------------
+# O auditor: "o conserto do P1, que é o mais importante do lote, não tem
+# nenhum teste que o exercite — reordenar as guardas para depois do `return`
+# passaria verde". Estes três rodam o `_llm` de verdade, com um `completion`
+# dublê devolvendo prosa.
+
+class _Resp:
+    def __init__(self, txt):
+        self.choices = [type("C", (), {"message": type("M", (), {
+            "content": txt})()})()]
+
+
+def _llm_com_prosa(monkeypatch, prosa, itens=None):
+    import litellm
+    monkeypatch.setattr(litellm, "completion",
+                        lambda *a, **k: _Resp(prosa))
+    return motor_v8._llm("qualquer coisa", "Ana", itens or [], [], [],
+                         __import__("ai_engine"))
+
+
+def test_prosa_que_promete_guardar_nao_chega_no_cliente(monkeypatch):
+    """"Anotado! Vou te lembrar da luz dia 12" com zero item gravado é
+    mentira — e antes do M14 era silêncio, que é menos pior."""
+    r = _llm_com_prosa(monkeypatch,
+                       "Anotado! Vou te lembrar de pagar a luz no dia 12.")
+    assert r is None or "lembrar" not in (r.get("reply") or "").lower(), r
+
+
+def test_prosa_com_valor_fantasma_nao_chega_no_cliente(monkeypatch):
+    """Banco vazio e o bot afirmando R$ 1.240,00 é a classe que a
+    conferência existe pra barrar."""
+    r = _llm_com_prosa(
+        monkeypatch, "Você tem três contas somando R$ 1.240,00 este mês.")
+    assert r is None or "1.240" not in (r.get("reply") or ""), r
+
+
+def test_prosa_boa_continua_chegando(monkeypatch):
+    """A outra metade: estrangular a prosa mataria o motivo do M14 existir."""
+    r = _llm_com_prosa(
+        monkeypatch,
+        "Seu próximo compromisso é na quinta de manhã. Quer que eu te avise?")
+    assert r and "quinta" in (r.get("reply") or "").lower(), r
+    assert r.get("intent") == "conversa", r

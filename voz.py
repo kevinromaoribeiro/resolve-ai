@@ -23,6 +23,11 @@ não promete o que não pode entregar.
 """
 from __future__ import annotations
 
+# `io` E USADO PELO `_colar_opus` e nunca foi importado: toda colagem em
+# Opus morria em NameError, caía no `except` e o episodio saía em MP3 —
+# que toca e NAO tem o botao de 1x/1,5x/2x. O acelerador nunca
+# funcionou, e o motivo era esta linha.
+import io
 import logging
 import os
 from typing import Optional
