@@ -281,10 +281,30 @@ def test_so_oferece_template_que_sabe_preencher(monkeypatch):
     # A lista vem do CODIGO, nao copiada aqui: uma copia no teste vira uma
     # segunda verdade que diverge na primeira variavel nova — foi assim que
     # `trial_estendido` ficou de fora do painel sem ninguem perceber.
+    #
+    # As LIVRES entraram junto: sao as que o DONO digita no painel na hora do
+    # envio (o nome da novidade e a explicacao). Continuam preenchiveis — o
+    # que muda e QUEM preenche.
+    sei = wa_bot.VARIAVEIS_QUE_SEI_PREENCHER | wa_bot.VARIAVEIS_LIVRES
     for nome in wa_bot._templates_manuais():
-        faltando = (set(_cat.CATALOGO[nome].variaveis or [])
-                    - wa_bot.VARIAVEIS_QUE_SEI_PREENCHER)
+        faltando = set(_cat.CATALOGO[nome].variaveis or []) - sei
         assert not faltando, (nome, faltando)
+
+
+def test_template_que_pede_texto_avisa_o_painel():
+    """A garantia do teste acima so vale se o painel ABRIR os campos.
+
+    Uma variavel livre que o painel nao sabe que precisa pedir e pior que o
+    caso original: o botao aparece, o dono clica, e a recusa vem depois —
+    exatamente o "botao que so falha depois de clicado" que este arquivo
+    existe pra impedir.
+    """
+    import wa_bot
+    import templates as _cat
+    for t in wa_bot._templates_com_rotulo():
+        livres = (set(_cat.CATALOGO[t["nome"]].variaveis or [])
+                  & wa_bot.VARIAVEIS_LIVRES)
+        assert set(t["pede_texto"]) == livres, t["nome"]
 
 
 def test_reenviar_link_fora_da_janela_explica_o_motivo(usuario, monkeypatch):

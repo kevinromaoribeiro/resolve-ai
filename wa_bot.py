@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v29.5-audio-acelera-e-prosa-nao-mente-2026-09-02"
+BUILD = "v29.6-comprovante-pergunta-e-novidade-no-painel-2026-09-03"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -1673,6 +1673,14 @@ def _enviar_lista_kits(user: dict, phone: str, corpo: str = "") -> str:
                       "Escolhe uma frente que eu monto\n"
                       "com voc\u00ea, uma pergunta por vez.")
     KIT_ETAPA.pop(phone, None)
+    # DECISAO NOVA MATA PERGUNTA VELHA — a mesma regra do `_armar_pending`.
+    #
+    # Os kits tambem respondem por digito solto, e o `_escolha_de_baixa` roda
+    # ANTES deles no fluxo. Sem esta linha, quem tinha uma pergunta de baixa
+    # armada, pedia os kits e respondia "1" via a conta de luz ser fechada em
+    # vez do kit ser escolhido — a pergunta VELHA ganhando da NOVA, que e o
+    # inverso da regra da casa. Ficou de fora quando o BAIXA_ESCOLHA nasceu.
+    BAIXA_ESCOLHA.pop(phone, None)
     if jornada.enviar_lista(phone, corpo, "Ver os kits", linhas,
                             titulo="Kits de Rotina"):
         KIT_ETAPA[phone] = {"kit": None, "quando": tempo.agora()}
@@ -1759,6 +1767,7 @@ def _resposta_de_kit(user: dict, phone: str, text: str):
         return None
 
     KIT_ETAPA[phone] = {"kit": kit[0], "quando": tempo.agora()}
+    BAIXA_ESCOLHA.pop(phone, None)  # decisao nova mata pergunta velha
     linhas = casos_de_uso.linhas_opcoes(kit)
     corpo = casos_de_uso.texto_passo1(kit)
     if jornada.enviar_lista(phone, corpo, "Escolher", linhas,
@@ -2377,6 +2386,50 @@ def _casar_cauda(user: dict, cauda_bruta: str):
     return AMBIGUO
 
 
+def _resgatar_comprovante_sem_resposta(user: dict, phone: str,
+                                       estado: dict) -> bool:
+    """Guarda o comprovante cuja pergunta morreu sem resposta.
+
+    So age quando o slot carrega `novo` — isto e, quando quem armou foi a
+    foto de um comprovante ambiguo. A pergunta de baixa por texto nao tem
+    nada pra resgatar: ali a pessoa nao mandou documento nenhum.
+
+    Nao fecha conta nenhuma: as que estavam em duvida continuam pendentes.
+    O comprovante entra como gasto ja pago, que e o unico fato que o papel
+    afirma.
+    """
+    novo = (estado or {}).get("novo") or {}
+    if not novo.get("descricao"):
+        return False
+    try:
+        if _conta_ja_guardada(user["id"], novo["descricao"],
+                              novo.get("valor_reais"),
+                              novo.get("data_vencimento")):
+            return False
+        db.add_item(
+            user_id=user["id"],
+            tipo="despesa",
+            categoria=ai_engine.classify_category(novo["descricao"]),
+            descricao=novo["descricao"],
+            valor_reais=novo.get("valor_reais"),
+            data_vencimento=novo.get("data_vencimento"),
+            status="concluido")
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[baixa] falha ao resgatar comprovante sem resposta",
+            exc_info=True)
+        return False
+    _enviar_avulsa(
+        phone,
+        f"_(O comprovante de *{novo['descricao']}*"
+        f"{_fmt_dinheiro(novo.get('valor_reais'))} ficou sem resposta, "
+        f"então guardei como conta nova pra não perder. As outras continuam "
+        f"pendentes.)_",
+        user.get("id"))
+    return True
+
+
 def _escolha_de_baixa(user: dict, phone: str, text: str) -> Optional[str]:
     """A pessoa respondeu o numero da pergunta "qual deles eu dou baixa?".
 
@@ -2394,6 +2447,17 @@ def _escolha_de_baixa(user: dict, phone: str, text: str) -> Optional[str]:
         velho = True
     if velho:
         BAIXA_ESCOLHA.pop(phone, None)
+        # PERGUNTA SEM RESPOSTA NAO PODE COMER O COMPROVANTE (P1-1).
+        #
+        # O bot ja disse "Recebi o comprovante — R$ X". Se a pessoa nao
+        # responde e o slot morre calado, ela fica com a confirmacao de
+        # recebimento e ZERO registro. Antes do conserto o comprovante virava
+        # um item errado, mas aparecia no gasto do mes; sumir e pior.
+        #
+        # Mesma escolha do `_resgatar_pendencia`: guardar o que havia, avisar
+        # que guardou, e nao afirmar nada que a pessoa nao disse — as contas
+        # que estavam na duvida continuam pendentes.
+        _resgatar_comprovante_sem_resposta(user, phone, estado)
         return None
     m = re.fullmatch(r"\s*([1-9])\s*[.!)\-–]?\s*", text or "")
     if not m:
@@ -2404,6 +2468,58 @@ def _escolha_de_baixa(user: dict, phone: str, text: str) -> Optional[str]:
         return None
     BAIXA_ESCOLHA.pop(phone, None)
     item_id = ids[idx]
+
+    # "NENHUMA DESSAS" — a saida que impede o comprovante de se perder.
+    #
+    # So a pergunta do comprovante arma essa opcao (id None + `novo`). A
+    # chave valor+vencimento SELECIONA mas nao IDENTIFICA: o comprovante
+    # pode ser de uma conta que nem esta na lista. Sem esta saida, escolher
+    # errado era a unica opcao — ou a pessoa quitava a conta errada, ou o
+    # registro sumia.
+    #
+    # Grava CONCLUIDO porque comprovante e pagamento feito; e sem codigo de
+    # pagamento, pela mesma razao do fluxo normal: conta ja paga nao precisa
+    # de codigo e guardar isso seria carregar dado sensivel a toa.
+    if item_id is None:
+        novo = estado.get("novo") or {}
+        if not novo.get("descricao"):
+            return None
+        # O DEDUP TAMBEM VALE AQUI (P1-2 da auditoria).
+        #
+        # Este ramo chamava `db.add_item` direto, e o caminho ambiguo retorna
+        # antes do `_conta_ja_guardada` la em cima — entao mandar a mesma foto
+        # de novo depois de responder "nenhuma dessas" gravava o comprovante
+        # duas vezes e dobrava o gasto do mes. E exatamente o estrago que esta
+        # correcao existe pra evitar, entrando por outra porta.
+        _ja = _conta_ja_guardada(user["id"], novo["descricao"],
+                                 novo.get("valor_reais"),
+                                 novo.get("data_vencimento"))
+        if _ja:
+            return (f"Essa eu já tenho: *{_ja['descricao']}*"
+                    f"{_fmt_dinheiro(_ja['valor_reais'])}.\n\n"
+                    f"As outras continuam pendentes.")
+        try:
+            db.add_item(
+                user_id=user["id"],
+                tipo="despesa",
+                categoria=ai_engine.classify_category(novo["descricao"]),
+                descricao=novo["descricao"],
+                valor_reais=novo.get("valor_reais"),
+                data_vencimento=novo.get("data_vencimento"),
+                status="concluido")
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[baixa] falha ao guardar o comprovante como conta nova",
+                exc_info=True)
+            # NUNCA dizer "guardei" sobre o que nao foi gravado.
+            return ("Falhei em guardar aqui. 😕 Me manda a foto de novo, "
+                    "por favor?")
+        return (f"Guardei como conta nova ✅\n"
+                f"*{novo['descricao']}*"
+                f"{_fmt_dinheiro(novo.get('valor_reais'))}.\n\n"
+                f"Entra no seu gasto do mês. As outras continuam pendentes.")
+
     # Dono do item conferido contra o banco, nao contra o que veio na tela.
     if not _meu_item(user["id"], item_id):
         return None
@@ -4377,6 +4493,36 @@ def _conta_ja_guardada(user_id: int, descricao: str, valor, data_venc):
     return None
 
 
+def _pendentes_equivalentes(user_id: int, dados: dict) -> list:
+    """Os pendentes que casam com este comprovante por VALOR + VENCIMENTO.
+
+    Uma consulta só, usada pelas duas pontas: quem decide a baixa e quem
+    monta a pergunta quando há mais de um. Duas cópias da mesma busca
+    divergiriam na próxima correção — foi assim que o envio do podcast
+    perdeu o freio anti-rajada numa das cópias.
+
+    Teto de 5 porque a pergunta é numerada de 1 a 9 e ainda precisa de uma
+    linha pro "nenhuma dessas". Cinco contas com valor E vencimento
+    idênticos já é caso de laboratório; nove é impossível na vida real.
+    """
+    venc_titulo = dados.get("vencimento_titulo")
+    valor = dados.get("valor_reais")
+    if not venc_titulo or not valor:
+        return []
+    try:
+        # Descricao vazia fica de fora: o menu e numerado e imprimiria
+        # "*1* — None", que nao ajuda ninguem a escolher.
+        return [i for i in db.list_items(user_id, status="pendente")
+                if i.get("valor_reais") == valor
+                and i.get("data_vencimento") == venc_titulo
+                and (i.get("descricao") or "").strip()][:5]
+    except Exception:
+        import logging
+        logging.getLogger("resolveai").warning(
+            "[boleto] falha ao procurar pendente equivalente", exc_info=True)
+        return []
+
+
 def _conta_pendente_equivalente(user_id: int, dados: dict):
     """O pendente que este comprovante quita — só com evidência ESTRUTURAL.
 
@@ -4400,25 +4546,29 @@ def _conta_pendente_equivalente(user_id: int, dados: dict):
     saída continua existindo e está testado: a pessoa responde "paguei X",
     que é o que a própria mensagem do bot ensina.
     """
-    venc_titulo = dados.get("vencimento_titulo")
-    valor = dados.get("valor_reais")
-    if not venc_titulo or not valor:
-        return None
-    try:
-        casados = [i for i in db.list_items(user_id, status="pendente")
-                   if i.get("valor_reais") == valor
-                   and i.get("data_vencimento") == venc_titulo]
-    except Exception:
+    casados = _pendentes_equivalentes(user_id, dados)
+    if len(casados) > 1:
+        # AMBIGUIDADE NÃO É AUSÊNCIA — é pergunta.
+        #
+        # Devolver None aqui era o defeito: quem chama entende "não é baixa
+        # de nada", cai no fluxo de conta nova e GRAVA UM ITEM. O resultado
+        # são os dois estragos que o próprio bloco do chamador diz existir
+        # pra evitar: o gasto do mês contado duas vezes e o lembrete da
+        # conta JÁ PAGA disparando no vencimento.
+        #
+        # E o erro era invisível dos dois lados: `_pendente_de_mesmo_valor`
+        # também devolve None quando há mais de um, então nem a dica de
+        # correção aparecia. A pessoa só descobria pelo lembrete errado.
+        #
+        # Mesma sentinela do `_alvo_da_baixa`, pela mesma razão: continua
+        # valendo que o bot NÃO decide sozinho. Ele pergunta, numerado, e a
+        # escolha fica guardada no BAIXA_ESCOLHA.
         import logging
-        logging.getLogger("resolveai").warning(
-            "[boleto] falha ao procurar pendente equivalente", exc_info=True)
-        return None
-    if len(casados) != 1:
-        if casados:
-            import logging
-            logging.getLogger("resolveai").info(
-                "[boleto] %d pendentes com mesmo valor e vencimento — nao "
-                "dou baixa no escuro", len(casados))
+        logging.getLogger("resolveai").info(
+            "[boleto] %d pendentes com mesmo valor e vencimento — pergunto "
+            "em vez de dar baixa no escuro", len(casados))
+        return AMBIGUO
+    if not casados:
         return None
 
     # VETO POR CONTRADIÇÃO DE NOME — não é placar.
@@ -4806,6 +4956,48 @@ def _registrar_documento_financeiro(user: dict, phone: str, texto_lido: str,
     # duas vezes e o lembrete da conta JÁ PAGA disparando no vencimento.
     if concluido:
         _pendente = _conta_pendente_equivalente(user["id"], dados)
+        if _pendente is AMBIGUO:
+            # PERGUNTAR, E NÃO GRAVAR NADA ENQUANTO NÃO SOUBER.
+            #
+            # Duas contas com o mesmo valor E o mesmo vencimento acontecem
+            # (mensalidade, condomínio, seguro, parcela). O comprovante é de
+            # UMA delas — gravar um terceiro item seria inventar uma despesa
+            # que não existe e deixar a paga cobrando no vencimento.
+            #
+            # A última opção existe porque a chave SELECIONA mas não
+            # identifica: o comprovante pode ser de uma conta que nem está
+            # na lista, e sem essa saída o registro dela se perderia. Por
+            # isso o payload do documento viaja junto no slot.
+            #
+            # Slot próprio (BAIXA_ESCOLHA), nunca o PENDING: escrever no
+            # PENDING atropelaria uma confirmação de boleto em curso, que é
+            # o P0-2 do M5.4. `_decisao_de_conversa_viva` já conhece este
+            # slot, então nada de podcast atropela a pergunta.
+            _op = _pendentes_equivalentes(user["id"], dados)
+            # `> 1`, e nao `if _op` (P2-1 da auditoria): entre a primeira
+            # leitura e esta a lista pode ter encolhido pra uma. Com `if _op`
+            # o bot montava um menu de uma opcao so, pulando o veto por nome,
+            # e ainda escrevia "Tenho 1 contas com esse mesmo valor".
+            if len(_op) > 1:
+                BAIXA_ESCOLHA[phone] = {
+                    "ids": [i["id"] for i in _op] + [None],
+                    "quando": tempo.agora(),
+                    "novo": {"descricao": desc,
+                             "valor_reais": dados["valor_reais"],
+                             "data_vencimento": dados["data_vencimento"]},
+                }
+                _linhas = "\n".join(f"*{n}* — {i['descricao']}"
+                                    for n, i in enumerate(_op, 1))
+                return (f"Recebi o comprovante"
+                        f"{_fmt_dinheiro(dados['valor_reais'])}.\n\n"
+                        f"Tenho {len(_op)} contas com esse mesmo valor e "
+                        f"vencimento. Qual delas ele pagou?\n\n"
+                        f"{_linhas}\n"
+                        f"*{len(_op) + 1}* — Nenhuma dessas, é conta nova\n\n"
+                        f"_Responde o número._")
+            # Sem opções pra listar (a lista mudou entre uma leitura e
+            # outra): segue o fluxo normal em vez de travar a pessoa.
+            _pendente = None
         if _pendente:
             try:
                 db.update_item_status(_pendente["id"], "concluido")
@@ -6208,8 +6400,24 @@ VARIAVEIS_QUE_SEI_PREENCHER = {
     "desde", "hora", "quando", "dias_extras", "nova_data",
 }
 
+# VARIAVEIS QUE SO O DONO SABE — ele digita no painel, na hora do envio.
+#
+# O `resolveai_novidade` existe pra servir a TODO lancamento sem nova
+# submissao a Meta, e o preco disso e que o nome da novidade e a explicacao
+# sao texto livre. Nenhum dado do banco responde "o que voce lancou hoje".
+#
+# Sem isto o template ficava num limbo: aprovado na Meta, liberado na
+# allowlist, e invisivel no painel — porque `_templates_manuais` so oferece o
+# que sabe preencher sozinho. Nao havia botao nenhum pra dispara-lo.
+VARIAVEIS_LIVRES = {"nome_da_novidade", "o_que_ela_faz"}
 
-def _variaveis_do_template(nome_template: str, u: dict):
+# Teto de cada campo livre. O corpo inteiro do template tem limite na Meta, e
+# texto colado sem querer (um artigo, um log) viraria recusa no envio — ou,
+# pior, uma mensagem gigante pra base inteira.
+LIMITE_VARIAVEL_LIVRE = 220
+
+
+def _variaveis_do_template(nome_template: str, u: dict, extras: dict = None):
     """Monta os valores das variáveis a partir dos dados REAIS da pessoa.
 
     Devolve (True, [valores]) ou (False, "motivo").
@@ -6217,10 +6425,16 @@ def _variaveis_do_template(nome_template: str, u: dict):
     Existe separado do envio porque `_templates_manuais` precisa saber, ANTES
     de oferecer o botão, se o template é preenchível — botão que só falha
     depois de clicado é pior que botão ausente.
+
+    `extras` traz o que só o dono sabe (o nome da novidade e a explicação),
+    digitado no painel na hora do envio. Vazio é RECUSA, não string vazia:
+    mandar "novidade no Resolve AI: **." pra base inteira é pior do que não
+    mandar nada.
     """
     import templates as _cat
     if nome_template not in _cat.CATALOGO:
         return False, f"template {nome_template!r} não existe no catálogo"
+    extras = extras or {}
     user_id = u.get("id")
     primeiro = (u.get("nome") or "?").split()[0] or "Oi"
     pendentes = db.list_items(user_id, status="pendente") or []
@@ -6262,6 +6476,17 @@ def _variaveis_do_template(nome_template: str, u: dict):
             alvo = pendentes[0] if pendentes else {}
             valores.append(alvo.get("hora_alvo")
                            or _fmt_br(alvo.get("data_vencimento")) or "hoje")
+        elif var in VARIAVEIS_LIVRES:
+            _txt = str(extras.get(var) or "").strip()
+            if not _txt:
+                return False, f"falta escrever {var.replace('_', ' ')!r}"
+            if len(_txt) > LIMITE_VARIAVEL_LIVRE:
+                return False, (f"{var.replace('_', ' ')!r} passou de "
+                               f"{LIMITE_VARIAVEL_LIVRE} caracteres")
+            # QUEBRA DE LINHA NAO PASSA. A Meta recusa variavel com \n, e a
+            # recusa viria depois do lote ja ter comecado — metade da base
+            # recebendo e metade nao.
+            valores.append(" ".join(_txt.split()))
         else:
             return False, f"não sei preencher a variável {var!r}"
         if not str(valores[-1]).strip():
@@ -6269,7 +6494,8 @@ def _variaveis_do_template(nome_template: str, u: dict):
     return True, valores
 
 
-def _enviar_template_manual(user_id: int, nome_template: str):
+def _enviar_template_manual(user_id: int, nome_template: str,
+                            extras: dict = None):
     """Manda um template aprovado pra UMA pessoa, por ordem do dono (M2.9).
 
     Devolve (ok, motivo). Três travas, todas fail-closed:
@@ -6291,7 +6517,7 @@ def _enviar_template_manual(user_id: int, nome_template: str):
     if nome_template not in _cat.CATALOGO:
         return False, f"template {nome_template!r} não existe no catálogo"
 
-    ok, valores = _variaveis_do_template(nome_template, u)
+    ok, valores = _variaveis_do_template(nome_template, u, extras)
     if not ok:
         return False, valores
 
@@ -6602,7 +6828,11 @@ def _templates_com_rotulo() -> list:
     auto = set(_cat.KIND_TEMPLATE.values())
     return [{"nome": n, "rotulo": _cat.CATALOGO[n].rotulo or n,
              "categoria": _cat.CATALOGO[n].categoria,
-             "automatico": n in auto}
+             "automatico": n in auto,
+             # O painel usa isto pra abrir os campos de texto do lancamento
+             # SO no template que precisa deles.
+             "pede_texto": sorted(set(_cat.CATALOGO[n].variaveis or [])
+                                  & VARIAVEIS_LIVRES)}
             for n in sorted(_templates_manuais())]
 
 
@@ -6613,8 +6843,12 @@ def _templates_manuais() -> list:
     não sabe preencher seria um botão que só falha depois de clicado.
     """
     import templates as _cat
+    # As LIVRES contam como preenchiveis: o painel pede o texto na hora.
+    # Sem isso o `resolveai_novidade` ficava aprovado na Meta, liberado na
+    # allowlist e sem botao nenhum que o disparasse.
+    _sei = VARIAVEIS_QUE_SEI_PREENCHER | VARIAVEIS_LIVRES
     return [n for n, t in _cat.CATALOGO.items()
-            if set(t.variaveis or []) <= VARIAVEIS_QUE_SEI_PREENCHER]
+            if set(t.variaveis or []) <= _sei]
 
 
 def _linha_risco(env: dict) -> str:
@@ -8536,7 +8770,8 @@ async function carrega(){
  const optSeg=Object.keys(SEG).map(k=>
    `<option value="${k}">${k} (${SEG[k]})</option>`).join('');
  const optTplLote=TPL.map(t=>
-   `<option value="${t.nome}">${t.rotulo}${t.automatico?' · já automático':''}</option>`
+   `<option value="${t.nome}" data-pede="${(t.pede_texto||[]).join(',')}">${
+     t.rotulo}${t.automatico?' · já automático':''}</option>`
  ).join('');
  // O QUE O RESOLVE AI FAZ (M3.4). Fica junto dos controles porque o Kevin
  // consulta isso pra decidir o que vender e o que ainda falta construir.
@@ -8559,7 +8794,18 @@ async function carrega(){
      Os marcados como <b>já automático</b> o motor manda sozinho na hora
      certa — use aqui só se quiser antecipar.</div>
    <select id="segLote" class="sel" style="width:100%;margin-bottom:7px">${optSeg}</select>
-   <select id="tplLote" class="sel" style="width:100%;margin-bottom:9px">${optTplLote}</select>
+   <select id="tplLote" class="sel" style="width:100%;margin-bottom:9px"
+           onchange="camposDoLote()">${optTplLote}</select>
+   <div id="txtLote" style="display:none;margin-bottom:9px">
+     <input id="novNome" class="sel" maxlength="220"
+            style="width:100%;margin-bottom:6px"
+            placeholder="Nome da novidade (ex: mini podcast em áudio)">
+     <textarea id="novTexto" class="sel" rows="3" maxlength="220"
+            style="width:100%;resize:vertical"
+            placeholder="O que ela faz, em uma ou duas frases"></textarea>
+     <div class="muted" style="font-size:11px;margin-top:4px">
+       Isso entra na mensagem que TODO mundo do grupo vai ler.</div>
+   </div>
    <button class="b bok" style="width:100%" onclick="lote()">Enviar pra lista</button>`);
  const us=(d.usuarios||[]).filter(u=>F==='todos'||(u.status||'trial')===F)
   .map(u=>{
@@ -8615,6 +8861,10 @@ async function carrega(){
    `<div class="filtros">${abas}</div>`+
    (us||'<div class="muted">ninguém com esse status</div>'));
  $('#app').innerHTML=h;
+ // O `onchange` cobre a troca; a PRIMEIRA pintura precisa desta
+ // chamada, senao o template ja selecionado pede texto e os campos
+ // nascem escondidos.
+ camposDoLote();
  $('#rodape').textContent=d.build;
 }
 // ---- CONTROLE (M2.9) ----------------------------------------------------
@@ -8713,19 +8963,53 @@ function zerar(uid){
   }
   acao(uid,'zerar',{confirmo:true});
 }
+// Os campos de texto do lancamento so aparecem no template que pede.
+// Deixar dois campos vazios em toda tela convida a mandar o que nao devia.
+function camposDoLote(){
+  const tpl=document.getElementById('tplLote'),
+        box=document.getElementById('txtLote');
+  if(!tpl||!box) return;
+  const o=tpl.options[tpl.selectedIndex];
+  const pede=((o&&o.getAttribute('data-pede'))||'').length>0;
+  box.style.display = pede ? 'block' : 'none';
+}
 async function lote(){
   const seg=document.getElementById('segLote'),
         tpl=document.getElementById('tplLote');
   if(!seg||!tpl) return;
+  const o=tpl.options[tpl.selectedIndex];
+  const pede=((o&&o.getAttribute('data-pede'))||'').split(',').filter(Boolean);
+  const extras={};
+  if(pede.length){
+    const nome=(document.getElementById('novNome')||{}).value||'';
+    const txt=(document.getElementById('novTexto')||{}).value||'';
+    if(!nome.trim()||!txt.trim()){
+      alert('Escreve o nome da novidade e o que ela faz antes de enviar.');
+      return;
+    }
+    extras.nome_da_novidade=nome.trim();
+    extras.o_que_ela_faz=txt.trim();
+  }
   const txtSeg=seg.options[seg.selectedIndex].text;
   const qtd=(txtSeg.match(/[(]([0-9]+)[)]/)||[])[1] || '?';
+  // A PREVIA VEM ANTES DO OK. Texto livre que vai pra base inteira tem que
+  // ser lido uma vez fora do campo em que foi digitado.
+  // SEM QUEBRA DE LINHA AQUI. Este JS mora dentro de uma string Python
+  // normal: um \n escrito no fonte vira quebra de verdade, a string JS fica
+  // aberta atravessando a linha e o painel INTEIRO some numa tela branca.
+  // A previa cabe numa linha so.
+  let previa='';
+  if(pede.length){
+    previa=' — vai dizer: novidade no Resolve AI: ';
+    previa+=extras.nome_da_novidade+' / '+extras.o_que_ela_faz;
+  }
   if(!confirm('Enviar "'+tpl.options[tpl.selectedIndex].text+'" pra '+qtd
-      +' pessoa(s) do grupo "'+seg.value+'"?')) return;
+      +' pessoa(s) do grupo "'+seg.value+'"?'+previa)) return;
   try{
     const r=await fetch('/painel/lote?k='+encodeURIComponent(K),
       {method:'POST',headers:{'Content-Type':'application/json'},
        body:JSON.stringify({segmento:seg.value,template:tpl.value,
-                            confirmo:true})});
+                            extras:extras,confirmo:true})});
     const j=await r.json();
     if(!j.ok){ alert('Não deu: '+(j.erro||'tente de novo')); }
     else {
@@ -8786,6 +9070,32 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
         if tpl not in _cat.CATALOGO:
             return JSONResponse({"ok": False,
                                  "erro": f"template {tpl!r} não existe"})
+        # OS CAMPOS LIVRES SAO VALIDADOS ANTES DO PRIMEIRO ENVIO.
+        #
+        # O lote espaca os disparos por minutos. Se a validacao morasse so
+        # dentro do laco, um texto grande demais recusaria pessoa por pessoa
+        # com o lote ja em andamento — metade da base recebendo e metade nao,
+        # sem ninguem entender por que. Aqui ou o lote inteiro sai, ou nenhum.
+        extras = body.get("extras") or {}
+        if not isinstance(extras, dict):
+            return JSONResponse({"ok": False, "erro": "extras inválidos"})
+        extras = {k: v for k, v in extras.items() if k in VARIAVEIS_LIVRES}
+        _faltando = [v for v in (_cat.CATALOGO[tpl].variaveis or [])
+                     if v in VARIAVEIS_LIVRES
+                     and not str(extras.get(v) or "").strip()]
+        if _faltando:
+            return JSONResponse(
+                {"ok": False,
+                 "erro": "falta preencher: "
+                         + ", ".join(v.replace("_", " ") for v in _faltando)})
+        _grande = [v for v, t in extras.items()
+                   if len(str(t).strip()) > LIMITE_VARIAVEL_LIVRE]
+        if _grande:
+            return JSONResponse(
+                {"ok": False,
+                 "erro": (", ".join(v.replace("_", " ") for v in _grande)
+                          + f": máximo {LIMITE_VARIAVEL_LIVRE} caracteres")})
+
         gente = grupos[seg]
         enviados, falhas = 0, []
         import asyncio
@@ -8810,7 +9120,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()}
             if i:
                 await asyncio.sleep(_rnd.uniform(ENVIO_INTERVALO_MIN,
                                                 ENVIO_INTERVALO_MAX))
-            ok_um, motivo = _enviar_template_manual(p["id"], tpl)
+            ok_um, motivo = _enviar_template_manual(p["id"], tpl, extras)
             if ok_um:
                 enviados += 1
             else:
