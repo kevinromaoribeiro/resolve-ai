@@ -18,14 +18,52 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 
 log = logging.getLogger("resolveai")
 
 CONSELHOS = ("crescimento", "preco", "marketing", "cx", "produto")
 
-# Vale 6h: o retrato do negocio nao muda de manha pra tarde, e reanalisar a
-# cada clique so gastaria dinheiro pra ouvir a mesma coisa.
-VALIDADE_H = 6
+# UMA ANALISE POR CONSELHEIRO POR SEMANA, e o limite e do servidor.
+#
+# Decisao do dono. Duas razoes, e a segunda importa mais que o dinheiro:
+#
+# 1. O modelo bom custa centavos por analise em vez de fracoes. Cinco
+#    conselheiros por semana e gasto previsivel; cinco por dia, nao.
+# 2. O retrato do negocio nao muda de um dia pro outro. Reanalisar segunda
+#    e terca devolveria o mesmo conselho com palavras diferentes — e ler o
+#    mesmo conselho reescrito da a impressao de novidade sem ser novidade.
+#
+# Fica no servidor, e nao na tela, pela mesma razao da trava do lote: quem
+# clica de novo e justamente quem nao viu o aviso.
+LIMITE_DIAS = int(os.environ.get("CONSELHO_LIMITE_DIAS", "7"))
+
+# Mantido por compatibilidade com quem chamava antes do limite semanal.
+VALIDADE_H = LIMITE_DIAS * 24
+
+# O CONSELHEIRO MERECE UM MODELO MELHOR QUE O DO BOT.
+#
+# O bot roda `gpt-4o-mini`, que e bom pra resumir e fraco pra raciocinar
+# sobre numero e pra ser nao-obvio — e foi exatamente onde a primeira
+# rodada falhou: recomendou preco sem fechar a conta e chamou de
+# "surpreendente" uma ideia comum.
+#
+# Com uma analise por semana, o modelo caro cabe. Se ele falhar, cai no
+# modelo do bot em vez de deixar o botao sem resposta.
+MODELO = os.environ.get("LLM_MODEL_CONSELHO", "gpt-4o")
+
+
+def falta_para_liberar(quando: str, agora) -> float:
+    """Quantos dias faltam pra proxima analise. Zero quando ja liberou."""
+    if not quando:
+        return 0.0
+    try:
+        import datetime as _dt
+        passou = (agora - _dt.datetime.fromisoformat(quando)).total_seconds()
+    except Exception:
+        # Carimbo ilegivel nao pode prender o dono pra sempre.
+        return 0.0
+    return max(0.0, LIMITE_DIAS - passou / 86400.0)
 
 _PAPEL = {
     "crescimento": (
@@ -297,29 +335,44 @@ def montar_prompt(tipo: str, dados: dict) -> str:
         _PAPEL[tipo], _REGRAS, retrato(dados), _TAREFA[tipo])
 
 
-def pedir(tipo: str, dados: dict, modelo: str = "") -> tuple:
-    """Devolve (ok, texto). Nunca levanta."""
+def pedir(tipo: str, dados: dict, modelo: str = "",
+          reserva: str = "") -> tuple:
+    """Devolve (ok, texto). Nunca levanta.
+
+    Tenta o modelo bom e, se ele falhar, cai no do bot. Botao que devolve
+    erro depois de o dono gastar a analise da semana seria o pior desfecho
+    possivel.
+    """
     if tipo not in CONSELHOS:
         return False, "conselho desconhecido"
     try:
         from litellm import completion
     except Exception:
         return False, "o modelo de linguagem não está disponível aqui"
-    try:
-        resp = completion(
-            model=modelo or "gpt-4o-mini",
-            max_tokens=1200,
-            messages=[
-                {"role": "system", "content": montar_prompt(tipo, dados)},
-                {"role": "user",
-                 "content": "Faça a análise agora, seguindo exatamente a "
-                            "estrutura pedida."},
-            ])
-        texto = (resp.choices[0].message.content or "").strip()
-    except Exception as e:
-        log.warning("[conselho] falha ao consultar o modelo", exc_info=True)
-        return False, "não consegui falar com o modelo: %s" % (
-            str(e)[:120] or type(e).__name__)
+
+    tentar = [m for m in (modelo or MODELO, reserva) if m]
+    ultimo = ""
+    texto = ""
+    for i, qual in enumerate(tentar):
+        try:
+            resp = completion(
+                model=qual,
+                max_tokens=1600,
+                messages=[
+                    {"role": "system", "content": montar_prompt(tipo, dados)},
+                    {"role": "user",
+                     "content": "Faça a análise agora, seguindo exatamente a "
+                                "estrutura pedida."},
+                ])
+            texto = (resp.choices[0].message.content or "").strip()
+            if texto:
+                break
+        except Exception as e:
+            ultimo = str(e)[:120] or type(e).__name__
+            log.warning("[conselho] %s falhou (%d de %d)", qual, i + 1,
+                        len(tentar), exc_info=True)
+    if not texto and ultimo:
+        return False, "não consegui falar com o modelo: %s" % ultimo
     if not texto:
         # NUNCA guardar resposta vazia como se fosse analise: a tela diria
         # "analisado em <hoje>" com nada dentro, e o dono acharia que o

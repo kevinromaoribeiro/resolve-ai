@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v30.4-o-conselheiro-de-preco-ve-o-custo-cheio-2026-09-04"
+BUILD = "v30.5-conselheiro-melhor-uma-vez-por-semana-2026-09-04"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6940,10 +6940,21 @@ def _poderes_seguro() -> list:
 
 
 def _conselhos_guardados() -> dict:
-    """A ultima analise de cada conselheiro, pra tela nao nascer vazia."""
+    """A ultima analise de cada conselheiro, e quando libera a proxima.
+
+    Os dias que faltam vem do MESMO calculo que a rota usa pra recusar. Se
+    a tela contasse por conta propria, ela diria "pode pedir" num dia em
+    que o servidor ainda recusa — e o dono acharia que quebrou.
+    """
     try:
         import conselho as _c
-        return {t: _c.guardado(db, t) for t in _c.CONSELHOS}
+        saida = {}
+        for t in _c.CONSELHOS:
+            g = _c.guardado(db, t)
+            g["faltam_dias"] = round(
+                _c.falta_para_liberar(g.get("quando") or "", tempo.agora()), 2)
+            saida[t] = g
+        return saida
     except Exception:
         log.warning("[conselho] nao consegui ler os guardados", exc_info=True)
         return {}
@@ -9287,12 +9298,19 @@ async function carrega(){
         <div class="muted" style="font-size:11px;margin-top:9px">
           Análise de ${quandoBr(g.quando)}</div>`
      : `<div class="muted" style="font-size:12px">Nenhuma análise ainda.</div>`;
+   // UMA POR SEMANA. O botao mostra quantos dias faltam em vez de sumir:
+   // botao que some parece defeito, botao que diz "em 3 dias" e regra.
+   const falta=Math.ceil(g.faltam_dias||0);
+   const trava=falta>0;
+   const rot=trava
+     ? (falta===1?'Nova análise amanhã':'Nova análise em '+falta+' dias')
+     : (g.texto?'Analisar de novo':'Pedir análise');
    card(titulo,
      `<div class="sub" style="margin:-4px 0 10px">${linha}</div>`
      + corpo
-     + `<button class="b bok" id="bt_${tipo}" style="width:100%;margin-top:10px"
-         onclick="pedirConselho('${tipo}')">${
-           g.texto?'Analisar de novo':'Pedir análise'}</button>`);
+     + `<button class="b bok" id="bt_${tipo}" ${trava?'disabled':''}
+         style="width:100%;margin-top:10px${trava?';opacity:.5':''}"
+         onclick="pedirConselho('${tipo}')">${rot}</button>`);
  };
  conselheiro('crescimento','Conselheiro de crescimento',
    'Onde está o gargalo e o que fazer esta semana.');
@@ -9598,18 +9616,21 @@ document.addEventListener('visibilitychange',()=>{
         if tipo not in _c.CONSELHOS:
             return JSONResponse({"ok": False, "erro": "conselho desconhecido"})
 
+        # UMA ANALISE POR CONSELHEIRO POR SEMANA, decidida pelo dono.
+        #
+        # O limite e do SERVIDOR e o `forcar` do botao nao passa por cima —
+        # se passasse, o limite viraria sugestao, e quem clica de novo e
+        # justamente quem nao viu o aviso. Devolve a analise guardada com
+        # os dias que faltam, em vez de erro seco: a resposta antiga ainda
+        # vale, e o dono precisa saber quando pode pedir outra.
         antigo = _c.guardado(db, tipo)
-        if antigo["texto"] and not body.get("forcar"):
-            try:
-                idade = (tempo.agora()
-                         - datetime.fromisoformat(antigo["quando"])
-                         ).total_seconds() / 3600.0
-            except Exception:
-                idade = 999.0
-            if idade < _c.VALIDADE_H:
+        if antigo["texto"]:
+            faltam = _c.falta_para_liberar(antigo["quando"], tempo.agora())
+            if faltam > 0:
                 return JSONResponse({"ok": True, "texto": antigo["texto"],
                                      "quando": antigo["quando"],
-                                     "reaproveitado": True})
+                                     "reaproveitado": True,
+                                     "faltam_dias": round(faltam, 2)})
 
         # O RETRATO VEM DO MESMO LUGAR QUE A TELA, e nao de consultas
         # proprias: se o painel e o conselheiro lessem fontes diferentes,
@@ -9632,9 +9653,10 @@ document.addEventListener('visibilitychange',()=>{
             # opina no escuro e sugere construir o que ja esta pronto.
             "poderes": _poderes_seguro(),
         }
+        # Modelo bom primeiro; o do bot fica de reserva. Falhar depois de o
+        # dono gastar a analise da semana seria o pior desfecho.
         ok, texto = _c.pedir(tipo, dados,
-                             os.environ.get("LLM_MODEL_CONSELHO", "")
-                             or getattr(ai_engine, "LLM_MODEL", ""))
+                             reserva=getattr(ai_engine, "LLM_MODEL", ""))
         if not ok:
             return JSONResponse({"ok": False, "erro": texto})
         quando = tempo.agora().isoformat(timespec="seconds")
