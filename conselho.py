@@ -21,7 +21,7 @@ import logging
 
 log = logging.getLogger("resolveai")
 
-CONSELHOS = ("crescimento", "preco")
+CONSELHOS = ("crescimento", "preco", "marketing", "cx", "produto")
 
 # Vale 6h: o retrato do negocio nao muda de manha pra tarde, e reanalisar a
 # cada clique so gastaria dinheiro pra ouvir a mesma coisa.
@@ -38,6 +38,21 @@ _PAPEL = {
         "assinatura de baixo ticket para consumidor brasileiro. Você olha "
         "custo real, disposição a pagar e o que o produto substitui na vida "
         "da pessoa — não o que ele custou para construir."),
+    "marketing": (
+        "Você é um profissional de marketing sênior que já lançou produto "
+        "de assinatura barata no Brasil sem verba de mídia. Você trabalha "
+        "com o que existe: a base atual, o boca a boca e o próprio "
+        "WhatsApp. Você não propõe campanha paga para quem não tem caixa."),
+    "cx": (
+        "Você é especialista em experiência do cliente, com foco em "
+        "produtos que vivem dentro de aplicativo de mensagem para público "
+        "brasileiro de classe B e C. Você entende que a pessoa não lê "
+        "manual, tem vergonha de errar e abandona no primeiro atrito."),
+    "produto": (
+        "Você é um head de produto sênior. Seu trabalho aqui é o oposto do "
+        "usual: este fundador constrói demais e valida de menos, então você "
+        "só sugere o que puder ser feito rápido E que resolva um problema "
+        "que os números do painel provam existir."),
 }
 
 _TAREFA = {
@@ -63,6 +78,39 @@ _TAREFA = {
         "seguir.\n"
         "4. COMO DESCOBRIR se está certo, com um teste que caiba em uma "
         "semana e na base atual dele. Não sugira pesquisa de mercado."),
+    "marketing": (
+        "Responda em no máximo 350 palavras, em português do Brasil, "
+        "direto, sem introdução.\n\n"
+        "1. QUEM É O CLIENTE deste produto, na prática, olhando o que a "
+        "base atual faz com ele. Não invente persona.\n"
+        "2. A FRASE de uma linha que faz essa pessoa entender para que "
+        "serve, sem jargão.\n"
+        "3. TRÊS AÇÕES de aquisição sem verba, executáveis nesta semana por "
+        "uma pessoa só. Diga onde e o que fazer.\n"
+        "4. O QUE NÃO FAZER agora, e por quê."),
+    "cx": (
+        "Responda em no máximo 350 palavras, em português do Brasil, "
+        "direto, sem introdução.\n\n"
+        "1. O ATRITO. Olhando os números de ativação e uso, onde a pessoa "
+        "provavelmente trava? Aponte o número que sustenta sua hipótese.\n"
+        "2. O PRIMEIRO DIA ideal, minuto a minuto, com os textos exatos que "
+        "o bot manda. No máximo 4 passos.\n"
+        "3. A MENSAGEM que traz de volta quem sumiu — escreva o texto.\n"
+        "4. O QUE PODE MAGOAR ou constranger a pessoa neste produto, e como "
+        "evitar."),
+    "produto": (
+        "Responda em no máximo 350 palavras, em português do Brasil, "
+        "direto, sem introdução.\n\n"
+        "1. O QUE JÁ EXISTE E NINGUÉM USA. Pelos números, qual capacidade "
+        "do produto está subaproveitada? Como fazer ela ser descoberta sem "
+        "construir nada novo.\n"
+        "2. TRÊS IDEIAS de melhoria, em ordem de (impacto ÷ esforço). Para "
+        "cada uma: o problema que resolve, o número do painel que prova o "
+        "problema, e quanto tempo levaria.\n"
+        "3. A IDEIA QUE PARECE BOA E NÃO É. Uma coisa tentadora que você "
+        "recomenda NÃO fazer agora, com o motivo.\n"
+        "4. O CORTE. Algo que já existe e deveria ser removido ou "
+        "desligado."),
 }
 
 _REGRAS = (
@@ -73,7 +121,11 @@ _REGRAS = (
     "e siga sem ele.\n"
     "- Nada de jargão de startup e nada de lista de boas práticas genéricas. "
     "Fale deste negócio, com estes números.\n"
-    "- Não sugira construir feature nova: ele já constrói demais.\n"
+    "- Antes de sugerir qualquer coisa, LEIA a lista de capacidades que já "
+    "estão no ar. Sugerir o que já existe é o pior conselho possível para "
+    "quem constrói demais.\n"
+    "- Se a sua ideia já está na lista, o conselho vira COMO FAZER "
+    "DESCOBRIREM, e não como construir.\n"
     "- Não use o nome de nenhum cliente."
 )
 
@@ -141,6 +193,31 @@ def retrato(dados: dict) -> str:
             a.get("rotulo"), a.get("meta") or 0,
             a.get("clientes") if a.get("clientes") is not None else "?")
     t += "\n"
+
+    # O QUE O PRODUTO SABE FAZER, item por item.
+    #
+    # Sem isto o conselheiro opina no escuro: ele ve os numeros e nao sabe
+    # que a leitura de boleto por foto ja existe, que o audio ja e
+    # transcrito, que o podcast ja esta pronto. E entao sugere construir o
+    # que ja esta construido — o pior conselho possivel pra quem constroi
+    # demais.
+    #
+    # Nao e o codigo-fonte, e o inventario que o repo mantem derivado dele,
+    # o mesmo que o painel mostra. Codigo cru num prompt afogaria o
+    # essencial e ainda ficaria desatualizado no primeiro commit.
+    poderes = dados.get("poderes") or []
+    if poderes:
+        t += "O QUE O PRODUTO JÁ SABE FAZER (%d capacidades no ar):\n" % len(
+            poderes)
+        grupo_atual = ""
+        for cap in poderes:
+            g = cap.get("grupo") or ""
+            if g != grupo_atual:
+                t += "  [%s]\n" % g
+                grupo_atual = g
+            t += "  - %s: %s\n" % (cap.get("titulo") or "",
+                                   (cap.get("desc") or "")[:160])
+        t += "\n"
 
     t += "RESTRIÇÕES DO CANAL (não negociáveis):\n"
     t += ("- WhatsApp Cloud API: fora da janela de 24h só sai template "

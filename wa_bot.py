@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v30.1-conselheiros-e-custo-cheio-2026-09-04"
+BUILD = "v30.2-cinco-conselheiros-que-conhecem-o-produto-2026-09-04"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6930,6 +6930,15 @@ def _plano_das_metas() -> dict:
     return saida
 
 
+def _poderes_seguro() -> list:
+    """O mesmo inventario que o card 'O que o Resolve AI faz' mostra."""
+    try:
+        return PODERES if isinstance(PODERES, list) else []
+    except Exception:
+        log.warning("[conselho] inventario indisponivel", exc_info=True)
+        return []
+
+
 def _conselhos_guardados() -> dict:
     """A ultima analise de cada conselheiro, pra tela nao nascer vazia."""
     try:
@@ -8596,15 +8605,26 @@ h1{font-size:17px;margin:0 0 2px;font-weight:700}
  border:1px solid #1f2c47;background:#131d31;color:#8296b3;
  font-size:13px;font-weight:600;white-space:nowrap}
 .aba.on{background:#1c4d3a;border-color:#2e7d5b;color:#d7f5e6}
-/* No desktop o painel deixa de ser uma coluna de celular esticada:
-   largura util travada e os cards em duas colunas. */
+/* DESKTOP NAO E CELULAR ESTICADO.
+   Grade de verdade, e nao `column-count`: coluna preenche de cima pra
+   baixo, entao o segundo card ia parar embaixo do primeiro e a ordem de
+   leitura virava vertical. `auto-fill` acomoda 1, 2 ou 3 colunas conforme
+   a tela, sem media query por largura. */
+#painel{display:grid;gap:12px;align-items:start;
+ grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))}
+#painel>.card{margin-bottom:0}
+/* Cards que sao lista ou formulario ocupam a linha inteira: espremidos em
+   340px eles ficam ilegiveis. */
+#painel>.card.largo{grid-column:1/-1}
 @media(min-width:900px){
- body{padding:20px calc((100vw - 1180px)/2 + 20px) 40px}
- #painel{column-count:2;column-gap:16px}
- #painel>.card{break-inside:avoid;display:inline-block;width:100%}
- #abas{margin:0 0 16px;padding:0 0 10px}
+ body{padding:22px calc((100vw - 1240px)/2 + 22px) 48px}
+ #abas{margin:0 0 18px;padding:0 0 10px}
+ h1{font-size:20px}
+ .aba{font-size:13.5px;padding:9px 16px}
 }
-@media(min-width:1400px){ #painel{column-count:3} }
+@media(min-width:1500px){
+ body{padding:26px calc((100vw - 1480px)/2 + 26px) 56px}
+}
 /* Tabela de mensagens: rola sozinha em vez de esticar a pagina. */
 .rolatab{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .rolatab table{width:100%;border-collapse:collapse;font-size:12px}
@@ -8689,6 +8709,9 @@ const ABA_DO_CARD={
  '🎧 Mini podcast':'produto',
  'Conselheiro de crescimento':'crescimento',
  'Conselheiro de preço':'crescimento',
+ 'Conselheiro de marketing':'crescimento',
+ 'Conselheiro de experiência':'crescimento',
+ 'Ideias de produto':'crescimento',
  'Metas de lucro':'financeiro',
  'Custo real por cliente':'financeiro',
  'Está no ar?':'sistema',
@@ -8737,8 +8760,15 @@ function troca(k){
  try{ localStorage.setItem('resolveai_aba',k) }catch(e){}
  carrega();
 }
+// Cards que nao cabem numa coluna estreita: lista de gente, tabela de
+// mensagens, formulario de envio e o texto do conselheiro.
+const CARD_LARGO=new Set(['Clientes','Mandar pra uma lista',
+ 'Últimas mensagens','Conselheiro de crescimento','Conselheiro de preço',
+ 'Conselheiro de marketing','Conselheiro de experiência',
+ 'Ideias de produto','O que o Resolve AI faz']);
 function card(t,c){
- const html=`<div class="card"><h2>${t}</h2>${c}</div>`;
+ const largo=CARD_LARGO.has(t)?' largo':'';
+ const html=`<div class="card${largo}"><h2>${t}</h2>${c}</div>`;
  const a=ABA_DO_CARD[t]||'negocio';
  ABAS[a]=(ABAS[a]||'')+html;
  return html;
@@ -9235,9 +9265,15 @@ async function carrega(){
            g.texto?'Analisar de novo':'Pedir análise'}</button>`);
  };
  conselheiro('crescimento','Conselheiro de crescimento',
-   'Olha os números reais do painel e diz onde está o gargalo e o que fazer esta semana.');
+   'Onde está o gargalo e o que fazer esta semana.');
  conselheiro('preco','Conselheiro de preço',
    'Olha o custo cheio por cliente e opina se R$ 19,90 está certo.');
+ conselheiro('marketing','Conselheiro de marketing',
+   'Quem é o cliente, que frase usar e como conseguir gente sem verba.');
+ conselheiro('cx','Conselheiro de experiência',
+   'Onde a pessoa trava, como é o primeiro dia ideal e o que a afasta.');
+ conselheiro('produto','Ideias de produto',
+   'O que já existe e ninguém usa, o que melhorar e o que cortar.');
 
  card('Últimas mensagens', linhasMsg
      ? `<div class="rolatab"><table>${linhasMsg}</table></div>`
@@ -9556,6 +9592,9 @@ document.addEventListener('visibilitychange',()=>{
             "templates": _estado_dos_templates(),
             "envio": _seguro_dict(db.pulso_envio),
             "podcast": _seguro_dict(lambda: db.podcast_farois(7)),
+            # O INVENTARIO DE CAPACIDADES vai junto: sem ele o conselheiro
+            # opina no escuro e sugere construir o que ja esta pronto.
+            "poderes": _poderes_seguro(),
         }
         ok, texto = _c.pedir(tipo, dados,
                              os.environ.get("LLM_MODEL_CONSELHO", "")
