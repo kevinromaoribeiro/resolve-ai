@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v29.7-painel-de-pe-comentario-nao-vira-codigo-2026-09-04"
+BUILD = "v29.8-o-painel-espera-voce-terminar-de-escrever-2026-09-04"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -8860,12 +8860,39 @@ async function carrega(){
  h+=card('Clientes',
    `<div class="filtros">${abas}</div>`+
    (us||'<div class="muted">ninguém com esse status</div>'));
+ // O PAINEL SE REDESENHA A CADA 20s E ISSO APAGAVA O QUE O DONO DIGITAVA.
+ //
+ // O card de lote virou um formulario de verdade quando ganhou os dois
+ // campos de texto do lancamento. Redesenhar troca o innerHTML inteiro:
+ // os seletores voltavam pro primeiro item, os campos sumiam e o texto ia
+ // junto. Vinte segundos nao dao pra escolher o template e escrever duas
+ // frases — na pratica era impossivel usar.
+ //
+ // Guardar e devolver os valores. E `_ocupado` cobre o resto: restaurar o
+ // valor nao devolve o CURSOR, entao quem esta com o dedo no campo nao
+ // pode ser redesenhado no meio da palavra.
+ const _lote={seg:_valor('segLote'),tpl:_valor('tplLote'),
+              nome:_valor('novNome'),txt:_valor('novTexto')};
  $('#app').innerHTML=h;
+ _devolve('segLote',_lote.seg); _devolve('tplLote',_lote.tpl);
+ _devolve('novNome',_lote.nome); _devolve('novTexto',_lote.txt);
  // O `onchange` cobre a troca; a PRIMEIRA pintura precisa desta
  // chamada, senao o template ja selecionado pede texto e os campos
  // nascem escondidos.
  camposDoLote();
  $('#rodape').textContent=d.build;
+}
+function _valor(id){const e=document.getElementById(id);return e?e.value:'';}
+function _devolve(id,v){
+  const e=document.getElementById(id);
+  if(e&&v) e.value=v;
+}
+// Enquanto o dono escreve, o painel espera. Ele volta a atualizar sozinho
+// assim que o campo perde o foco e o texto e enviado ou apagado.
+function _ocupado(){
+  const a=document.activeElement;
+  if(a&&['segLote','tplLote','novNome','novTexto'].indexOf(a.id)>=0) return true;
+  return !!(_valor('novNome')||_valor('novTexto'));
 }
 // ---- CONTROLE (M2.9) ----------------------------------------------------
 // Toda ação passa pelo mesmo POST autenticado. `recarrega` logo depois pra
@@ -9027,12 +9054,21 @@ async function lote(){
           +(j.detalhes||[]).map(f=>'· '+f.nome+': '+f.motivo).join('\\n');
       }
       alert(m);
+      // LIMPA DEPOIS DE ENVIAR, e nao so por arrumacao: enquanto houver
+      // texto nos campos o painel para de se atualizar (`_ocupado`). Sem
+      // isto ele congelaria pra sempre depois do primeiro lote.
+      const n=document.getElementById('novNome');
+      const t=document.getElementById('novTexto');
+      if(n) n.value='';
+      if(t) t.value='';
     }
   }catch(e){ alert('Sem conexão com o servidor.'); }
   carrega();
 }
-carrega(); setInterval(carrega,20000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)carrega()});
+carrega(); setInterval(()=>{if(!_ocupado())carrega()},20000);
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden && !_ocupado()) carrega();
+});
 </script></body></html>"""
         return HTMLResponse(html)
 
