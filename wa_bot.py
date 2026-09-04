@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v29.8-o-painel-espera-voce-terminar-de-escrever-2026-09-04"
+BUILD = "v29.9-o-lote-nao-repete-e-deixa-recibo-2026-09-04"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6531,6 +6531,39 @@ def _enviar_template_manual(user_id: int, nome_template: str,
         log.warning("[painel] envio manual sem rastro no log", exc_info=True)
     if not res.get("enviado"):
         return False, res.get("motivo") or "não enviado"
+    # RASTRO POR PESSOA, com o nome do template como kind.
+    #
+    # So o log de acoes gravava isto, e la o template vive DENTRO de um
+    # texto — nao da pra perguntar "quem ja recebeu o aviso de novidade".
+    # Sem essa pergunta o dono nao tem como evitar repetir um aviso, que e
+    # o jeito mais rapido de virar spam aos olhos de quem recebe.
+    #
+    # Nao muda comportamento nenhum: o nome do template nao esta em
+    # KINDS_DE_CORTESIA nem em KIND_TEMPLATE, entao nao come cota de
+    # cortesia nem colide com o dedup do motor. E so o registro.
+    try:
+        db.log_dispatch(user_id, nome_template)
+    except Exception:
+        log.warning("[painel] envio manual sem carimbo de disparo",
+                    exc_info=True)
+    # E TAMBEM NO LOG DE MENSAGENS, senao o envio fica INVISIVEL.
+    #
+    # "Ultimas mensagens" e onde o dono olha pra saber se algo saiu. Envio
+    # de template nao passava por `log_message`, entao o lote inteiro
+    # sumia da lista: a ultima saida visivel era de meia hora antes. Sem
+    # ver, ele clica de novo — foi exatamente o que aconteceu.
+    #
+    # Grava o NOME do template e as variaveis livres, nao o corpo inteiro:
+    # o corpo vive na Meta e repeti-lo aqui so encheria a tela.
+    try:
+        _rot = _cat.CATALOGO[nome_template].rotulo or nome_template
+        _extra = " · ".join(str(v) for v in (valores or [])[1:] if v)
+        db.log_message(user_id, re.sub(r"\D", "", u["telefone"] or ""),
+                       "out", "template",
+                       f"[template] {_rot}" + (f" — {_extra}" if _extra else ""))
+    except Exception:
+        log.warning("[painel] envio manual fora do log de mensagens",
+                    exc_info=True)
     return True, ""
 
 
@@ -6832,8 +6865,20 @@ def _templates_com_rotulo() -> list:
              # O painel usa isto pra abrir os campos de texto do lancamento
              # SO no template que precisa deles.
              "pede_texto": sorted(set(_cat.CATALOGO[n].variaveis or [])
-                                  & VARIAVEIS_LIVRES)}
+                                  & VARIAVEIS_LIVRES),
+             # O QUE JA SAIU FICA NA TELA. O `alert` do resultado some no
+             # primeiro OK, e depois disso nao havia como saber se um aviso
+             # tinha sido enviado — a duvida e o que faz clicar de novo.
+             "envio": _resumo_seguro(n)}
             for n in sorted(_templates_manuais())]
+
+
+def _resumo_seguro(nome_template: str) -> dict:
+    """Nunca derruba o painel por causa de uma contagem."""
+    try:
+        return db.resumo_de_envios(nome_template, 2)
+    except Exception:
+        return {"quantos": 0, "ultimo": ""}
 
 
 def _templates_manuais() -> list:
@@ -8770,7 +8815,8 @@ async function carrega(){
  const optSeg=Object.keys(SEG).map(k=>
    `<option value="${k}">${k} (${SEG[k]})</option>`).join('');
  const optTplLote=TPL.map(t=>
-   `<option value="${t.nome}" data-pede="${(t.pede_texto||[]).join(',')}">${
+   `<option value="${t.nome}" data-pede="${(t.pede_texto||[]).join(',')}" data-enviados="${
+     (t.envio||{}).quantos||0}" data-ultimo="${(t.envio||{}).ultimo||''}">${
      t.rotulo}${t.automatico?' · já automático':''}</option>`
  ).join('');
  // O QUE O RESOLVE AI FAZ (M3.4). Fica junto dos controles porque o Kevin
@@ -8796,6 +8842,7 @@ async function carrega(){
    <select id="segLote" class="sel" style="width:100%;margin-bottom:7px">${optSeg}</select>
    <select id="tplLote" class="sel" style="width:100%;margin-bottom:9px"
            onchange="camposDoLote()">${optTplLote}</select>
+   <div id="jaFoi" class="muted" style="font-size:11px;margin-bottom:7px"></div>
    <div id="txtLote" style="display:none;margin-bottom:9px">
      <input id="novNome" class="sel" maxlength="220"
             style="width:100%;margin-bottom:6px"
@@ -8806,7 +8853,7 @@ async function carrega(){
      <div class="muted" style="font-size:11px;margin-top:4px">
        Isso entra na mensagem que TODO mundo do grupo vai ler.</div>
    </div>
-   <button class="b bok" style="width:100%" onclick="lote()">Enviar pra lista</button>`);
+   <button class="b bok" id="btLote" style="width:100%" onclick="lote()">Enviar pra lista</button>`);
  const us=(d.usuarios||[]).filter(u=>F==='todos'||(u.status||'trial')===F)
   .map(u=>{
    const a=u.assinatura||{};
@@ -8999,6 +9046,19 @@ function camposDoLote(){
   const o=tpl.options[tpl.selectedIndex];
   const pede=((o&&o.getAttribute('data-pede'))||'').length>0;
   box.style.display = pede ? 'block' : 'none';
+  // O RECIBO FICA NA TELA, e nao so no alerta que some.
+  const av=document.getElementById('jaFoi');
+  if(av){
+    const n=parseInt((o&&o.getAttribute('data-enviados'))||'0',10)||0;
+    const q=(o&&o.getAttribute('data-ultimo'))||'';
+    if(n){
+      av.textContent='Ja enviado nos ultimos 2 dias para '+n+' pessoa(s)'
+        +(q?' — ultimo em '+q.slice(8,10)+'/'+q.slice(5,7)+' '+q.slice(11,16):'')
+        +'. Quem ja recebeu sera pulado.';
+    } else {
+      av.textContent='Ainda nao enviei este aviso nos ultimos 2 dias.';
+    }
+  }
 }
 async function lote(){
   const seg=document.getElementById('segLote'),
@@ -9019,6 +9079,22 @@ async function lote(){
   }
   const txtSeg=seg.options[seg.selectedIndex].text;
   const qtd=(txtSeg.match(/[(]([0-9]+)[)]/)||[])[1] || '?';
+  // PERGUNTA ANTES QUEM JA RECEBEU. O aviso so serve no instante da
+  // decisao: depois do envio a mensagem repetida ja saiu.
+  let repetidos=0, nomes=[];
+  try{
+    const rc=await fetch('/painel/lote?k='+encodeURIComponent(K),
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({segmento:seg.value,template:tpl.value,
+                            extras:extras,confirmo:true,conferir:true})});
+    const jc=await rc.json();
+    if(jc&&jc.ok){ repetidos=jc.repetidos||0; nomes=jc.nomes||[]; }
+  }catch(e){}
+  let alerta='';
+  if(repetidos){
+    alerta=' ATENCAO: '+repetidos+' ja receberam isto nos ultimos 2 dias ';
+    alerta+='('+nomes.join(', ')+'). Vou PULAR essas pessoas.';
+  }
   // A PREVIA VEM ANTES DO OK. Texto livre que vai pra base inteira tem que
   // ser lido uma vez fora do campo em que foi digitado.
   // SEM QUEBRA DE LINHA AQUI, nem escapada. Este JS mora dentro de uma
@@ -9037,7 +9113,11 @@ async function lote(){
     previa+=extras.nome_da_novidade+' / '+extras.o_que_ela_faz;
   }
   if(!confirm('Enviar "'+tpl.options[tpl.selectedIndex].text+'" pra '+qtd
-      +' pessoa(s) do grupo "'+seg.value+'"?'+previa)) return;
+      +' pessoa(s) do grupo "'+seg.value+'"?'+previa+alerta)) return;
+  // BOTAO TRAVADO ENQUANTO ENVIA. O lote leva minutos e a tela nao mudava
+  // nada — o dono clicou OK tres vezes achando que nao tinha funcionado.
+  const bt=document.getElementById('btLote');
+  if(bt){ bt.disabled=true; bt.textContent='Enviando, pode levar minutos...'; }
   try{
     const r=await fetch('/painel/lote?k='+encodeURIComponent(K),
       {method:'POST',headers:{'Content-Type':'application/json'},
@@ -9047,6 +9127,8 @@ async function lote(){
     if(!j.ok){ alert('Não deu: '+(j.erro||'tente de novo')); }
     else {
       let m='Enviados: '+j.enviados+' de '+j.total+'.';
+      if(j.pulados){ m+=' Pulei '+j.pulados+' que ja tinham recebido.'; }
+      if(j.aviso){ m=j.aviso; }
       if(j.falharam){
         // Quem NAO recebeu tem que aparecer com o motivo: lote que diz so
         // "enviado" esconde a pessoa que ficou sem, e ela e a que importa.
@@ -9063,6 +9145,7 @@ async function lote(){
       if(t) t.value='';
     }
   }catch(e){ alert('Sem conexão com o servidor.'); }
+  if(bt){ bt.disabled=false; bt.textContent='Enviar pra lista'; }
   carrega();
 }
 carrega(); setInterval(()=>{if(!_ocupado())carrega()},20000);
@@ -9139,6 +9222,47 @@ document.addEventListener('visibilitychange',()=>{
                           + f": máximo {LIMITE_VARIAVEL_LIVRE} caracteres")})
 
         gente = grupos[seg]
+
+        # MODO CONFERIR: responde quem ja recebeu e NAO manda nada.
+        #
+        # O aviso tem que chegar no instante em que o dono decide — dentro
+        # da confirmacao, antes do OK. Depois do envio nao serve pra nada:
+        # a mensagem repetida ja saiu.
+        #
+        # Fica DEPOIS das validacoes de texto de proposito, pra conferir
+        # tambem se os campos estao preenchidos antes de o dono se
+        # comprometer com a lista.
+        _ja = db.recebeu_nos_ultimos_dias(tpl, int(body.get("dias") or 2))
+        _repetidos = [p["nome"] for p in gente if p["id"] in _ja]
+        if body.get("conferir"):
+            return JSONResponse({"ok": True, "conferindo": True,
+                                 "total": len(gente),
+                                 "repetidos": len(_repetidos),
+                                 "nomes": _repetidos[:8]})
+
+        # A TRAVA E DO SERVIDOR, NAO DA ATENCAO DO DONO.
+        #
+        # Este lote leva de 2 a 4 minutos e a tela nao dava sinal nenhum
+        # enquanto rodava. O dono clicou OK tres vezes achando que nao
+        # tinha funcionado — e nada impedia tres lotes de sairem, tres
+        # mensagens iguais pra cada pessoa, num numero ja restringido duas
+        # vezes pela Meta. Avisar nao basta: quem clica de novo e
+        # justamente quem NAO viu o aviso.
+        #
+        # Por isso pula por padrao, e a repeticao exige `repetir` explicito.
+        # Fail-closed: na duvida a pessoa NAO recebe duas vezes.
+        _pulados = 0
+        if _repetidos and not body.get("repetir"):
+            _antes = len(gente)
+            gente = [p for p in gente if p["id"] not in _ja]
+            _pulados = _antes - len(gente)
+            if not gente:
+                return JSONResponse(
+                    {"ok": True, "enviados": 0, "falharam": 0,
+                     "total": 0, "pulados": _pulados, "detalhes": [],
+                     "aviso": ("Todo mundo desse grupo já recebeu este "
+                               "aviso nos últimos dias. Não mandei de novo.")})
+
         enviados, falhas = 0, []
         import asyncio
         import random as _rnd
@@ -9176,6 +9300,7 @@ document.addEventListener('visibilitychange',()=>{
             tpl, seg, enviados, len(falhas))
         return JSONResponse({"ok": True, "enviados": enviados,
                              "falharam": len(falhas), "total": len(gente),
+                             "pulados": _pulados,
                              "detalhes": falhas[:20]})
 
     @app.get("/api/pulso")

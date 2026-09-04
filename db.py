@@ -1032,6 +1032,81 @@ def log_dispatch(user_id: int, kind: str, item_id: Optional[int] = None) -> None
             (user_id, item_id, kind, _now_iso()))
 
 
+def recebeu_nos_ultimos_dias(kind: str, dias: int = 2) -> set:
+    """Quem recebeu este disparo nos ultimos N dias.
+
+    Existe pra o dono nao repetir um aviso sem querer. O envio manual do
+    painel nao deixava rastro por PESSOA — so uma linha no log de acoes com
+    o nome do template dentro de um texto — entao nao dava pra perguntar
+    "quem ja recebeu isso". Agora da.
+
+    Devolve ids, e nao contagem, porque quem chama precisa cruzar com o
+    segmento escolhido: "3 de 14" so ajuda se forem as 3 daquele grupo.
+    """
+    import datetime as _dt
+    corte = (tempo.agora() - _dt.timedelta(days=max(0, int(dias)))
+             ).isoformat(timespec="seconds")
+    try:
+        with get_conn() as conn:
+            linhas = conn.execute(
+                "SELECT DISTINCT user_id FROM dispatches "
+                "WHERE kind=? AND sent_at >= ?", (kind, corte)).fetchall()
+            # TAMBEM O LOG DE ACOES, e nao por redundancia.
+            #
+            # O carimbo em `dispatches` comecou hoje. Sem esta segunda
+            # fonte, a trava nasceria cega justamente para os envios que
+            # acabaram de sair — que sao os que ela precisa impedir de
+            # repetir. `admin_acoes` ja guardava isso desde sempre, so que
+            # com o template dentro de um texto.
+            antigas = conn.execute(
+                "SELECT DISTINCT alvo FROM admin_acoes "
+                "WHERE acao='enviar_template' AND quando >= ? "
+                "AND detalhe LIKE ?", (corte, kind + " enviado=True%")
+            ).fetchall()
+        achados = {int(r[0]) for r in linhas if r and r[0] is not None}
+        for r in antigas:
+            try:
+                achados.add(int(r[0]))
+            except (TypeError, ValueError):
+                pass
+        return achados
+    except Exception:
+        # Na duvida devolve VAZIO: o aviso some, mas nada e bloqueado por
+        # engano. Errar pra "nao sei" e melhor que errar pra "ja mandei".
+        return set()
+
+
+def resumo_de_envios(kind: str, dias: int = 2) -> dict:
+    """Quantas pessoas receberam este template e quando foi a ultima.
+
+    O painel avisava o resultado do lote num `alert`, que some no primeiro
+    OK. Depois disso nao havia jeito de saber se um aviso tinha saido ou
+    nao — e a duvida e o que faz o dono clicar de novo.
+    """
+    import datetime as _dt
+    corte = (tempo.agora() - _dt.timedelta(days=max(0, int(dias)))
+             ).isoformat(timespec="seconds")
+    try:
+        with get_conn() as conn:
+            r = conn.execute(
+                "SELECT COUNT(DISTINCT user_id), MAX(sent_at) "
+                "FROM dispatches WHERE kind=? AND sent_at >= ?",
+                (kind, corte)).fetchone()
+            r2 = conn.execute(
+                "SELECT COUNT(DISTINCT alvo), MAX(quando) FROM admin_acoes "
+                "WHERE acao='enviar_template' AND quando >= ? "
+                "AND detalhe LIKE ?", (corte, kind + " enviado=True%")
+            ).fetchone()
+    except Exception:
+        return {"quantos": 0, "ultimo": ""}
+    # As duas fontes se sobrepoem (o carimbo novo e o log antigo gravam o
+    # mesmo envio), entao a contagem honesta e a MAIOR das duas, nunca a
+    # soma — somar mostraria o dobro do que saiu.
+    quantos = max(int((r or [0])[0] or 0), int((r2 or [0])[0] or 0))
+    ultimo = max(str((r or ["", ""])[1] or ""), str((r2 or ["", ""])[1] or ""))
+    return {"quantos": quantos, "ultimo": ultimo}
+
+
 def dispatched_today(kind: str, user_id: int,
                      item_id: Optional[int] = None) -> bool:
     """Já houve disparo deste tipo hoje (para este item, se informado)?"""
