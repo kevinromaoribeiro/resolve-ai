@@ -2596,6 +2596,24 @@ def custo_por_usuario(dias: int = 30) -> list:
         p["receita"] = round(receita, 2)
         p["margem"] = round(receita - desconto - p["custo_total"], 2)
         saida.append(p)
+    # CUSTO CHEIO: o variavel dele MAIS a fatia do fixo que ele consome.
+    #
+    # So o variavel (R$ 0,07) faz o produto parecer quase de graca e leva a
+    # concluir que o preco pode cair. Mas os R$ 100 de fixo existem e alguem
+    # paga: rateados por 13 pessoas dao R$ 7,69 cada — cem vezes o variavel.
+    # E o custo cheio, nao o variavel, que decide preco.
+    #
+    # O RATEIO E PELA BASE INTEIRA, e nao so por quem paga. Ratear so entre
+    # pagantes daria "custo infinito por cliente" enquanto ninguem paga, o
+    # que e verdade contabil e inutil pra decidir. Pela base, o numero
+    # responde: "se todos virassem pagantes hoje, quanto custaria cada um".
+    fixo_mes = round(sum(float(globals().get(var, 0) or 0)
+                         for _nome, var in _FIXOS), 2)
+    rateio = round(fixo_mes / len(saida), 2) if saida else 0.0
+    for p in saida:
+        p["fixo_rateado"] = rateio
+        p["custo_cheio"] = round(p["custo_total"] + rateio, 2)
+        p["margem_cheia"] = round(p["margem"] - rateio, 2)
     saida.sort(key=lambda x: -x["custo_total"])
     return saida
 
@@ -2611,8 +2629,22 @@ def custo_medio_por_usuario(dias: int = 30) -> dict:
         return {"pessoas": 0, "medio": 0.0, "maior": 0.0, "conferido":
                 CUSTOS_CONFERIDOS, "topo": []}
     totais = [x["custo_total"] for x in linhas]
+    cheios = [x["custo_cheio"] for x in linhas]
+    fixo = linhas[0]["fixo_rateado"] * len(linhas) if linhas else 0.0
     return {
         "pessoas": len(linhas),
+        "fixo_mes": round(fixo, 2),
+        "fixo_rateado": linhas[0]["fixo_rateado"] if linhas else 0.0,
+        "cheio_medio": round(sum(cheios) / len(cheios), 2),
+        "cheio_maior": round(max(cheios), 2),
+        # Quanto sobra de CADA cliente se ele pagar, ja descontado o fixo
+        # dele. E este numero que diz se o preco fecha.
+        "sobra_por_cliente": round(
+            PRECO_MENSAL * (1 - (TAXA_PAGAMENTO_PCT + IMPOSTO_PCT) / 100)
+            - (sum(cheios) / len(cheios)), 2),
+        # O TOTAL da base, e nao so a media: e ele que soma com o fixo pra
+        # dar o custo do mes. Media sozinha nao fecha com nada.
+        "total": round(sum(totais), 2),
         "medio": round(sum(totais) / len(totais), 2),
         "maior": round(max(totais), 2),
         "mediana": round(sorted(totais)[len(totais) // 2], 2),

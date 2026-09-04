@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v30.0-painel-com-abas-metas-e-custo-por-cliente-2026-09-04"
+BUILD = "v30.1-conselheiros-e-custo-cheio-2026-09-04"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6930,6 +6930,25 @@ def _plano_das_metas() -> dict:
     return saida
 
 
+def _conselhos_guardados() -> dict:
+    """A ultima analise de cada conselheiro, pra tela nao nascer vazia."""
+    try:
+        import conselho as _c
+        return {t: _c.guardado(db, t) for t in _c.CONSELHOS}
+    except Exception:
+        log.warning("[conselho] nao consegui ler os guardados", exc_info=True)
+        return {}
+
+
+def _seguro_dict(fn) -> dict:
+    """Uma consulta quebrada vira dicionario vazio, nunca derruba o resto."""
+    try:
+        return fn() or {}
+    except Exception:
+        log.warning("[conselho] uma metrica falhou", exc_info=True)
+        return {}
+
+
 def _custo_seguro() -> dict:
     """O custo por pessoa nunca pode derrubar o painel inteiro."""
     try:
@@ -8668,6 +8687,8 @@ const ABA_DO_CARD={
  'Devolver 14 dias pra todo mundo':'clientes',
  'O que o Resolve AI faz':'produto',
  '🎧 Mini podcast':'produto',
+ 'Conselheiro de crescimento':'crescimento',
+ 'Conselheiro de preço':'crescimento',
  'Metas de lucro':'financeiro',
  'Custo real por cliente':'financeiro',
  'Está no ar?':'sistema',
@@ -8681,6 +8702,21 @@ let ABA_ATIVA=(function(){
  try{ return localStorage.getItem('resolveai_aba')||'negocio' }
  catch(e){ return 'negocio' }
 })();
+async function pedirConselho(tipo){
+ const bt=document.getElementById('bt_'+tipo);
+ // O modelo leva alguns segundos. Sem travar o botao, o dono clica de novo
+ // e paga duas analises — foi o que aconteceu com o disparo em lote.
+ if(bt){ bt.disabled=true; bt.textContent='Analisando...'; }
+ try{
+   const r=await fetch('/painel/conselho?k='+encodeURIComponent(K),
+     {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({tipo:tipo,forcar:true})});
+   const j=await r.json();
+   if(!j.ok){ alert('Nao deu: '+(j.erro||'tente de novo')); }
+ }catch(e){ alert('Sem conexao com o servidor.'); }
+ if(bt){ bt.disabled=false; bt.textContent='Analisar de novo'; }
+ carrega();
+}
 async function salvarMetas(){
  const v=id=>parseFloat((document.getElementById(id)||{}).value||'0')||0;
  const metas={curto:v('mt_curto'),medio:v('mt_medio'),bom:v('mt_bom')};
@@ -9138,14 +9174,33 @@ async function carrega(){
        ${x.episodios}p</td>
      <td class="q" style="text-align:right"><b>${dinheiro(x.custo_total)}</b></td>
     </tr>`).join('');
+ // O CUSTO CHEIO PRIMEIRO, e o variavel depois.
+ //
+ // So o variavel (centavos) faz o produto parecer de graca e leva a
+ // concluir que da pra baixar o preco. O fixo existe e alguem paga: e o
+ // cheio que decide se o preco fecha.
+ const sobra=CU.sobra_por_cliente;
+ const corSobra=sobra==null?'#8296b3':(sobra>0?'#22c55e':'#ef4444');
  card('Custo real por cliente',
    `<div class="grid">
-     <div class="kpi"><div class="l">Custo médio / 30 dias</div>
+     <div class="kpi"><div class="l">Custo CHEIO por pessoa</div>
+       <div class="v">${dinheiro(CU.cheio_medio)}</div>
+       <div class="u">variável + fatia do fixo</div></div>
+     <div class="kpi"><div class="l">Sobra por cliente</div>
+       <div class="v" style="color:${corSobra}">${dinheiro(sobra)}</div>
+       <div class="u">preço − custo cheio</div></div>
+    </div>
+    <div style="font-size:11px;color:#8296b3;margin:9px 0 4px">
+      Fixo de ${dinheiro(CU.fixo_mes)}/mês ÷ ${CU.pessoas} pessoa(s)
+      = ${dinheiro(CU.fixo_rateado)} cada. Quanto mais gente, menor essa
+      fatia — é aqui que o volume resolve.</div>
+    <div class="grid">
+     <div class="kpi"><div class="l">Variável médio / 30 dias</div>
        <div class="v">${dinheiro(CU.medio)}</div>
        <div class="u">${CU.pessoas} pessoa(s)</div></div>
-     <div class="kpi"><div class="l">O mais caro</div>
+     <div class="kpi"><div class="l">O variável mais caro</div>
        <div class="v">${dinheiro(CU.maior)}</div>
-       <div class="u">é ele que define o preço</div></div>
+       <div class="u">total da base ${dinheiro(CU.total)}</div></div>
     </div>
     <div class="sub" style="margin:10px 0 4px">Quem mais custa
       <span class="muted">(t=texto a=áudio f=foto p=podcast)</span></div>
@@ -9155,6 +9210,34 @@ async function carrega(){
           ⚠️ Estimativa: os preços unitários vieram de tabela pública, não
           de fatura. Confira uma fatura e ajuste antes de decidir preço.
          </div>`));
+
+ // ABA CRESCIMENTO: os dois conselheiros.
+ //
+ // So por botao. Analise que se regenera junto com o painel queimaria
+ // dinheiro em silencio e mudaria de opiniao a cada leitura. A resposta
+ // fica guardada e datada, pra tela nunca nascer vazia.
+ const CO=d.conselhos||{};
+ const escapa=t=>(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const quandoBr=q=>q?(q.slice(8,10)+'/'+q.slice(5,7)+' '+q.slice(11,16)):'';
+ const conselheiro=(tipo,titulo,linha)=>{
+   const g=CO[tipo]||{};
+   const corpo=g.texto
+     ? `<div style="white-space:pre-wrap;font-size:13px;line-height:1.55">${
+         escapa(g.texto)}</div>
+        <div class="muted" style="font-size:11px;margin-top:9px">
+          Análise de ${quandoBr(g.quando)}</div>`
+     : `<div class="muted" style="font-size:12px">Nenhuma análise ainda.</div>`;
+   card(titulo,
+     `<div class="sub" style="margin:-4px 0 10px">${linha}</div>`
+     + corpo
+     + `<button class="b bok" id="bt_${tipo}" style="width:100%;margin-top:10px"
+         onclick="pedirConselho('${tipo}')">${
+           g.texto?'Analisar de novo':'Pedir análise'}</button>`);
+ };
+ conselheiro('crescimento','Conselheiro de crescimento',
+   'Olha os números reais do painel e diz onde está o gargalo e o que fazer esta semana.');
+ conselheiro('preco','Conselheiro de preço',
+   'Olha o custo cheio por cliente e opina se R$ 19,90 está certo.');
 
  card('Últimas mensagens', linhasMsg
      ? `<div class="rolatab"><table>${linhasMsg}</table></div>`
@@ -9422,6 +9505,68 @@ document.addEventListener('visibilitychange',()=>{
 </script></body></html>"""
         return HTMLResponse(html)
 
+    @app.post("/painel/conselho")
+    async def painel_conselho(request: Request):
+        """O conselheiro do painel. So por botao, e a resposta fica guardada.
+
+        Analise que se regenera junto com o painel (a cada 20s) queimaria
+        dinheiro em silencio e ainda mudaria de opiniao a cada leitura. Por
+        isso: pedido explicito, resposta datada, e um pedido novo dentro da
+        validade devolve o que ja existe em vez de gastar de novo.
+        """
+        from fastapi.responses import JSONResponse
+        import conselho as _c
+        if not _painel_autorizado(request):
+            return _negado(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        tipo = str(body.get("tipo") or "crescimento")
+        if tipo not in _c.CONSELHOS:
+            return JSONResponse({"ok": False, "erro": "conselho desconhecido"})
+
+        antigo = _c.guardado(db, tipo)
+        if antigo["texto"] and not body.get("forcar"):
+            try:
+                idade = (tempo.agora()
+                         - datetime.fromisoformat(antigo["quando"])
+                         ).total_seconds() / 3600.0
+            except Exception:
+                idade = 999.0
+            if idade < _c.VALIDADE_H:
+                return JSONResponse({"ok": True, "texto": antigo["texto"],
+                                     "quando": antigo["quando"],
+                                     "reaproveitado": True})
+
+        # O RETRATO VEM DO MESMO LUGAR QUE A TELA, e nao de consultas
+        # proprias: se o painel e o conselheiro lessem fontes diferentes,
+        # um diria uma coisa e o outro diria outra sobre o mesmo dia.
+        dados = {
+            "validacao": _seguro_dict(
+                lambda: db.validacao(
+                    TRIAL_DAYS,
+                    excluir_telefones=[ADMIN_PHONE, MASTER_PHONE])),
+            "engajamento": _seguro_dict(
+                lambda: db.engajamento(
+                    excluir_telefones=[ADMIN_PHONE, MASTER_PHONE])),
+            "financeiro": _seguro_dict(lambda: db.financeiro(TRIAL_DAYS)),
+            "custo_usuario": _custo_seguro(),
+            "metas": _plano_das_metas(),
+            "templates": _estado_dos_templates(),
+            "envio": _seguro_dict(db.pulso_envio),
+            "podcast": _seguro_dict(lambda: db.podcast_farois(7)),
+        }
+        ok, texto = _c.pedir(tipo, dados,
+                             os.environ.get("LLM_MODEL_CONSELHO", "")
+                             or getattr(ai_engine, "LLM_MODEL", ""))
+        if not ok:
+            return JSONResponse({"ok": False, "erro": texto})
+        quando = tempo.agora().isoformat(timespec="seconds")
+        _c.guardar(db, tipo, texto, quando)
+        db.registrar_acao_admin("conselho", por="painel", detalhe=tipo)
+        return JSONResponse({"ok": True, "texto": texto, "quando": quando})
+
     @app.post("/painel/metas")
     async def painel_metas(request: Request):
         """As metas de lucro sao do dono: ele muda pelo painel, sem deploy."""
@@ -9639,6 +9784,7 @@ document.addEventListener('visibilitychange',()=>{
             "financeiro": db.financeiro(TRIAL_DAYS),
             "metas": _plano_das_metas(),
             "custo_usuario": _custo_seguro(),
+            "conselhos": _conselhos_guardados(),
             "usuarios": db.admin_list_users(),
             "freio": {"ciclo": DISPATCH_MAX_PER_CYCLE,
                       "intervalo": f"{ENVIO_INTERVALO_MIN:.0f}-"

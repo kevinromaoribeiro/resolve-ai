@@ -199,3 +199,76 @@ def test_quem_paga_desconta_taxa_e_imposto(base_limpa, monkeypatch):
     assert p["paga"] is True
     esperado = db.PRECO_MENSAL * 0.89 - p["custo_total"]
     assert abs(p["margem"] - round(esperado, 2)) < 0.02
+
+
+# --- custo CHEIO: o variavel dele mais a fatia do fixo ------------------
+
+def test_custo_cheio_inclui_a_fatia_do_fixo(base_limpa, monkeypatch):
+    """So o variavel faz o produto parecer de graca.
+
+    R$ 0,07 de variavel leva a concluir que da pra baixar o preco. Mas os
+    R$ 100 de fixo existem: rateados por 13 pessoas dao R$ 7,69 cada, cem
+    vezes o variavel. E o custo cheio que decide preco.
+    """
+    monkeypatch.setattr(db, "CUSTO_CLAUDE_MES", 100.0)
+    _pessoa("A", "5511900000021")
+    _pessoa("B", "5511900000022")
+    _msg("5511900000021", "in", "texto", n=1)
+    _msg("5511900000022", "in", "texto", n=1)
+    linhas = db.custo_por_usuario(30)
+    p = _de(linhas, "A")
+    assert p["fixo_rateado"] == 50.0
+    assert p["custo_cheio"] == round(p["custo_total"] + 50.0, 2)
+
+
+def test_rateio_e_pela_base_e_nao_so_por_quem_paga(base_limpa, monkeypatch):
+    """Ratear so entre pagantes daria custo infinito enquanto ninguem paga.
+
+    Verdade contabil, inutil pra decidir. Pela base, o numero responde: "se
+    todos virassem pagantes hoje, quanto custaria cada um".
+    """
+    monkeypatch.setattr(db, "CUSTO_CLAUDE_MES", 100.0)
+    for n, tel in [("P1", "5511900000023"), ("P2", "5511900000024"),
+                   ("P3", "5511900000025"), ("P4", "5511900000026")]:
+        _pessoa(n, tel)
+        _msg(tel, "in", "texto", n=1)
+    assert _de(db.custo_por_usuario(30), "P1")["fixo_rateado"] == 25.0
+
+
+def test_a_sobra_por_cliente_desconta_o_fixo(base_limpa, monkeypatch):
+    """E este numero que diz se o preco fecha, nao a margem de contribuicao."""
+    monkeypatch.setattr(db, "CUSTO_CLAUDE_MES", 100.0)
+    for i in range(10):
+        tel = "551190000%04d" % (3000 + i)
+        _pessoa("U%d" % i, tel)
+        _msg(tel, "in", "texto", n=1)
+    r = db.custo_medio_por_usuario(30)
+    assert r["fixo_rateado"] == 10.0
+    assert r["cheio_medio"] > r["medio"]
+    # preco 19,90 menos ~10 de fixo por cabeca: sobra positiva, mas pequena
+    assert 0 < r["sobra_por_cliente"] < db.PRECO_MENSAL
+
+
+def test_com_pouca_gente_o_fixo_engole_o_preco(base_limpa, monkeypatch):
+    """Com 3 pessoas o rateio passa do preco: sobra NEGATIVA.
+
+    E o retrato honesto de uma base pequena, e o painel precisa mostrar
+    isso em vez de esconder atras da margem de contribuicao.
+    """
+    monkeypatch.setattr(db, "CUSTO_CLAUDE_MES", 100.0)
+    for i in range(3):
+        tel = "551190000%04d" % (4000 + i)
+        _pessoa("X%d" % i, tel)
+        _msg(tel, "in", "texto", n=1)
+    r = db.custo_medio_por_usuario(30)
+    assert r["sobra_por_cliente"] < 0
+
+
+def test_total_da_base_fecha_com_a_soma(base_limpa):
+    _pessoa("S1", "5511900000031")
+    _pessoa("S2", "5511900000032")
+    _msg("5511900000031", "in", "texto", n=4)
+    _msg("5511900000032", "in", "audio", n=4)
+    linhas = db.custo_por_usuario(30)
+    r = db.custo_medio_por_usuario(30)
+    assert abs(r["total"] - sum(x["custo_total"] for x in linhas)) < 0.01
