@@ -44,8 +44,14 @@ def _dash(monkeypatch) -> str:
 
 
 def _painel(monkeypatch) -> str:
+    """A tela antiga, que hoje so abre pelo `?antigo=1`.
+
+    `/painel` passou a redirecionar pro `/dash` quando os dois viraram um
+    so. Estes testes continuam valendo pela saida de emergencia: enquanto
+    a tela velha existir, ela tem que continuar correta.
+    """
     monkeypatch.setattr(wa_bot, "PAINEL_TOKEN", "tok")
-    return TestClient(wa_bot.app).get("/painel?k=tok").text
+    return TestClient(wa_bot.app).get("/painel?k=tok&antigo=1").text
 
 
 def _pulso() -> dict:

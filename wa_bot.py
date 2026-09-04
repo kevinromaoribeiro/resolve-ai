@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v30.2-cinco-conselheiros-que-conhecem-o-produto-2026-09-04"
+BUILD = "v30.3-um-painel-so-e-a-jogada-que-nao-enxerguei-2026-09-04"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -8404,11 +8404,27 @@ try:
 
     @app.get("/painel")
     async def painel(request: Request):
-        """Dashboard em tempo real.
-        Abra http://SEU-IP:8000/painel?k=SEU_PAINEL_TOKEN no navegador."""
+        """O painel antigo. Hoje leva pro novo, que tem tudo o que ele tinha.
+
+        Eram duas telas com dados diferentes sobre o mesmo negocio, e o dono
+        se perdia entre elas — o link do relatorio diario ia pra uma, o
+        atalho do celular pra outra. O /dash absorveu o que so existia aqui
+        (as ultimas mensagens e o botao de testar o motor), entao manter as
+        duas so multiplicaria o lugar onde procurar.
+
+        `?antigo=1` ainda abre esta tela. E saida de emergencia, nao opcao:
+        se faltar alguma coisa no novo, o dono nao fica sem painel enquanto
+        eu conserto.
+        """
         if not _painel_autorizado(request):
             return _negado(request)
         from fastapi.responses import HTMLResponse
+        if not request.query_params.get("antigo"):
+            from fastapi.responses import RedirectResponse
+            _k = request.query_params.get("k") or ""
+            import urllib.parse as _up
+            return RedirectResponse(
+                "/dash?k=" + _up.quote(_k, safe=""), status_code=302)
         m = db.painel_metricas()
         wa = _instance_state()
         wa_cor = "#22c55e" if wa == "open" else "#ef4444"
@@ -8716,6 +8732,7 @@ const ABA_DO_CARD={
  'Custo real por cliente':'financeiro',
  'Está no ar?':'sistema',
  'Está no ar? (detalhe)':'sistema',
+ 'Testar o motor agora':'sistema',
  'Últimas mensagens':'sistema',
  'O número está em risco?':'sistema'
 };
@@ -8725,6 +8742,19 @@ let ABA_ATIVA=(function(){
  try{ return localStorage.getItem('resolveai_aba')||'negocio' }
  catch(e){ return 'negocio' }
 })();
+async function testarMotorAgora(){
+ const bt=document.getElementById('btMotor');
+ if(bt){ bt.disabled=true; bt.textContent='Rodando...'; }
+ try{
+   const r=await fetch('/cron/proactive',
+     {method:'POST',headers:{'Content-Type':'application/json',
+                             'X-Painel-Token':K}});
+   const j=await r.json();
+   alert('Ciclo rodado. Disparos agora: '+(j.sent||0)+'.');
+ }catch(e){ alert('Sem conexao com o servidor.'); }
+ if(bt){ bt.disabled=false; bt.textContent='Rodar um ciclo agora'; }
+ carrega();
+}
 async function pedirConselho(tipo){
  const bt=document.getElementById('bt_'+tipo);
  // O modelo leva alguns segundos. Sem travar o botao, o dono clica de novo
@@ -9273,11 +9303,17 @@ async function carrega(){
  conselheiro('cx','Conselheiro de experiência',
    'Onde a pessoa trava, como é o primeiro dia ideal e o que a afasta.');
  conselheiro('produto','Ideias de produto',
-   'O que já existe e ninguém usa, o que melhorar e o que cortar.');
+   'Features novas que aumentam o uso diário e ideias de negócio pra chegar nas metas.');
 
  card('Últimas mensagens', linhasMsg
      ? `<div class="rolatab"><table>${linhasMsg}</table></div>`
      : '<div class="muted">Nenhuma mensagem ainda.</div>');
+ card('Testar o motor agora',
+   `<div class="muted" style="font-size:12px;margin-bottom:9px">
+      Roda um ciclo do motor proativo na hora, sem esperar o relógio. Serve
+      pra conferir se um lembrete que deveria ter saído sai mesmo.</div>
+    <button class="b bok" id="btMotor" style="width:100%"
+      onclick="testarMotorAgora()">Rodar um ciclo agora</button>`);
  card('Está no ar? (detalhe)',
    `<div class="grid">
      <div class="kpi"><div class="l">Recebidas hoje</div>
