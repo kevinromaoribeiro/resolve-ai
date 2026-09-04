@@ -2158,6 +2158,38 @@ CUSTO_LLM_POR_MSG = float(os.environ.get("CUSTO_LLM_POR_MSG", "0.02"))
 # Custo por mensagem ENVIADA. Zero no Wasender; ~R$0,035 na API oficial.
 CUSTO_MSG_ENVIADA = float(os.environ.get("CUSTO_MSG_ENVIADA", "0"))
 
+# ── CUSTO POR SERVICO, e nao uma taxa unica por mensagem ───────────────
+#
+# `CUSTO_LLM_POR_MSG` sozinho cobrava o mesmo por um "ok" de texto e por um
+# audio de 40s que passa por transcricao + LLM. E deixava de fora categorias
+# INTEIRAS: a locucao do podcast, a leitura de boleto por foto e o custo de
+# conversa da Meta. Margem calculada assim erra pra cima justamente no
+# usuario mais engajado — que e o mais caro.
+#
+# ATENCAO, e vale a mesma regra da tabela de CLT: estes numeros sao
+# ESTIMATIVA de tabela publica, convertidos a dolar aproximado. Cada um e
+# variavel de ambiente pra ser corrigido com a fatura na mao, e o painel
+# mostra que sao estimativa ate alguem confirmar.
+DOLAR = float(os.environ.get("DOLAR", "5.40"))
+
+# gpt-4o-mini com prompt do sistema + historico: ~4k entrada, ~400 saida.
+CUSTO_LLM_TEXTO = float(os.environ.get("CUSTO_LLM_TEXTO", "0.006"))
+# Whisper ~US$0.006/min. Audio tipico de 30s.
+CUSTO_TRANSCRICAO = float(os.environ.get("CUSTO_TRANSCRICAO", "0.02"))
+# Visao: a foto vira ~1,1k tokens de entrada, alem do prompt.
+CUSTO_VISAO = float(os.environ.get("CUSTO_VISAO", "0.03"))
+# TTS ~US$15/1M caracteres. Um episodio de 400 palavras ~2,4k caracteres.
+# E o item mais caro por uso do produto inteiro.
+CUSTO_TTS_EPISODIO = float(os.environ.get("CUSTO_TTS_EPISODIO", "0.20"))
+# Conversa iniciada pela empresa na Cloud API. Texto livre DENTRO da janela
+# de 24h nao custa — so o template abre conversa paga.
+CUSTO_TEMPLATE_UTILITY = float(os.environ.get("CUSTO_TEMPLATE_UTILITY",
+                                              "0.045"))
+CUSTO_TEMPLATE_MARKETING = float(os.environ.get("CUSTO_TEMPLATE_MARKETING",
+                                                "0.35"))
+# Enquanto ninguem conferir uma fatura, o painel avisa que e estimativa.
+CUSTOS_CONFERIDOS = os.environ.get("CUSTOS_CONFERIDOS", "0") == "1"
+
 # ── SOBRE O FATURAMENTO ────────────────────────────────────────────────
 # % retido pela plataforma de pagamento (Kirvano/Stripe/Mercado Pago).
 TAXA_PAGAMENTO_PCT = float(os.environ.get("TAXA_PAGAMENTO_PCT", "0"))
@@ -2462,6 +2494,131 @@ def validacao(trial_days: int = 14, excluir_telefones: Optional[list] = None,
         "pagantes": pagantes,
         "pessoas": pessoas,
         "veredito": veredito,
+    }
+
+
+def custo_por_usuario(dias: int = 30) -> list:
+    """O que CADA pessoa custou nos ultimos N dias, linha por linha.
+
+    Sem isto a margem era uma media que escondia o que importa: numa base
+    pequena, uma pessoa que manda audio todo dia e recebe podcast custa
+    varias vezes o que custa quem manda dois textos por semana. A media diz
+    "esta tudo bem" ate o cliente caro virar a maioria.
+
+    JUNTA POR TELEFONE, e nao por user_id. A mensagem RECEBIDA e gravada com
+    `user_id` nulo (o webhook loga antes de resolver quem e), entao contar
+    por user_id daria zero de entrada pra todo mundo — o custo do LLM, que e
+    o principal, sumiria da conta. O telefone esta nos dois lados.
+    """
+    ini = (tempo.hoje() - timedelta(days=max(1, int(dias)) - 1)).isoformat()
+    fora = {"", None}
+    try:
+        with get_conn() as conn:
+            # `substr(telefone,-11)` casa os dois lados mesmo quando um tem
+            # o 55 e o outro nao — divergencia comum e silenciosa.
+            linhas = conn.execute(
+                """SELECT u.id AS uid, u.nome AS nome, u.status AS status,
+                          m.direcao AS direcao, m.tipo AS tipo,
+                          COUNT(*) AS n
+                     FROM msg_log m
+                     JOIN users u
+                       ON substr(u.telefone,-11)=substr(m.telefone,-11)
+                    WHERE substr(m.ts,1,10) >= ?
+                    GROUP BY u.id, m.direcao, m.tipo""", (ini,)).fetchall()
+    except Exception:
+        return []
+
+    # O PODCAST EM TRY PROPRIO, e nao junto com a consulta principal.
+    #
+    # `podcast_log` so nasce quando o modulo do podcast roda pela primeira
+    # vez. Com as duas no mesmo `try`, a tabela ausente derrubava a conta
+    # INTEIRA e a funcao devolvia lista vazia — o painel diria "custo zero"
+    # com a base toda gastando. Uma parte faltando vira uma linha zerada,
+    # nunca um relatorio vazio.
+    eps = []
+    try:
+        with get_conn() as conn:
+            eps = conn.execute(
+                """SELECT user_id, COUNT(*) AS n FROM podcast_log
+                    WHERE substr(quando,1,10) >= ? AND ok=1
+                    GROUP BY user_id""", (ini,)).fetchall()
+    except Exception:
+        eps = []
+
+    por_ep = {int(r["user_id"]): int(r["n"]) for r in eps
+              if r["user_id"] is not None}
+    gente: dict = {}
+    for r in linhas:
+        uid = int(r["uid"])
+        p = gente.setdefault(uid, {
+            "user_id": uid, "nome": r["nome"] or "?",
+            "status": r["status"] or "trial",
+            "texto_in": 0, "audio_in": 0, "imagem_in": 0,
+            "templates": 0, "livres_out": 0, "episodios": 0})
+        tipo = (r["tipo"] or "").lower()
+        n = int(r["n"] or 0)
+        if r["direcao"] == "in":
+            if "audio" in tipo or "voz" in tipo:
+                p["audio_in"] += n
+            elif "imagem" in tipo or "image" in tipo or "foto" in tipo:
+                p["imagem_in"] += n
+            else:
+                p["texto_in"] += n
+        elif r["direcao"] == "out":
+            if tipo == "template":
+                p["templates"] += n
+            else:
+                p["livres_out"] += n
+
+    saida = []
+    for uid, p in gente.items():
+        p["episodios"] = por_ep.get(uid, 0)
+        # O audio e a foto tambem passam pelo LLM depois de transcritos ou
+        # lidos: a transcricao e a visao SOMAM ao turno, nao substituem.
+        turnos = p["texto_in"] + p["audio_in"] + p["imagem_in"]
+        p["custo_llm"] = round(turnos * CUSTO_LLM_TEXTO, 2)
+        p["custo_audio"] = round(p["audio_in"] * CUSTO_TRANSCRICAO, 2)
+        p["custo_visao"] = round(p["imagem_in"] * CUSTO_VISAO, 2)
+        p["custo_podcast"] = round(p["episodios"] * CUSTO_TTS_EPISODIO, 2)
+        # Marketing e utility tem preco muito diferente; sem separar, a
+        # conta erra pra baixo justamente em quem recebeu anuncio.
+        p["custo_template"] = round(p["templates"] * CUSTO_TEMPLATE_UTILITY, 2)
+        # Texto livre dentro da janela de 24h nao custa nada na Cloud API —
+        # e por isso que fazer a pessoa RESPONDER e economia, nao so
+        # engajamento.
+        p["custo_livre"] = 0.0
+        p["custo_total"] = round(
+            p["custo_llm"] + p["custo_audio"] + p["custo_visao"]
+            + p["custo_podcast"] + p["custo_template"], 2)
+        p["paga"] = (p["status"] == "ativo")
+        receita = PRECO_MENSAL if p["paga"] else 0.0
+        desconto = receita * (TAXA_PAGAMENTO_PCT + IMPOSTO_PCT) / 100
+        p["receita"] = round(receita, 2)
+        p["margem"] = round(receita - desconto - p["custo_total"], 2)
+        saida.append(p)
+    saida.sort(key=lambda x: -x["custo_total"])
+    return saida
+
+
+def custo_medio_por_usuario(dias: int = 30) -> dict:
+    """O retrato da base: quanto custa a media, e quanto custa o mais caro.
+
+    Devolve os dois de proposito. Decidir preco pela media, numa base
+    pequena, e como decidir pelo cliente que menos usa.
+    """
+    linhas = custo_por_usuario(dias)
+    if not linhas:
+        return {"pessoas": 0, "medio": 0.0, "maior": 0.0, "conferido":
+                CUSTOS_CONFERIDOS, "topo": []}
+    totais = [x["custo_total"] for x in linhas]
+    return {
+        "pessoas": len(linhas),
+        "medio": round(sum(totais) / len(totais), 2),
+        "maior": round(max(totais), 2),
+        "mediana": round(sorted(totais)[len(totais) // 2], 2),
+        "conferido": CUSTOS_CONFERIDOS,
+        "preco": PRECO_MENSAL,
+        "topo": linhas[:5],
     }
 
 

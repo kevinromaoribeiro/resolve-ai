@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v29.9-o-lote-nao-repete-e-deixa-recibo-2026-09-04"
+BUILD = "v30.0-painel-com-abas-metas-e-custo-por-cliente-2026-09-04"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6873,6 +6873,73 @@ def _templates_com_rotulo() -> list:
             for n in sorted(_templates_manuais())]
 
 
+# AS METAS DE LUCRO, EM REAIS LIQUIDOS NO BOLSO DO DONO.
+#
+# Ficam em `settings` e nao no codigo porque sao dele, nao do produto: ele
+# muda quando quiser, pelo painel, sem deploy.
+METAS_PADRAO = {"curto": 2000.0, "medio": 5000.0, "bom": 10000.0}
+METAS_ROTULO = {"curto": "6 meses", "medio": "1 ano", "bom": "negócio bom"}
+
+
+def _metas() -> dict:
+    import json as _j
+    try:
+        bruto = db.get_setting("metas_lucro")
+        if bruto:
+            guardado = _j.loads(bruto)
+            return {k: float(guardado.get(k, v))
+                    for k, v in METAS_PADRAO.items()}
+    except Exception:
+        log.warning("[metas] nao consegui ler — uso o padrao", exc_info=True)
+    return dict(METAS_PADRAO)
+
+
+def _plano_das_metas() -> dict:
+    """Quantos clientes pagantes cada meta exige. Conta, nao opiniao.
+
+    A pergunta que o painel nao respondia: "2 mil por mes" e quanto em
+    CLIENTE? Sem esse numero a meta e um desejo; com ele vira alvo.
+
+        clientes = (meta + custo fixo) / margem de contribuicao
+
+    A margem vem do mesmo lugar que o card "Margem por cliente" — se um dia
+    o preco ou o custo mudar, os dois mudam juntos.
+    """
+    metas = _metas()
+    try:
+        fin = db.financeiro(TRIAL_DAYS)
+        marg = (fin.get("margem") or {}).get("margem_contribuicao") or 0.0
+        fixo = float((fin.get("custos") or {}).get("fixos") or 0.0)
+        assin = int(fin.get("assinantes") or 0)
+        liquido = float(fin.get("liquido") or 0.0)
+    except Exception:
+        log.warning("[metas] financeiro indisponivel", exc_info=True)
+        marg, fixo, assin, liquido = 0.0, 0.0, 0, 0.0
+    saida = {"assinantes_hoje": assin, "liquido_hoje": round(liquido, 2),
+             "margem_por_cliente": round(marg, 2), "fixo": round(fixo, 2),
+             "alvos": []}
+    for chave, valor in sorted(metas.items(), key=lambda kv: kv[1]):
+        # Margem zero ou negativa nao tem solucao em cliente: vender mais
+        # afundaria mais. Dizer isso e melhor do que mostrar um numero
+        # gigante que parece meta.
+        precisa = None if marg <= 0 else int(-(-(valor + fixo) // marg))
+        saida["alvos"].append({
+            "chave": chave, "rotulo": METAS_ROTULO.get(chave, chave),
+            "meta": valor, "clientes": precisa,
+            "faltam": None if precisa is None else max(0, precisa - assin)})
+    return saida
+
+
+def _custo_seguro() -> dict:
+    """O custo por pessoa nunca pode derrubar o painel inteiro."""
+    try:
+        return db.custo_medio_por_usuario(30)
+    except Exception:
+        log.warning("[custo] nao consegui medir", exc_info=True)
+        return {"pessoas": 0, "medio": 0.0, "maior": 0.0,
+                "conferido": False, "topo": []}
+
+
 def _resumo_seguro(nome_template: str) -> dict:
     """Nunca derruba o painel por causa de uma contagem."""
     try:
@@ -8501,6 +8568,30 @@ h1{font-size:17px;margin:0 0 2px;font-weight:700}
 .sub{color:#8296b3;font-size:12px;margin-bottom:14px}
 .card{background:#131d31;border:1px solid #1f2c47;border-radius:14px;
  padding:14px;margin-bottom:10px}
+/* ABAS. Rolam de lado no celular e cabem inteiras no desktop. */
+#abas{display:flex;gap:6px;overflow-x:auto;margin:0 -14px 14px;
+ padding:0 14px 8px;scrollbar-width:none;-ms-overflow-style:none;
+ position:sticky;top:0;z-index:9;background:#0b1220}
+#abas::-webkit-scrollbar{display:none}
+.aba{flex:0 0 auto;padding:8px 13px;border-radius:999px;cursor:pointer;
+ border:1px solid #1f2c47;background:#131d31;color:#8296b3;
+ font-size:13px;font-weight:600;white-space:nowrap}
+.aba.on{background:#1c4d3a;border-color:#2e7d5b;color:#d7f5e6}
+/* No desktop o painel deixa de ser uma coluna de celular esticada:
+   largura util travada e os cards em duas colunas. */
+@media(min-width:900px){
+ body{padding:20px calc((100vw - 1180px)/2 + 20px) 40px}
+ #painel{column-count:2;column-gap:16px}
+ #painel>.card{break-inside:avoid;display:inline-block;width:100%}
+ #abas{margin:0 0 16px;padding:0 0 10px}
+}
+@media(min-width:1400px){ #painel{column-count:3} }
+/* Tabela de mensagens: rola sozinha em vez de esticar a pagina. */
+.rolatab{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.rolatab table{width:100%;border-collapse:collapse;font-size:12px}
+.rolatab td{padding:6px 8px;border-bottom:1px solid #1f2c47;
+ vertical-align:top;text-align:left}
+.rolatab .q{color:#8296b3;white-space:nowrap}
 .card h2{font-size:11px;letter-spacing:.09em;text-transform:uppercase;
  color:#8296b3;margin:0 0 10px;font-weight:700}
 .big{font-size:30px;font-weight:800;line-height:1}
@@ -8555,7 +8646,67 @@ footer{color:#54627a;font-size:11px;text-align:center;margin-top:16px}
 const K=new URLSearchParams(location.search).get('k')||'';
 const $=s=>document.querySelector(s);
 const n=v=>(v==null?'—':v);
-function card(t,c){return `<div class="card"><h2>${t}</h2>${c}</div>`}
+// A QUAL ABA CADA CARD PERTENCE.
+//
+// O mapa mora aqui, e nao espalhado em cada chamada, por dois motivos: as
+// chamadas de `card` sao multilinha (mexer nelas e onde se quebra
+// parentese), e assim da pra ler a organizacao inteira do painel de uma
+// vez. Card fora do mapa cai em "negocio" e continua aparecendo — esquecer
+// de mapear nao pode fazer informacao SUMIR da tela.
+const ABA_DO_CARD={
+ 'Isto está virando negócio?':'negocio',
+ 'As pessoas estão usando?':'negocio',
+ 'Últimos 7 dias':'negocio',
+ 'Quem mais usa (7d)':'negocio',
+ 'Em que a base gasta':'negocio',
+ 'Dinheiro':'financeiro',
+ 'Margem por cliente':'financeiro',
+ '💰 Pediram o link — conferir no Mercado Pago':'financeiro',
+ 'Clientes':'clientes',
+ 'Mandar pra uma lista':'clientes',
+ 'Sumiram — vale uma ligação':'clientes',
+ 'Devolver 14 dias pra todo mundo':'clientes',
+ 'O que o Resolve AI faz':'produto',
+ '🎧 Mini podcast':'produto',
+ 'Metas de lucro':'financeiro',
+ 'Custo real por cliente':'financeiro',
+ 'Está no ar?':'sistema',
+ 'Está no ar? (detalhe)':'sistema',
+ 'Últimas mensagens':'sistema',
+ 'O número está em risco?':'sistema'
+};
+const ABAS={};
+// A aba escolhida sobrevive ao redesenho de 20s e a proxima visita.
+let ABA_ATIVA=(function(){
+ try{ return localStorage.getItem('resolveai_aba')||'negocio' }
+ catch(e){ return 'negocio' }
+})();
+async function salvarMetas(){
+ const v=id=>parseFloat((document.getElementById(id)||{}).value||'0')||0;
+ const metas={curto:v('mt_curto'),medio:v('mt_medio'),bom:v('mt_bom')};
+ if(!metas.curto||!metas.medio||!metas.bom){
+   alert('Preencha as tres metas.'); return;
+ }
+ try{
+   const r=await fetch('/painel/metas?k='+encodeURIComponent(K),
+     {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(metas)});
+   const j=await r.json();
+   if(!j.ok){ alert('Nao deu: '+(j.erro||'tente de novo')); return; }
+ }catch(e){ alert('Sem conexao com o servidor.'); return; }
+ carrega();
+}
+function troca(k){
+ ABA_ATIVA=k;
+ try{ localStorage.setItem('resolveai_aba',k) }catch(e){}
+ carrega();
+}
+function card(t,c){
+ const html=`<div class="card"><h2>${t}</h2>${c}</div>`;
+ const a=ABA_DO_CARD[t]||'negocio';
+ ABAS[a]=(ABAS[a]||'')+html;
+ return html;
+}
 // M2.3 — heatmap de constancia. SVG inline: sem biblioteca, sem CDN, sem
 // rede. Um quadrado por dia, semanas em coluna.
 // Responde o que numero nenhum responde: as pessoas usam com REGULARIDADE,
@@ -8625,6 +8776,24 @@ async function carrega(){
  const risco=(e.risco||'').includes('alto')?'bad':(e.risco||'').includes('aten')?'warn':'ok';
  const hab=(g.veredito||'').includes('🟢')?'ok':(g.veredito||'').includes('🟡')?'warn':'bad';
  const cron=d.cron_min==null?'bad':(d.cron_min<=3?'ok':'warn');
+ // ABA AO VIVO: o que so existia no painel antigo, em /painel.
+ //
+ // Eram duas telas separadas e o dono se perdia entre elas. As 30 ultimas
+ // mensagens ja vinham no payload — nao precisou de nada novo no servidor.
+ const ULT=(m.ultimas||[]);
+ const linhasMsg=ULT.map(r=>{
+   const ent=r.direcao==='in';
+   const hora=(r.ts||'').slice(11,16);
+   const tel=(r.telefone||'').slice(-4)||'----';
+   const txt=(r.preview||'').replace(/</g,'&lt;').slice(0,90);
+   const cor=ent?'#3b82f6':'#22c55e';
+   return `<tr><td class="q">${hora}</td><td class="q">…${tel}</td>`
+     +`<td class="q" style="color:${cor}">${ent?'recebida':'enviada'}</td>`
+     +`<td>${txt}</td></tr>`;
+ }).join('');
+ // ZERA A CADA PINTURA. O painel se redesenha a cada 20s; sem isto os
+ // cards se empilhariam e a tela cresceria pra sempre.
+ Object.keys(ABAS).forEach(k=>delete ABAS[k]);
  let h='';
  // 0. O FUNIL DE VALIDACAO — vem PRIMEIRO de proposito.
  //
@@ -8920,6 +9089,104 @@ async function carrega(){
  // pode ser redesenhado no meio da palavra.
  const _lote={seg:_valor('segLote'),tpl:_valor('tplLote'),
               nome:_valor('novNome'),txt:_valor('novTexto')};
+ // METAS DE LUCRO — em cliente, nao so em reais.
+ //
+ // "2 mil por mes" e desejo ate virar "106 clientes". A conta e feita no
+ // servidor com a mesma margem do card de margem, entao os dois nunca
+ // divergem.
+ const MT=d.metas||{alvos:[]};
+ const reais=v=>'R$ '+(v||0).toLocaleString('pt-BR',{minimumFractionDigits:0,
+                                                     maximumFractionDigits:0});
+ const linhasMeta=(MT.alvos||[]).map(a=>{
+   const falta=a.clientes==null?'—':a.faltam+' a mais';
+   const pct=a.clientes?Math.min(100,Math.round(
+     (MT.assinantes_hoje/a.clientes)*100)):0;
+   return `<div style="margin-bottom:11px">
+     <div style="display:flex;justify-content:space-between;font-size:12px">
+       <span>${a.rotulo} — <b>${reais(a.meta)}</b>/mês</span>
+       <b style="font-variant-numeric:tabular-nums">${
+         a.clientes==null?'—':a.clientes+' clientes'}</b></div>
+     <div style="height:8px;background:#0b1220;border-radius:5px;
+       overflow:hidden;margin:4px 0 3px">
+       <i style="display:block;height:100%;width:${pct}%;
+         background:#22c55e"></i></div>
+     <div style="font-size:10px;color:#8296b3">faltam ${falta}
+       · hoje ${MT.assinantes_hoje} pagando</div></div>`;
+ }).join('');
+ card('Metas de lucro', linhasMeta
+   + `<div style="border-top:1px solid #1f2c47;margin-top:10px;padding-top:10px">
+       <div class="muted" style="font-size:11px;margin-bottom:7px">
+         Margem de ${reais(MT.margem_por_cliente)} por cliente
+         · fixo de ${reais(MT.fixo)}/mês. Mudar as metas:</div>
+       <div style="display:flex;gap:6px;flex-wrap:wrap">
+         <input id="mt_curto" class="sel" style="flex:1;min-width:90px"
+           placeholder="6 meses" value="${(MT.alvos[0]||{}).meta||''}">
+         <input id="mt_medio" class="sel" style="flex:1;min-width:90px"
+           placeholder="1 ano" value="${(MT.alvos[1]||{}).meta||''}">
+         <input id="mt_bom" class="sel" style="flex:1;min-width:90px"
+           placeholder="bom" value="${(MT.alvos[2]||{}).meta||''}">
+       </div>
+       <button class="b bok" style="width:100%;margin-top:7px"
+         onclick="salvarMetas()">Salvar metas</button></div>`);
+
+ // CUSTO REAL POR PESSOA. A media esconde o cliente caro; os dois aparecem.
+ const CU=d.custo_usuario||{pessoas:0,medio:0,maior:0,topo:[]};
+ const dinheiro=v=>'R$ '+(v||0).toFixed(2).replace('.',',');
+ const topo=(CU.topo||[]).map(x=>
+   `<tr><td>${x.nome}</td>
+     <td class="q">${x.texto_in}t ${x.audio_in}a ${x.imagem_in}f
+       ${x.episodios}p</td>
+     <td class="q" style="text-align:right"><b>${dinheiro(x.custo_total)}</b></td>
+    </tr>`).join('');
+ card('Custo real por cliente',
+   `<div class="grid">
+     <div class="kpi"><div class="l">Custo médio / 30 dias</div>
+       <div class="v">${dinheiro(CU.medio)}</div>
+       <div class="u">${CU.pessoas} pessoa(s)</div></div>
+     <div class="kpi"><div class="l">O mais caro</div>
+       <div class="v">${dinheiro(CU.maior)}</div>
+       <div class="u">é ele que define o preço</div></div>
+    </div>
+    <div class="sub" style="margin:10px 0 4px">Quem mais custa
+      <span class="muted">(t=texto a=áudio f=foto p=podcast)</span></div>
+    <div class="rolatab"><table>${topo||''}</table></div>`
+   + (CU.conferido ? ''
+      : `<div class="muted" style="font-size:11px;margin-top:9px">
+          ⚠️ Estimativa: os preços unitários vieram de tabela pública, não
+          de fatura. Confira uma fatura e ajuste antes de decidir preço.
+         </div>`));
+
+ card('Últimas mensagens', linhasMsg
+     ? `<div class="rolatab"><table>${linhasMsg}</table></div>`
+     : '<div class="muted">Nenhuma mensagem ainda.</div>');
+ card('Está no ar? (detalhe)',
+   `<div class="grid">
+     <div class="kpi"><div class="l">Recebidas hoje</div>
+       <div class="v">${m.msgs_in_hoje}</div></div>
+     <div class="kpi"><div class="l">Enviadas hoje</div>
+       <div class="v">${m.msgs_out_hoje}</div></div>
+     <div class="kpi"><div class="l">Itens criados hoje</div>
+       <div class="v">${m.itens_hoje}</div></div>
+     <div class="kpi"><div class="l">Lembretes disparados</div>
+       <div class="v">${m.disparos_hoje}</div></div>
+    </div>`);
+
+ // MONTAGEM POR ABAS.
+ //
+ // `ABA_ATIVA` e global de proposito: o painel se redesenha a cada 20s e,
+ // sem guardar a escolha, ele jogaria o dono de volta na primeira aba no
+ // meio da leitura. `localStorage` guarda entre visitas.
+ const ORDEM=[['negocio','Negócio'],['financeiro','Financeiro'],
+              ['crescimento','Crescimento'],['clientes','Clientes'],
+              ['produto','Produto'],['sistema','Ao vivo']];
+ if(!ABAS[ABA_ATIVA]&&ABA_ATIVA!=='crescimento') ABA_ATIVA='negocio';
+ // `barraAbas`, e nao `barra`: ja existe uma `barra` neste escopo (a das
+ // barras de progresso do funil) e redeclarar derruba o painel inteiro.
+ const barraAbas=ORDEM.map(([k,rot])=>
+   `<div class="aba ${k===ABA_ATIVA?'on':''}" onclick="troca('${k}')">${rot}</div>`
+ ).join('');
+ h=`<div id="abas">${barraAbas}</div><div id="painel">`
+   +(ABAS[ABA_ATIVA]||'<div class="card">Nada aqui ainda.</div>')+'</div>';
  $('#app').innerHTML=h;
  _devolve('segLote',_lote.seg); _devolve('tplLote',_lote.tpl);
  _devolve('novNome',_lote.nome); _devolve('novTexto',_lote.txt);
@@ -9155,6 +9422,35 @@ document.addEventListener('visibilitychange',()=>{
 </script></body></html>"""
         return HTMLResponse(html)
 
+    @app.post("/painel/metas")
+    async def painel_metas(request: Request):
+        """As metas de lucro sao do dono: ele muda pelo painel, sem deploy."""
+        from fastapi.responses import JSONResponse
+        import json as _j
+        if not _painel_autorizado(request):
+            return _negado(request)
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "erro": "corpo inválido"})
+        novas = {}
+        for chave in METAS_PADRAO:
+            try:
+                valor = float(body.get(chave))
+            except (TypeError, ValueError):
+                return JSONResponse({"ok": False,
+                                     "erro": f"meta {chave!r} inválida"})
+            # Meta zero ou negativa nao e meta, e o painel dividiria por ela
+            # pra achar quantos clientes faltam.
+            if valor <= 0:
+                return JSONResponse({"ok": False,
+                                     "erro": "meta tem que ser maior que zero"})
+            novas[chave] = valor
+        db.set_setting("metas_lucro", _j.dumps(novas))
+        db.registrar_acao_admin("metas", por="painel",
+                                detalhe=_j.dumps(novas))
+        return JSONResponse({"ok": True, "metas": novas})
+
     @app.post("/painel/lote")
     async def painel_lote(request: Request):
         """Manda um template aprovado pra um SEGMENTO inteiro (M3.0).
@@ -9341,6 +9637,8 @@ document.addEventListener('visibilitychange',()=>{
             # campo que ninguém consegue testar sem subir servidor.
             **_dados_do_painel(),
             "financeiro": db.financeiro(TRIAL_DAYS),
+            "metas": _plano_das_metas(),
+            "custo_usuario": _custo_seguro(),
             "usuarios": db.admin_list_users(),
             "freio": {"ciclo": DISPATCH_MAX_PER_CYCLE,
                       "intervalo": f"{ENVIO_INTERVALO_MIN:.0f}-"
