@@ -2207,6 +2207,40 @@ _FIXOS = [
 ]
 
 
+def fixos_do_painel() -> dict:
+    """Os custos fixos que o dono digitou na tela, por variavel.
+
+    Antes so existiam como variavel de ambiente, e o efeito pratico era que
+    ninguem preenchia: o VPS ficou em ZERO por meses, entao o custo fixo do
+    painel mostrava R$ 100 quando o real era maior. Custo que exige deploy
+    pra corrigir e custo que fica errado.
+    """
+    import json as _j
+    try:
+        bruto = get_setting("custos_fixos")
+        if bruto:
+            d = _j.loads(bruto)
+            return {k: float(v) for k, v in d.items() if v not in (None, "")}
+    except Exception:
+        pass
+    return {}
+
+
+def valor_fixo(var: str) -> float:
+    """O que a tela diz, e so entao o ambiente.
+
+    A tela ganha do ambiente de proposito: quem corrige o numero e o dono,
+    olhando a fatura, e ele nao deve precisar de deploy pra isso.
+    """
+    guardados = fixos_do_painel()
+    if var in guardados:
+        return guardados[var]
+    try:
+        return float(globals().get(var, 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def zerar_cliente(user_id: int, por: str = "") -> bool:
     """Apaga TUDO de um cliente pra ele voltar como usuário novo (M3.0).
 
@@ -2607,8 +2641,7 @@ def custo_por_usuario(dias: int = 30) -> list:
     # pagantes daria "custo infinito por cliente" enquanto ninguem paga, o
     # que e verdade contabil e inutil pra decidir. Pela base, o numero
     # responde: "se todos virassem pagantes hoje, quanto custaria cada um".
-    fixo_mes = round(sum(float(globals().get(var, 0) or 0)
-                         for _nome, var in _FIXOS), 2)
+    fixo_mes = round(sum(valor_fixo(var) for _nome, var in _FIXOS), 2)
     rateio = round(fixo_mes / len(saida), 2) if saida else 0.0
     for p in saida:
         p["fixo_rateado"] = rateio
@@ -2707,7 +2740,7 @@ def financeiro(trial_days: int = 14) -> dict:
         msgs_out = _um("SELECT COUNT(*) FROM msg_log WHERE direcao='out' "
                        "AND substr(ts,1,10) >= ?", ini30)
 
-    fixos_itens = [{"nome": nome, "valor": float(globals().get(var, 0) or 0)}
+    fixos_itens = [{"nome": nome, "valor": valor_fixo(var), "var": var}
                    for nome, var in _FIXOS]
     fixos_itens = [x for x in fixos_itens if x["valor"] > 0]
     fixos = round(sum(x["valor"] for x in fixos_itens), 2)

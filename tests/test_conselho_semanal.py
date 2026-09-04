@@ -24,11 +24,14 @@ def _cli(monkeypatch):
     return TestClient(wa_bot.app)
 
 
-def _guardar(tipo, texto, dias_atras=0.0):
+def _guardar(tipo, texto, dias_atras=0.0, versao=None):
+    """Grava na versao ATUAL por padrao: e o caso que a trava protege."""
     quando = (tempo.agora() - _dt.timedelta(days=dias_atras)
               ).isoformat(timespec="seconds")
-    db.set_setting("conselho_" + tipo,
-                   json.dumps({"texto": texto, "quando": quando}))
+    db.set_setting(
+        "conselho_" + tipo,
+        json.dumps({"texto": texto, "quando": quando,
+                    "versao": conselho.VERSAO if versao is None else versao}))
     return quando
 
 
@@ -179,3 +182,46 @@ def test_resposta_vazia_nao_vira_analise(monkeypatch):
     monkeypatch.setitem(sys.modules, "litellm", mod)
     ok, _t = conselho.pedir("crescimento", {})
     assert ok is False
+
+
+# --- conselheiro corrigido nao segura o dono --------------------------
+
+def test_analise_de_versao_antiga_nao_trava(usuario, monkeypatch):
+    """Aconteceu de verdade em 04/09.
+
+    O conselheiro de preco recomendou baixar o preco porque o retrato so
+    tinha o custo variavel. Consertei o retrato — e a trava semanal segurou
+    a recomendacao errada na tela por sete dias. Nao e a mesma pergunta.
+    """
+    monkeypatch.setattr(conselho, "pedir", lambda *a, **k: (True, "corrigida"))
+    _guardar("crescimento", "resposta do conselheiro velho",
+             dias_atras=0.1, versao=conselho.VERSAO - 1)
+    j = _pedir(_cli(monkeypatch))
+    assert j["texto"] == "corrigida"
+
+
+def test_analise_sem_versao_conta_como_antiga(usuario, monkeypatch):
+    """Gravada antes deste controle existir. Antiga e o que ela e."""
+    monkeypatch.setattr(conselho, "pedir", lambda *a, **k: (True, "nova"))
+    db.set_setting("conselho_cx", json.dumps(
+        {"texto": "de antes", "quando": tempo.agora().isoformat(
+            timespec="seconds")}))
+    assert _pedir(_cli(monkeypatch), tipo="cx")["texto"] == "nova"
+
+
+def test_a_versao_atual_continua_travando(usuario, monkeypatch):
+    """O desbloqueio por versao nao pode virar brecha no limite."""
+    chamou = []
+    monkeypatch.setattr(conselho, "pedir",
+                        lambda *a, **k: chamou.append(1) or (True, "x"))
+    _guardar("marketing", "recente e atual", dias_atras=0.5)
+    j = _pedir(_cli(monkeypatch), tipo="marketing")
+    assert j["texto"] == "recente e atual"
+    assert not chamou
+
+
+def test_a_analise_nova_guarda_a_versao(usuario, monkeypatch):
+    monkeypatch.setattr(conselho, "pedir", lambda *a, **k: (True, "fresca"))
+    db.set_setting("conselho_produto", "")
+    _pedir(_cli(monkeypatch), tipo="produto")
+    assert conselho.guardado(db, "produto")["versao"] == conselho.VERSAO

@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v30.5-conselheiro-melhor-uma-vez-por-semana-2026-09-04"
+BUILD = "v30.6-custos-fixos-editaveis-e-conselheiro-versionado-2026-09-04"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6930,6 +6930,21 @@ def _plano_das_metas() -> dict:
     return saida
 
 
+def _fixos_editaveis() -> list:
+    """Todos os fixos possiveis, inclusive os zerados.
+
+    O card so mostrava o que tinha valor, entao o VPS zerado era INVISIVEL
+    — nao dava nem pra perceber que faltava preencher. Aqui vem a lista
+    inteira, e o campo vazio e o convite pra corrigir.
+    """
+    try:
+        return [{"nome": nome, "var": var, "valor": db.valor_fixo(var)}
+                for nome, var in db._FIXOS]
+    except Exception:
+        log.warning("[custos] nao consegui listar os fixos", exc_info=True)
+        return []
+
+
 def _poderes_seguro() -> list:
     """O mesmo inventario que o card 'O que o Resolve AI faz' mostra."""
     try:
@@ -6952,7 +6967,13 @@ def _conselhos_guardados() -> dict:
         for t in _c.CONSELHOS:
             g = _c.guardado(db, t)
             g["faltam_dias"] = round(
-                _c.falta_para_liberar(g.get("quando") or "", tempo.agora()), 2)
+                _c.falta_para_liberar(g.get("quando") or "", tempo.agora(),
+                                      g.get("versao")), 2)
+            # A tela avisa quando o texto na frente dela e de um conselheiro
+            # que ja foi corrigido — senao o dono le a analise velha achando
+            # que e a nova.
+            g["desatualizada"] = bool(
+                g.get("texto") and g.get("versao") != _c.VERSAO)
             saida[t] = g
         return saida
     except Exception:
@@ -8740,6 +8761,7 @@ const ABA_DO_CARD={
  'Conselheiro de experiência':'crescimento',
  'Ideias de produto':'crescimento',
  'Metas de lucro':'financeiro',
+ 'Custos fixos do mês':'financeiro',
  'Custo real por cliente':'financeiro',
  'Está no ar?':'sistema',
  'Está no ar? (detalhe)':'sistema',
@@ -8779,6 +8801,23 @@ async function pedirConselho(tipo){
    if(!j.ok){ alert('Nao deu: '+(j.erro||'tente de novo')); }
  }catch(e){ alert('Sem conexao com o servidor.'); }
  if(bt){ bt.disabled=false; bt.textContent='Analisar de novo'; }
+ carrega();
+}
+async function salvarCustos(){
+ const corpo={};
+ document.querySelectorAll('[id^="fx_"]').forEach(e=>{
+   // virgula e como se digita dinheiro em portugues; sem trocar, o
+   // `parseFloat` para no primeiro separador e 1.234,56 vira 1.234.
+   const v=(e.value||'').trim().replace(/\./g,'').replace(',','.');
+   corpo[e.id.slice(3)] = v===''?0:(parseFloat(v)||0);
+ });
+ try{
+   const r=await fetch('/painel/custos?k='+encodeURIComponent(K),
+     {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(corpo)});
+   const j=await r.json();
+   if(!j.ok){ alert('Nao deu: '+(j.erro||'tente de novo')); return; }
+ }catch(e){ alert('Sem conexao com o servidor.'); return; }
  carrega();
 }
 async function salvarMetas(){
@@ -9220,6 +9259,29 @@ async function carrega(){
      <div style="font-size:10px;color:#8296b3">faltam ${falta}
        · hoje ${MT.assinantes_hoje} pagando</div></div>`;
  }).join('');
+ // CUSTOS FIXOS EDITAVEIS. O card antigo so listava o que tinha valor,
+ // entao o VPS zerado era invisivel — nao dava nem pra perceber que
+ // faltava preencher, e o custo cheio, a sobra e a conta das metas saiam
+ // todos errados por causa disso.
+ const FX=d.fixos_editaveis||[];
+ const somaFx=FX.reduce((a,x)=>a+(x.valor||0),0);
+ const camposFx=FX.map(x=>
+   `<div style="display:flex;gap:7px;align-items:center;margin-bottom:6px">
+      <span style="flex:1;font-size:12px">${x.nome}</span>
+      <input id="fx_${x.var}" class="sel" inputmode="decimal"
+        style="width:104px;text-align:right"
+        value="${x.valor?x.valor:''}" placeholder="0,00"></div>`).join('');
+ card('Custos fixos do mês', camposFx
+   + `<div style="display:flex;justify-content:space-between;
+       border-top:1px solid #1f2c47;margin-top:8px;padding-top:8px;
+       font-size:13px"><b>Total</b><b>${dinheiro(somaFx)}</b></div>
+      <div class="muted" style="font-size:11px;margin:7px 0">
+        Este total é dividido entre as pessoas da base e entra no custo
+        cheio, na sobra por cliente e na conta das metas. Fixo faltando
+        aqui deixa os três otimistas.</div>
+      <button class="b bok" style="width:100%"
+        onclick="salvarCustos()">Salvar custos</button>`);
+
  card('Metas de lucro', linhasMeta
    + `<div style="border-top:1px solid #1f2c47;margin-top:10px;padding-top:10px">
        <div class="muted" style="font-size:11px;margin-bottom:7px">
@@ -9292,11 +9354,16 @@ async function carrega(){
  const quandoBr=q=>q?(q.slice(8,10)+'/'+q.slice(5,7)+' '+q.slice(11,16)):'';
  const conselheiro=(tipo,titulo,linha)=>{
    const g=CO[tipo]||{};
+   const velha=g.desatualizada
+     ? `<div style="font-size:11px;color:#f59e0b;margin-top:7px">
+          Este conselheiro foi corrigido depois desta análise. Peça uma
+          nova — esta responde a uma pergunta que mudou.</div>`
+     : '';
    const corpo=g.texto
      ? `<div style="white-space:pre-wrap;font-size:13px;line-height:1.55">${
          escapa(g.texto)}</div>
         <div class="muted" style="font-size:11px;margin-top:9px">
-          Análise de ${quandoBr(g.quando)}</div>`
+          Análise de ${quandoBr(g.quando)}</div>${velha}`
      : `<div class="muted" style="font-size:12px">Nenhuma análise ainda.</div>`;
    // UMA POR SEMANA. O botao mostra quantos dias faltam em vez de sumir:
    // botao que some parece defeito, botao que diz "em 3 dias" e regra.
@@ -9625,7 +9692,8 @@ document.addEventListener('visibilitychange',()=>{
         # vale, e o dono precisa saber quando pode pedir outra.
         antigo = _c.guardado(db, tipo)
         if antigo["texto"]:
-            faltam = _c.falta_para_liberar(antigo["quando"], tempo.agora())
+            faltam = _c.falta_para_liberar(antigo["quando"], tempo.agora(),
+                                           antigo.get("versao"))
             if faltam > 0:
                 return JSONResponse({"ok": True, "texto": antigo["texto"],
                                      "quando": antigo["quando"],
@@ -9663,6 +9731,41 @@ document.addEventListener('visibilitychange',()=>{
         _c.guardar(db, tipo, texto, quando)
         db.registrar_acao_admin("conselho", por="painel", detalhe=tipo)
         return JSONResponse({"ok": True, "texto": texto, "quando": quando})
+
+    @app.post("/painel/custos")
+    async def painel_custos(request: Request):
+        """Os custos fixos sao do dono: ele corrige com a fatura na mao.
+
+        Eram so variavel de ambiente, e o efeito pratico e que ninguem
+        preenchia — o VPS ficou zerado por meses e o painel mostrava um
+        custo fixo menor que o real, o que contamina margem, custo cheio,
+        sobra por cliente e a conta das metas de uma vez so.
+        """
+        from fastapi.responses import JSONResponse
+        import json as _j
+        if not _painel_autorizado(request):
+            return _negado(request)
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "erro": "corpo inválido"})
+        validos = {var for _nome, var in db._FIXOS}
+        novos = {}
+        for chave, valor in (body or {}).items():
+            if chave not in validos:
+                continue
+            try:
+                v = float(valor)
+            except (TypeError, ValueError):
+                return JSONResponse({"ok": False,
+                                     "erro": f"valor inválido em {chave}"})
+            if v < 0:
+                return JSONResponse({"ok": False,
+                                     "erro": "custo não pode ser negativo"})
+            novos[chave] = v
+        db.set_setting("custos_fixos", _j.dumps(novos))
+        db.registrar_acao_admin("custos", por="painel", detalhe=_j.dumps(novos))
+        return JSONResponse({"ok": True, "custos": novos})
 
     @app.post("/painel/metas")
     async def painel_metas(request: Request):
@@ -9882,6 +9985,7 @@ document.addEventListener('visibilitychange',()=>{
             "metas": _plano_das_metas(),
             "custo_usuario": _custo_seguro(),
             "conselhos": _conselhos_guardados(),
+            "fixos_editaveis": _fixos_editaveis(),
             "usuarios": db.admin_list_users(),
             "freio": {"ciclo": DISPATCH_MAX_PER_CYCLE,
                       "intervalo": f"{ENVIO_INTERVALO_MIN:.0f}-"

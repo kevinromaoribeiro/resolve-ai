@@ -52,9 +52,30 @@ VALIDADE_H = LIMITE_DIAS * 24
 # modelo do bot em vez de deixar o botao sem resposta.
 MODELO = os.environ.get("LLM_MODEL_CONSELHO", "gpt-4o")
 
+# VERSAO DO CONSELHEIRO. Sobe sempre que um prompt ou o retrato mudar.
+#
+# O limite semanal existe pra nao repetir a MESMA pergunta ao MESMO
+# conselheiro. Quando eu mudo o prompt ou corrijo o retrato, nao e mais a
+# mesma pergunta — e sem isto o dono ficava preso sete dias na resposta de
+# um conselheiro que ja nao existe.
+#
+# Aconteceu de verdade: o conselheiro de preco recomendou baixar o preco
+# porque o retrato so tinha o custo variavel. Consertei o retrato, e a
+# trava segurou a recomendacao errada na tela por uma semana.
+#
+# Nao e brecha no limite: e a diferenca entre "voce ja perguntou isso" e
+# "eu mudei a pergunta".
+VERSAO = 3
 
-def falta_para_liberar(quando: str, agora) -> float:
-    """Quantos dias faltam pra proxima analise. Zero quando ja liberou."""
+
+def falta_para_liberar(quando: str, agora, versao=None) -> float:
+    """Quantos dias faltam pra proxima analise. Zero quando ja liberou.
+
+    Analise feita por uma versao antiga do conselheiro nao segura nada:
+    ela responde a uma pergunta que nao existe mais.
+    """
+    if versao is not None and versao != VERSAO:
+        return 0.0
     if not quando:
         return 0.0
     try:
@@ -384,7 +405,8 @@ def pedir(tipo: str, dados: dict, modelo: str = "",
 def guardar(db, tipo: str, texto: str, quando: str) -> None:
     try:
         db.set_setting("conselho_" + tipo,
-                       json.dumps({"texto": texto, "quando": quando}))
+                       json.dumps({"texto": texto, "quando": quando,
+                                   "versao": VERSAO}))
     except Exception:
         log.warning("[conselho] nao consegui guardar", exc_info=True)
 
@@ -394,7 +416,11 @@ def guardado(db, tipo: str) -> dict:
         bruto = db.get_setting("conselho_" + tipo)
         if bruto:
             d = json.loads(bruto)
-            return {"texto": d.get("texto") or "", "quando": d.get("quando") or ""}
+            return {"texto": d.get("texto") or "",
+                    "quando": d.get("quando") or "",
+                    # Sem `versao` gravada, veio de antes deste controle:
+                    # trata como antiga, que e o que ela e.
+                    "versao": d.get("versao", 0)}
     except Exception:
         log.warning("[conselho] nao consegui ler o guardado", exc_info=True)
-    return {"texto": "", "quando": ""}
+    return {"texto": "", "quando": "", "versao": VERSAO}
