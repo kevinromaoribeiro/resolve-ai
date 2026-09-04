@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v29.6-comprovante-pergunta-e-novidade-no-painel-2026-09-03"
+BUILD = "v29.7-painel-de-pe-comentario-nao-vira-codigo-2026-09-04"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -8994,9 +8994,15 @@ async function lote(){
   const qtd=(txtSeg.match(/[(]([0-9]+)[)]/)||[])[1] || '?';
   // A PREVIA VEM ANTES DO OK. Texto livre que vai pra base inteira tem que
   // ser lido uma vez fora do campo em que foi digitado.
-  // SEM QUEBRA DE LINHA AQUI. Este JS mora dentro de uma string Python
-  // normal: um \n escrito no fonte vira quebra de verdade, a string JS fica
-  // aberta atravessando a linha e o painel INTEIRO some numa tela branca.
+  // SEM QUEBRA DE LINHA AQUI, nem escapada. Este JS mora dentro de uma
+  // string Python normal: uma barra invertida seguida de n vira quebra de
+  // verdade, a string JS fica aberta atravessando a linha e o painel
+  // INTEIRO some numa tela branca.
+  //
+  // E vale pro COMENTARIO tambem — foi assim que o painel caiu: este aviso
+  // trazia o escape escrito por extenso pra explicar o perigo, o Python o
+  // converteu, o comentario quebrou no meio e a segunda metade da frase
+  // virou codigo. Aqui so se descreve o escape com palavras.
   // A previa cabe numa linha so.
   let previa='';
   if(pede.length){

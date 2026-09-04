@@ -362,3 +362,47 @@ def test_botao_de_mensagem_livre_tambem_e_comando_conhecido():
     assert not ruins, (
         "botão que o bot não entende (a pessoa clica e leva 'não entendi'): %s"
         % ruins)
+
+
+def test_nenhum_comentario_js_quebra_no_meio(monkeypatch):
+    """Comentario `//` partido ao meio = a segunda metade vira CODIGO.
+
+    Aconteceu em 04/09, e a ironia importa pra ninguem repetir: o comentario
+    que eu escrevi AVISANDO sobre o perigo do \n trazia o escape escrito por
+    extenso. O Python converteu, o comentario quebrou no meio, e a frase
+    "escrito no fonte vira quebra de verdade" virou codigo JS. O painel
+    inteiro morreu com "Unexpected identifier 'no'".
+
+    O teste vizinho nao pegou porque ele DESCARTA tudo depois de `//` — e a
+    segunda metade nao tem `//`, nem aspas. Passava limpa.
+
+    A regra aqui: toda linha de JS de verdade tem pelo menos um caractere de
+    codigo. Linha so com palavras e pontuacao de texto e comentario orfao.
+    """
+    import re as _re
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(wa_bot, "PAINEL_TOKEN", "tok")
+    html = TestClient(wa_bot.app).get("/dash?k=tok").text
+    corpo = html.split("<script>")[-1].split("</script>")[0]
+    ruins = []
+    dentro_de_crase = False
+    for n, linha in enumerate(corpo.split("\n"), 1):
+        t = linha.strip()
+        # TEMPLATE LITERAL PODE atravessar linha — e pra isso que ele serve.
+        # O HTML do painel e montado assim, e o texto dos cards e prosa de
+        # verdade dentro da crase. So o que esta FORA dela e suspeito.
+        estava_dentro = dentro_de_crase
+        crases = sum(1 for i, ch in enumerate(linha)
+                     if ch == "`" and (i == 0 or linha[i - 1] != "\\"))
+        if crases % 2:
+            dentro_de_crase = not dentro_de_crase
+        if estava_dentro or dentro_de_crase:
+            continue
+        if not t or t.startswith("//") or t.startswith("*"):
+            continue
+        # Sobrou alguma coisa de codigo nesta linha?
+        if not _re.search(r"[=;{}()\[\]<>+*/&|!?:$'\"`]", t):
+            ruins.append((n, t[:70]))
+    assert not ruins, (
+        "prosa solta no meio do JS — comentario partido vira codigo: %s"
+        % ruins)
