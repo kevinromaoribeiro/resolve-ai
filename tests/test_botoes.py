@@ -406,3 +406,46 @@ def test_nenhum_comentario_js_quebra_no_meio(monkeypatch):
     assert not ruins, (
         "prosa solta no meio do JS — comentario partido vira codigo: %s"
         % ruins)
+
+
+def test_nada_no_js_e_usado_antes_de_ser_declarado(monkeypatch):
+    """`const` usado antes da linha que o declara = TELA BRANCA.
+
+    Aconteceu em 04/09 e ficou EM PRODUCAO: o card de custos fixos chamava
+    `dinheiro(...)` numa linha acima do `const dinheiro=`. Em JavaScript
+    isso nao e "undefined", e ReferenceError por zona morta — a pintura
+    inteira morre, o cabecalho fica na tela e o corpo vazio.
+
+    A suite passou verde porque ela nao executa JavaScript. Esta varredura
+    e o substituto barato: para cada `const X=` no script, nenhuma linha
+    ANTERIOR pode chamar `X(`.
+
+    So checa chamada de funcao (`X(`) de proposito: e o caso que quebra, e
+    limita o falso positivo a quase zero.
+    """
+    import re as _re
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(wa_bot, "PAINEL_TOKEN", "tok")
+    html = TestClient(wa_bot.app).get("/dash?k=tok").text
+    corpo = html.split("<script>")[-1].split("</script>")[0]
+    linhas = corpo.split("\n")
+
+    declara = {}
+    for n, linha in enumerate(linhas):
+        m = _re.match(r"\s*(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=", linha)
+        if m and m.group(1) not in declara:
+            declara[m.group(1)] = n
+
+    ruins = []
+    for nome, onde in declara.items():
+        chamada = _re.compile(r"\b%s\s*\(" % _re.escape(nome))
+        for n in range(onde):
+            t = linhas[n].strip()
+            if not t or t.startswith("//"):
+                continue
+            sem_comentario = t.split("//")[0]
+            if chamada.search(sem_comentario):
+                ruins.append((nome, n + 1, onde + 1, t[:60]))
+                break
+    assert not ruins, (
+        "usado antes de declarar (zona morta = tela branca): %s" % ruins)

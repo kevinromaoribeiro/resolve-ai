@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v30.6-custos-fixos-editaveis-e-conselheiro-versionado-2026-09-04"
+BUILD = "v31.0-jornada-do-trial-sai-de-verdade-2026-09-05"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -8752,6 +8752,7 @@ const ABA_DO_CARD={
  'Clientes':'clientes',
  'Mandar pra uma lista':'clientes',
  'Sumiram — vale uma ligação':'clientes',
+ 'A jornada de 14 dias chegou?':'clientes',
  'Devolver 14 dias pra todo mundo':'clientes',
  'O que o Resolve AI faz':'produto',
  '🎧 Mini podcast':'produto',
@@ -8937,6 +8938,19 @@ async function carrega(){
      +`<td class="q" style="color:${cor}">${ent?'recebida':'enviada'}</td>`
      +`<td>${txt}</td></tr>`;
  }).join('');
+ // OS FORMATADORES DE DINHEIRO MORAM AQUI, ANTES DE QUALQUER CARD.
+ //
+ // Eles eram declarados no meio, junto do primeiro card que usava cada um.
+ // Quando o card de custos fixos passou a chamar `dinheiro` ANTES da
+ // declaracao, o `const` estourou por zona morta e derrubou a pintura
+ // inteira — cabecalho na tela, corpo vazio. E a suite ficou verde, porque
+ // ela nao executa JavaScript.
+ //
+ // Declarar no topo tira a ordem dos cards da conta: card novo pode usar
+ // os dois, em qualquer posicao.
+ const reais=v=>'R$ '+(v||0).toLocaleString('pt-BR',{minimumFractionDigits:0,
+                                                     maximumFractionDigits:0});
+ const dinheiro=v=>'R$ '+(v||0).toFixed(2).replace('.',',');
  // ZERA A CADA PINTURA. O painel se redesenha a cada 20s; sem isto os
  // cards se empilhariam e a tela cresceria pra sempre.
  Object.keys(ABAS).forEach(k=>delete ABAS[k]);
@@ -8973,6 +8987,32 @@ async function carrega(){
  // 0b. PRA QUEM LIGAR. Com 11 pessoas, a acao util nao e "melhorar a
  // metrica" — e falar com o fulano que sumiu. Por isso nome, e nao contagem.
  const sumidos=(V.pessoas||[]).filter(p=>p.sumido);
+ // A JORNADA CHEGOU? Existir no codigo e chegar sao coisas diferentes.
+ const JO=d.jornada||{pessoas:[],etapas_possiveis:7,sem_nenhuma:0};
+ const jl=(JO.pessoas||[]).map(x=>{
+   const cor=x.etapas_recebidas?'#22c55e':'#ef4444';
+   return `<tr><td>${x.nome}</td>
+     <td class="q">${x.dias_de_casa}d de casa</td>
+     <td class="q" style="text-align:right;color:${cor}">
+       <b>${x.etapas_recebidas}</b>/${JO.etapas_possiveis}</td></tr>`;
+ }).join('');
+ if(JO.pessoas&&JO.pessoas.length){
+   card('A jornada de 14 dias chegou?',
+     `<div class="grid">
+       <div class="kpi"><div class="l">Não receberam nada</div>
+         <div class="v" style="color:${JO.sem_nenhuma?'#ef4444':'#22c55e'}">${
+           JO.sem_nenhuma}</div>
+         <div class="u">de ${JO.pessoas.length} em teste</div></div>
+       <div class="kpi"><div class="l">Etapas da jornada</div>
+         <div class="v">${JO.etapas_possiveis}</div>
+         <div class="u">6 lições + o fechamento</div></div>
+      </div>
+      <div class="rolatab" style="margin-top:10px"><table>${jl}</table></div>
+      <div class="muted" style="font-size:11px;margin-top:9px">
+        Uma lição a cada dois dias, do dia 1 ao 11, e o fechamento no 13.
+        Quem entrou no meio do teste segue de onde está — as lições dos
+        dias que já passaram não voltam.</div>`);
+ }
  if(sumidos.length){
    h+=card('Sumiram — vale uma ligação',
      sumidos.map(p=>`<div style="display:flex;justify-content:space-between;
@@ -9241,8 +9281,6 @@ async function carrega(){
  // servidor com a mesma margem do card de margem, entao os dois nunca
  // divergem.
  const MT=d.metas||{alvos:[]};
- const reais=v=>'R$ '+(v||0).toLocaleString('pt-BR',{minimumFractionDigits:0,
-                                                     maximumFractionDigits:0});
  const linhasMeta=(MT.alvos||[]).map(a=>{
    const falta=a.clientes==null?'—':a.faltam+' a mais';
    const pct=a.clientes?Math.min(100,Math.round(
@@ -9300,7 +9338,6 @@ async function carrega(){
 
  // CUSTO REAL POR PESSOA. A media esconde o cliente caro; os dois aparecem.
  const CU=d.custo_usuario||{pessoas:0,medio:0,maior:0,topo:[]};
- const dinheiro=v=>'R$ '+(v||0).toFixed(2).replace('.',',');
  const topo=(CU.topo||[]).map(x=>
    `<tr><td>${x.nome}</td>
      <td class="q">${x.texto_in}t ${x.audio_in}a ${x.imagem_in}f
@@ -9986,6 +10023,12 @@ document.addEventListener('visibilitychange',()=>{
             "custo_usuario": _custo_seguro(),
             "conselhos": _conselhos_guardados(),
             "fixos_editaveis": _fixos_editaveis(),
+            # A COBERTURA DA JORNADA. Sem esta linha o card existe na tela e
+            # nunca renderiza: ele le `d.jornada`, cai no fallback vazio e o
+            # `if(pessoas.length)` nunca e verdade. O painel ficaria
+            # publicado e desligado — sem responder justamente a pergunta
+            # que originou a rodada ("a jornada chegou pra eles?").
+            "jornada": _seguro_dict(db.cobertura_da_jornada),
             "usuarios": db.admin_list_users(),
             "freio": {"ciclo": DISPATCH_MAX_PER_CYCLE,
                       "intervalo": f"{ENVIO_INTERVALO_MIN:.0f}-"

@@ -120,7 +120,21 @@ KINDS_PROATIVOS = {
     "cobranca-link",
     # M5.9: a reativacao dos testers. Kind declarado, template ja aprovado.
     "reativacao",
-} | {f"trial_d{n}" for n in range(1, 13)}
+} | {
+    # A JORNADA DE 14 DIAS, dia sim dia nao (05/09/2026).
+    #
+    # Eram doze kinds, `trial_d1` a `trial_d12`, com D1 a D5 em dias
+    # seguidos. Cinco mensagens em cinco dias pra quem esta calado e o
+    # padrao que a Meta pune e que a pessoa bloqueia.
+    #
+    # Agora sao seis licoes espacadas mais o fechamento. Os kinds que
+    # sumiram (d2, d4, d8, d10, d12) sairam DAQUI tambem de proposito: kind
+    # declarado e nao emitido faz esta lista envelhecer em silencio, que e
+    # o defeito que ela existe pra evitar.
+    "trial_d1", "trial_d3", "trial_d5", "trial_d7", "trial_d9", "trial_d11",
+    # o fechamento, com o pedido de assinatura
+    "trial_d6",
+}
 
 
 def _in_quiet_hours(now: Optional[datetime] = None) -> bool:
@@ -394,12 +408,33 @@ def check_churn(ref: Optional[datetime] = None) -> list[dict]:
     return dispatches
 
 
-def check_trial_ending() -> list[dict]:
-    """Checagem 3: trial termina amanhã -> aviso com link de pagamento."""
+def check_trial_ending(pular_ids=frozenset()) -> list[dict]:
+    """Checagem 3: trial termina amanhã -> aviso com link de pagamento.
+
+    `pular_ids` sao as pessoas que o trial guiado JA vai fechar NESTE ciclo.
+
+    A guarda antiga (`nudge_already_sent(user, "d6_fim")`) le
+    `trial_nudges_sent`, e quem grava isso e QUEM ENVIA, depois do envio dar
+    certo. Mas os dois lados sao GERADOS no mesmo ciclo, antes de qualquer
+    envio: quando o `check_trial_ending` pergunta, o `d6_fim` daquele ciclo
+    ainda nao foi marcado, e a guarda passa batido.
+
+    Enquanto o `trial_d6` nao tinha template isso era inofensivo — ele
+    morria na poda fora da janela. Em 05/09 ele ganhou o MESMO template do
+    `trial-ending`, e os dois passaram a sobreviver: a pessoa recebia duas
+    vezes o pedido de assinatura, com segundos de diferenca, num numero que
+    ja levou duas restricoes da Meta.
+
+    As duas condicoes batem no MESMO dia sempre — `dia >= DIA_FECHAMENTO`
+    e `trial_days_left == 1` leem a mesma base. Nao e caso raro: e todo
+    mundo que chega ao dia 13.
+    """
     import os
     payment = os.environ.get("PAYMENT_LINK", "https://SEU-LINK-DE-PAGAMENTO")
     dispatches: list[dict] = []
     for user in db.trial_ending_users(days_left=1):
+        if user["id"] in pular_ids:
+            continue
         if db.dispatched_ever("trial-ending", user["id"]):
             continue
         if db.nudge_already_sent(user, "d6_fim"):
@@ -1197,7 +1232,15 @@ def run_proactive_engine(
             guided = trial_guiado.run_trial_nudges()
         except Exception:
             guided = []
-        trial = check_trial_ending()  # fallback: só quem NÃO recebeu o d6
+        # QUEM O TRIAL GUIADO JA VAI FECHAR AGORA NAO RECEBE O FALLBACK.
+        #
+        # A guarda que existia dentro do `check_trial_ending` le o carimbo
+        # de envio, e o carimbo so aparece DEPOIS do envio — ou seja, nunca
+        # a tempo dentro do mesmo ciclo. A informacao que falta esta bem
+        # aqui: os disparos que o guiado acabou de gerar.
+        _fechando_agora = {d["user_id"] for d in guided
+                           if d.get("kind") == "trial_d6"}
+        trial = check_trial_ending(pular_ids=_fechando_agora)
     return {
         "executed_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "alarm_dispatches": alarms,

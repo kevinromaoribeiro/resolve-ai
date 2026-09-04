@@ -146,7 +146,8 @@ def _sugestao_para(user: dict, prefer: Optional[str] = None) -> tuple[str, str]:
     return chave, _POR_INTERESSE[chave]
 
 
-def _mk(user: dict, kind: str, message: str, nudge: str = "") -> dict:
+def _mk(user: dict, kind: str, message: str, nudge: str = "",
+        capacidade: str = "", faz: str = "") -> dict:
     """Monta o disparo. `nudge` e a chave do dedup — e quem marca e QUEM ENVIA.
 
     AUDITORIA M2.0 (16/08/2026): o `db.mark_nudge_sent` era chamado aqui, na
@@ -154,6 +155,11 @@ def _mk(user: dict, kind: str, message: str, nudge: str = "") -> dict:
     sem nunca ter saido e nao voltava mais — inclusive o `d6_fim`, que e a
     UNICA mensagem de conversao do trial, com o link de pagamento. Marcar
     antes de enviar e apagar dado do usuario em silencio.
+
+    `capacidade` e `faz` sao o que a etapa ENSINA, e viram as variaveis do
+    `resolveai_novidade` quando a pessoa esta fora da janela de 24h. Sem
+    eles a etapa so alcancaria quem falou com o bot nas ultimas 24h — que
+    e justamente quem nao precisa dela.
     """
     return {
         "user_id": user["id"],
@@ -163,6 +169,8 @@ def _mk(user: dict, kind: str, message: str, nudge: str = "") -> dict:
         "kind": kind,
         "message": message,
         "nudge": nudge,
+        "nome_da_novidade": capacidade,
+        "o_que_ela_faz": faz,
     }
 
 
@@ -205,134 +213,185 @@ def run_trial_nudges() -> list[dict]:
         if not _is_cold(user):
             continue
 
-        # D1: ATIVAÇÃO — o mais importante. Se não registrou nada, puxa o 1º uso.
-        if dia == 1 and not db.nudge_already_sent(user, "d1"):
-            if not _registrou_algo(user["id"]):
-                chave, cta = _sugestao_para(user)
-                msg = (f"{first}, ontem você começou comigo mas ainda não me "
-                       f"deu nada pra cuidar. 😊 Bora testar em 10 segundos: "
-                       f"{cta}\n\nÉ só mandar — eu faço o resto.")
-            else:
-                msg = (f"{first}, vi que você já começou a usar. 🙌 Manda mais "
-                       f"uma coisa que te preocupa hoje — conta, consulta, "
-                       f"compra — que eu tiro da sua cabeça.")
-            dispatches.append(_mk(user, "trial_d1", msg,
-                                         nudge="d1"))
-            continue
-
-        # D2: HÁBITO — 2ª sugestão, dentro do interesse escolhido.
-        if dia == 2 and not db.nudge_already_sent(user, "d2"):
-            chave, cta = _sugestao_para(user)
-            msg = (f"{first}, dica rápida: {cta}\n\nQuanto mais você me conta, "
-                   f"menos você precisa lembrar. Esse é o ponto. 🧠")
-            dispatches.append(_mk(user, "trial_d2", msg,
-                                         nudge="d2"))
-            continue
-
-        # D3: AMPLIAÇÃO — mostra um interesse escolhido que ela ainda não usou.
-        if dia == 3 and not db.nudge_already_sent(user, "d3"):
-            prox = _interesse_nao_usado(user)
-            chave, cta = _sugestao_para(user, prefer=prox)
-            msg = (f"{first}, você me disse que também se preocupa com isso — "
-                   f"então: {cta}\n\nPosso cuidar de várias frentes ao mesmo "
-                   f"tempo, sem você se perder.")
-            dispatches.append(_mk(user, "trial_d3", msg,
-                                         nudge="d3"))
-            continue
-
-        # D4: AHA PROATIVO — o diferencial. "Eu te aviso sem você pedir."
-        if dia == 4 and not db.nudge_already_sent(user, "d4"):
-            msg = (f"{first}, o que me torna diferente de uma listinha: eu "
-                   f"*te aviso na hora certa, sozinho*. Você não precisa abrir "
-                   f"nada nem lembrar de checar. Me dá um vencimento ou uma "
-                   f"data que eu provo isso nos próximos dias. ⏰")
-            dispatches.append(_mk(user, "trial_d4", msg,
-                                         nudge="d4"))
-            continue
-
-        # D5: PROVA — valor acumulado. Quanto ela já tirou da cabeça.
-        if dia == 5 and not db.nudge_already_sent(user, "d5"):
-            n = len(db.list_items(user["id"]))
-            if n > 0:
-                msg = (f"{first}, em 5 dias você já colocou *{n} coisa(s)* pra "
-                       f"eu cuidar. Isso é {n} preocupação(ões) que saíram da "
-                       f"sua cabeça. 🧘 Imagina isso todo mês, no automático.")
-            else:
-                chave, cta = _sugestao_para(user)
-                _faltam = max(1, db.trial_days_left(user, TRIAL_DAYS))
-                msg = (f"{first}, faltam *{_faltam}* dias do seu teste e eu "
-                       f"ainda não te "
-                       f"mostrei o melhor. Testa agora: {cta}")
-            dispatches.append(_mk(user, "trial_d5", msg,
-                                         nudge="d5"))
-            continue
-
-        # ── SEGUNDA SEMANA (trial de 14 dias) ────────────────────────────
-        # O trial virou 14 dias porque conta de luz, consulta e revisão não
-        # cabem numa janela de 7 — a pessoa saía sem nunca ter vivido o
-        # momento pelo qual pagaria. Mas esticar o prazo sem esticar a régua
-        # deixaria os dias 6–13 em SILÊNCIO, que é pior que trial curto:
-        # sete dias sem o bot falar ensinam que dá pra viver sem ele.
-        # Continua valendo a trava do _is_cold: quem está usando hoje não
-        # recebe nada.
-
-        # D7: MARCO — uma semana. Prova concreta do que já foi entregue.
-        if dia == 7 and not db.nudge_already_sent(user, "d7"):
-            n_disp = db.dispatch_count("hora", user["id"]) + \
-                db.dispatch_count("vencimento", user["id"])
-            if n_disp:
-                msg = (f"{first}, uma semana comigo. Nesse tempo eu já te "
-                       f"avisei *{n_disp} vez(es)* de coisa que você não "
-                       f"precisou lembrar sozinho. 🧠 Essa é a conta que "
-                       f"importa.")
-            else:
-                chave, cta = _sugestao_para(user)
-                msg = (f"{first}, faz uma semana e eu ainda não te avisei de "
-                       f"nada — porque você ainda não me deu uma data. É aí "
-                       f"que eu sou bom. Testa: {cta}")
-            dispatches.append(_mk(user, "trial_d7", msg,
-                                         nudge="d7"))
-            continue
-
-        # D9: ANTECIPAÇÃO — o diferencial que nenhuma agenda tem.
-        if dia == 9 and not db.nudge_already_sent(user, "d9"):
-            msg = (f"{first}, um truque que quase ninguém usa: me conta o que "
-                   f"você compra sempre — *ração, filtro, remédio de uso "
-                   f"contínuo, troca de óleo*. Eu calculo quando vai acabar e "
-                   f"te aviso ANTES, sem você pedir. 🔄\n\n"
-                   f"Manda um: _\"comprei ração de 15kg hoje\"_.")
-            dispatches.append(_mk(user, "trial_d9", msg,
-                                         nudge="d9"))
-            continue
-
-        # D11: DINHEIRO — mostra o retrovisor de gastos que ela nem sabia ter.
-        if dia == 11 and not db.nudge_already_sent(user, "d11"):
-            gasto = db.month_spend(user["id"])
-            if gasto > 0:
-                v = f"{gasto:,.2f}".replace(",", "X").replace(".", ",") \
-                                   .replace("X", ".")
-                msg = (f"{first}, sem você fazer planilha nenhuma, eu já sei "
-                       f"que você gastou *R$ {v}* esse mês. 💸 Pergunta "
-                       f"_\"quanto eu gastei?\"_ quando quiser — eu separo por "
-                       f"categoria na hora.")
-            else:
-                msg = (f"{first}, além de lembrar, eu somo. Manda os gastos "
-                       f"do jeito que vierem — _\"mercado 180\"_, _\"uber "
-                       f"32\"_ — e depois pergunta *quanto eu gastei*. Sai "
-                       f"tudo separado por categoria, sem planilha. 💸")
-            dispatches.append(_mk(user, "trial_d11", msg,
-                                         nudge="d11"))
-            continue
-
-        # D12: AVISO HONESTO — dois dias antes, sem susto e sem pressão.
-        if dia == 12 and not db.nudge_already_sent(user, "d12"):
-            msg = (f"{first}, seu teste termina em 2 dias. Sem susto: eu aviso "
-                   f"antes, não depois. 🙂\n\n"
-                   f"Se ainda não deu pra testar direito, responde *mais "
-                   f"tempo* que eu resolvo. Prefiro que você decida tendo "
-                   f"visto o serviço funcionando.")
-            dispatches.append(_mk(user, "trial_d12", msg,
-                                         nudge="d12"))
-            continue
+        # A REGUA, DIA SIM DIA NAO.
+        #
+        # Antes eram nove toques com D1 a D5 em dias seguidos. Cinco
+        # mensagens em cinco dias pra quem esta calado e o padrao que a
+        # Meta pune e que a pessoa bloqueia. Sete toques em quatorze dias
+        # e regularidade; cinco em cinco dias e insistencia.
+        #
+        # Cada etapa ENSINA UMA CAPACIDADE, e e por isso que ela cabe no
+        # `resolveai_novidade`: `capacidade` vira o nome e `faz` vira a
+        # explicacao. `faz` recebe o usuario porque a explicacao muda com o
+        # que a pessoa marcou no cadastro — falar de boleto pra quem
+        # escolheu "pet" e ruido.
+        #
+        # `rico` e o texto de dentro da janela: mais longo, com emoji e
+        # formatacao. Fora da janela sai o template, que e mais seco por
+        # obrigacao. Os dois dizem a mesma coisa.
+        # CADA DIA TEM A SUA LICAO. Decisao do dono, 05/09.
+        #
+        # Cheguei a fazer a regua avancar pela proxima licao NAO enviada,
+        # pra quem estava no meio do trial nao perder as primeiras. O Kevin
+        # preferiu manter a regua oficial e tratar os testers como cliente
+        # real: quem esta no dia 7 recebe a licao do 7, e as dos dias que
+        # ja passaram nao voltam.
+        #
+        # A consequencia esta aceita e registrada: quem entra no meio perde
+        # as licoes anteriores. Pra cliente novo, que comeca no dia 1, a
+        # jornada e inteira.
+        for etapa in _ETAPAS:
+            if dia != etapa["dia"]:
+                continue
+            if db.nudge_already_sent(user, etapa["nudge"]):
+                break
+            dispatches.append(_mk(
+                user, "trial_d%d" % etapa["dia"], etapa["rico"](user),
+                nudge=etapa["nudge"],
+                capacidade=etapa["capacidade"], faz=etapa["faz"](user)))
+            break
 
     return dispatches
+
+
+
+# ── A JORNADA DE 14 DIAS ──────────────────────────────────────────────────
+#
+# Sete toques, dia sim dia nao. Cada um ensina UMA capacidade do produto, na
+# ordem em que ela faz sentido: primeiro registrar, depois as formas mais
+# faceis de registrar (foto, audio), depois o que o bot devolve (aviso,
+# resumo, podcast), e por fim o fechamento.
+#
+# O `faz` de cada etapa e a explicacao que vai no template — e ela e
+# personalizada pelo interesse do cadastro sempre que a capacidade permite.
+
+
+def _faz_registrar(user: dict) -> str:
+    _chave, cta = _sugestao_para(user)
+    # O CTA ja vem com formatacao de WhatsApp (asterisco, underline), que
+    # dentro de uma variavel de template a Meta nao interpreta — sai o
+    # simbolo cru na tela da pessoa.
+    return ("Escreve do seu jeito e eu guardo: " + _sem_formatacao(cta))
+
+
+def _faz_frentes(user: dict) -> str:
+    """A explicacao do D9 usa o interesse que a pessoa AINDA NAO usou.
+
+    Sem isto ela repetia palavra por palavra a do D1, e receber a mesma
+    frase duas vezes em nove dias e o jeito mais rapido de ensinar que
+    nossas mensagens nao valem leitura.
+    """
+    _chave, cta = _sugestao_para(user, prefer=_interesse_nao_usado(user))
+    # PREFIXO CURTO. A variavel do template e cortada em 200 caracteres, e
+    # o CTA sozinho ja passa de 120 — prefixo longo empurra a frase pro
+    # corte, que acontece no envio, depois de a etapa ja ter sido gasta.
+    return "Cuido de varios assuntos ao mesmo tempo: " + _sem_formatacao(cta)
+
+
+def _faz_foto(_user: dict) -> str:
+    return ("Tira foto de um boleto ou manda o PDF da conta. Eu leio o "
+            "codigo de barras, o valor e o vencimento sozinho.")
+
+
+def _faz_audio(_user: dict) -> str:
+    return ("Manda um audio de ate 2 minutos, do jeito que voce fala. Eu "
+            "transcrevo e guardo tudo que tiver ali dentro.")
+
+
+def _faz_aviso(_user: dict) -> str:
+    return ("Eu te aviso antes de cada coisa vencer, e de novo no dia. "
+            "Voce so responde feito quando resolver.")
+
+
+def _faz_gastos(_user: dict) -> str:
+    return ("Pergunta quanto gastei esse mes e eu somo por categoria, sem "
+            "voce fazer planilha nenhuma.")
+
+
+def _sem_formatacao(texto: str) -> str:
+    """Tira asterisco e underline: variavel de template nao formata.
+
+    O CTA foi escrito pra texto livre do WhatsApp, onde *isto* fica em
+    negrito. Dentro de uma variavel de template a Meta nao interpreta, e a
+    pessoa le o asterisco cru.
+    """
+    return (texto or "").replace("*", "").replace("_", "")
+
+
+def _rico_d1(user: dict) -> str:
+    first = _first_name(user)
+    if not _registrou_algo(user["id"]):
+        _chave, cta = _sugestao_para(user)
+        return (f"{first}, voce comecou comigo mas ainda nao me deu nada pra "
+                f"cuidar. 😊 Bora testar em 10 segundos: {cta}\n\n"
+                f"E so mandar — eu faco o resto.")
+    return (f"{first}, vi que voce ja comecou a usar. 🙌 Manda mais uma coisa "
+            f"que te preocupa hoje — conta, consulta, compra — que eu tiro "
+            f"da sua cabeca.")
+
+
+def _rico_d3(user: dict) -> str:
+    return (f"{_first_name(user)}, um atalho que quase ninguem descobre "
+            f"sozinho: *tira foto do boleto* e me manda. 📄\n\n"
+            f"Eu leio o codigo de barras, o valor e o vencimento, guardo "
+            f"tudo e te aviso antes de vencer. Serve pra PDF de conta "
+            f"tambem.")
+
+
+def _rico_d5(user: dict) -> str:
+    return (f"{_first_name(user)}, se digitar der preguica, *manda audio*. "
+            f"🎤\n\nAte 2 minutos, do jeito que voce fala, tudo junto e "
+            f"misturado. Eu separo o que e compromisso, o que e gasto e o "
+            f"que e lembrete.")
+
+
+def _rico_d7(user: dict) -> str:
+    first = _first_name(user)
+    try:
+        n = len(db.list_items(user["id"]))
+    except Exception:
+        n = 0
+    if n:
+        return (f"{first}, uma semana comigo. Ja tenho *{n} coisa(s)* suas "
+                f"guardadas — e eu aviso antes de cada uma vencer, sem voce "
+                f"precisar abrir nada. ⏰\n\nEsse e o ponto: voce esquece, "
+                f"eu nao.")
+    return (f"{first}, faz uma semana e eu ainda nao te avisei de nada — "
+            f"porque voce ainda nao me deu nada pra cuidar. ⏰\n\n"
+            f"Me da um vencimento ou uma data que eu provo nos proximos "
+            f"dias o que eu faco de diferente de uma listinha.")
+
+
+def _rico_d9(user: dict) -> str:
+    prox = _interesse_nao_usado(user)
+    _chave, cta = _sugestao_para(user, prefer=prox)
+    return (f"{_first_name(user)}, voce me disse que tambem se preocupa com "
+            f"isso — entao: {cta}\n\nPosso cuidar de varias frentes ao "
+            f"mesmo tempo, sem voce se perder.")
+
+
+def _rico_d11(user: dict) -> str:
+    return (f"{_first_name(user)}, alem de lembrar, eu *somo*. 💰\n\n"
+            f"Manda os gastos do dia como eles acontecem — _45 mercado_, "
+            f"_12 uber_ — e depois pergunta _quanto gastei esse mes_. Eu "
+            f"respondo por categoria, sem planilha nenhuma.")
+
+
+# Os dias em que a regua fala. Derivado da tabela, e nao escrito de novo:
+# duas listas do mesmo ritmo divergem na primeira vez que alguem muda uma.
+_ETAPAS = [
+    {"dia": 1, "nudge": "d1", "capacidade": "escrever do seu jeito",
+     "faz": _faz_registrar, "rico": _rico_d1},
+    {"dia": 3, "nudge": "d3", "capacidade": "foto de boleto",
+     "faz": _faz_foto, "rico": _rico_d3},
+    {"dia": 5, "nudge": "d5", "capacidade": "audio",
+     "faz": _faz_audio, "rico": _rico_d5},
+    {"dia": 7, "nudge": "d7", "capacidade": "aviso antes de vencer",
+     "faz": _faz_aviso, "rico": _rico_d7},
+    {"dia": 9, "nudge": "d9", "capacidade": "varias frentes ao mesmo tempo",
+     "faz": _faz_frentes, "rico": _rico_d9},
+    {"dia": 11, "nudge": "d11", "capacidade": "quanto voce gastou",
+     "faz": _faz_gastos, "rico": _rico_d11},
+]
+
+_DIAS_DE_TOQUE = tuple(e["dia"] for e in _ETAPAS)

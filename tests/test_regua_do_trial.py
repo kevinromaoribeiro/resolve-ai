@@ -84,7 +84,7 @@ def test_o_nudge_cabe_dentro_da_janela_de_24h():
 
 def test_o_nudge_SAI_de_verdade_pra_quem_esfriou(usuario, monkeypatch):
     """Ponta a ponta: gerado E entregue. Antes ele morria na poda."""
-    _no_dia(usuario, dia=2, calado_ha=20)
+    _no_dia(usuario, dia=3, calado_ha=20)
     db.log_message(usuario["id"], TELEFONE, "in", "texto", "oi")
     with db.get_conn() as c:      # a entrada foi ha 20h, nao agora
         c.execute("UPDATE msg_log SET ts=? WHERE user_id=?",
@@ -118,7 +118,16 @@ def test_quem_acabou_de_falar_nao_e_incomodado(usuario):
 # 3. a régua cobre os dias que promete
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("dia", [1, 2, 3, 4, 5, 7, 9, 11, 12])
+# OS DIAS VEM DA TABELA, e nao de uma lista copiada aqui.
+#
+# A regua mudou de nove toques diarios pra seis dia-sim-dia-nao, e a lista
+# copiada no teste ficou pedindo os dias 2, 4 e 12 — que deixaram de
+# existir. Copia de configuracao no teste envelhece em silencio e depois
+# reprova por estar desatualizada, nao por ter achado defeito.
+DIAS_DA_REGUA = [e["dia"] for e in trial_guiado._ETAPAS]
+
+
+@pytest.mark.parametrize("dia", DIAS_DA_REGUA)
 def test_cada_dia_da_regua_produz_seu_toque(usuario, dia):
     _no_dia(usuario, dia=dia, calado_ha=20)
     ds = _meus(usuario)
@@ -135,14 +144,15 @@ def test_o_fechamento_sai_no_fim_do_trial(usuario):
 
 
 def test_ninguem_recebe_o_mesmo_toque_duas_vezes(usuario):
-    _no_dia(usuario, dia=2, calado_ha=20)
-    assert _meus(usuario)
-    db.mark_nudge_sent(usuario["id"], "d2")
+    _no_dia(usuario, dia=3, calado_ha=20)
+    primeiro = _meus(usuario)
+    assert primeiro
+    db.mark_nudge_sent(usuario["id"], primeiro[0]["nudge"])
     assert _meus(usuario) == []
 
 
 def test_um_toque_por_dia_no_maximo(usuario):
-    _no_dia(usuario, dia=2, calado_ha=20)
+    _no_dia(usuario, dia=3, calado_ha=20)
     assert len(_meus(usuario)) <= 1
 
 
@@ -152,7 +162,7 @@ def test_um_toque_por_dia_no_maximo(usuario):
 # A régua nunca disparou até 31/08. Ligá-la com gente no dia 5, 7, 11 não
 # pode virar uma rajada dos dias que essa pessoa "perdeu".
 
-@pytest.mark.parametrize("dia", [3, 5, 7, 9, 11, 12])
+@pytest.mark.parametrize("dia", DIAS_DA_REGUA)
 def test_quem_ja_esta_no_meio_recebe_UM_toque_so(usuario, dia):
     """O risco real do dia em que a régua passou a funcionar."""
     _no_dia(usuario, dia=dia, calado_ha=20)
@@ -161,30 +171,51 @@ def test_quem_ja_esta_no_meio_recebe_UM_toque_so(usuario, dia):
 
 
 def test_nao_manda_os_dias_atrasados_de_uma_vez(usuario):
-    """Quem entrou no dia 11 recebe o toque do 11 — não o do 1 ao 11."""
+    """Quem esta no dia 11 recebe a licao do 11 — nao a do 1 ao 11.
+
+    DECISAO DO DONO (05/09): a regua oficial e dia -> licao, e quem entra
+    no meio segue de onde esta, como cliente real. As licoes dos dias que
+    ja passaram nao voltam.
+    """
     _no_dia(usuario, dia=11, calado_ha=20)
     ds = _meus(usuario)
     assert ds and ds[0]["kind"] == "trial_d11", [d["kind"] for d in ds]
 
 
 def test_o_dia_seguinte_traz_o_toque_seguinte_e_so(usuario):
-    _no_dia(usuario, dia=4, calado_ha=20)
+    _no_dia(usuario, dia=5, calado_ha=20)
     primeiro = _meus(usuario)
     assert len(primeiro) == 1
-    db.mark_nudge_sent(usuario["id"], "d4")
+    db.mark_nudge_sent(usuario["id"], primeiro[0]["nudge"])
     assert _meus(usuario) == [], "repetiu o mesmo dia"
 
 
-def test_o_texto_do_d5_diz_os_dias_certos(usuario):
-    """"faltam 2 dias" era verdade num trial de 7. Com 14, no D5 faltam 9 —
-    o texto dizia um número que o produto não cumpre."""
-    _no_dia(usuario, dia=5, calado_ha=20)
+@pytest.mark.parametrize("dia", DIAS_DA_REGUA)
+def test_nenhum_toque_promete_um_prazo_errado(usuario, dia):
+    """"faltam 2 dias" era verdade num trial de 7. Com 14 virou mentira.
+
+    O toque que dizia o prazo saiu da regua, mas a garantia nao pode sair
+    com ele: se algum dia alguem voltar a falar de prazo numa licao, o
+    numero tem que ser o que o produto cumpre. A regra vale pra jornada
+    inteira, e nao so pro dia que tinha o defeito.
+    """
+    import re
+    _no_dia(usuario, dia=dia, calado_ha=20)
     ds = _meus(usuario)
-    assert ds, "o D5 nao saiu"
+    assert ds, "o dia %d nao saiu" % dia
     restam = db.trial_days_left(db.get_user(usuario["id"]),
                                 trial_guiado.TRIAL_DAYS)
-    assert ("*%d* dias" % restam) in ds[0]["message"], ds[0]["message"]
-    assert "faltam 2 dias" not in ds[0]["message"]
+    # SO O PRAZO DO TESTE. "eu te aviso 3 dias antes" fala do vencimento de
+    # uma conta, nao do trial — proibir todo numero seguido de "dias"
+    # reprovaria a frase mais util da regua.
+    prazo = re.compile(
+        r"(?:faltam|falta|restam|resta|termina em|acaba em|vence em|"
+        r"tem mais)\s*\*?(\d+)\*?\s*dias?", re.I)
+    for texto in (ds[0]["message"], ds[0].get("o_que_ela_faz") or ""):
+        for achado in prazo.findall(texto):
+            assert int(achado) == restam, (
+                "o dia %d promete %s dia(s) de teste e faltam %d: %s"
+                % (dia, achado, restam, texto))
 
 
 def test_o_fechamento_leva_link_de_verdade(usuario):
@@ -193,3 +224,31 @@ def test_o_fechamento_leva_link_de_verdade(usuario):
     msg = _meus(usuario)[0]["message"]
     assert "SEU-LINK" not in msg, msg
     assert "mpago.la" in msg or "http" in msg, msg
+
+
+# ---------------------------------------------------------------------------
+# 6. o SILENCIO dos dias sem toque
+# ---------------------------------------------------------------------------
+# A regua avanca pela proxima licao nao enviada. Sem uma trava de calendario
+# ela falaria TODOS os dias ate esgotar a fila — seis mensagens em seis dias
+# pra quem esta calado, que e o padrao que a Meta pune e que a pessoa
+# bloqueia. O teste reverso mostrou que nada garantia esse silencio.
+
+@pytest.mark.parametrize("dia", [2, 4, 6, 8, 10])
+def test_dia_sem_toque_e_dia_de_silencio(usuario, dia):
+    _no_dia(usuario, dia=dia, calado_ha=20)
+    assert _meus(usuario) == [], (
+        "a regua falou no dia %d, que nao e dia de toque" % dia)
+
+
+def test_a_regua_entrega_uma_licao_por_dia_de_toque(usuario):
+    """Onze dias de trial dao SEIS licoes, e nunca duas no mesmo dia."""
+    saiu = 0
+    for dia in range(1, 12):
+        _no_dia(usuario, dia=dia, calado_ha=20)
+        ds = _meus(usuario)
+        assert len(ds) <= 1, "rajada no dia %d: %s" % (dia, ds)
+        if ds:
+            saiu += 1
+            db.mark_nudge_sent(usuario["id"], ds[0]["nudge"])
+    assert saiu == len(trial_guiado._DIAS_DE_TOQUE), saiu

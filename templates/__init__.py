@@ -454,6 +454,18 @@ KIND_TEMPLATE = {
     "anti-churn": "resolveai_reengajamento_pendentes",
     "winback": "resolveai_reengajamento_pendentes",
     "trial-ending": "resolveai_fim_de_trial_aviso",
+    # A JORNADA DE 14 DIAS, uma etapa a cada dois dias.
+    #
+    # Todas usam o `novidade` porque todas ensinam UMA capacidade — o nome
+    # e a explicacao vem no proprio disparo. A do dia 13 e a excecao: ela
+    # nao ensina, ela fecha, entao usa o template de fim de teste.
+    "trial_d1": "resolveai_novidade",
+    "trial_d3": "resolveai_novidade",
+    "trial_d5": "resolveai_novidade",
+    "trial_d7": "resolveai_novidade",
+    "trial_d9": "resolveai_novidade",
+    "trial_d11": "resolveai_novidade",
+    "trial_d6": "resolveai_fim_de_trial_aviso",
     "vencimento": "resolveai_conta_a_vencer",
 }
 
@@ -491,14 +503,25 @@ KINDS_SEM_TEMPLATE = {
     # O Kevin foi direto: "se a pessoa escolher segunda, nao podemos falhar".
     "podcast-convite",
     "podcast-dia",
-} | {
-    # nudges do trial guiado: são a coreografia dos primeiros dias, com texto
-    # próprio em cada etapa (amostra, primeiro item, oferta do kit...).
-    # Achatar doze textos num template só traria de volta os bugs que as
-    # etapas existem pra evitar. Fora da janela eles não saem — e o `d6_fim`,
-    # que é a única mensagem de conversão, fica guardado em vez de queimado.
-    f"trial_d{n}" for n in range(1, 13)
 }
+# OS NUDGES DO TRIAL SAIRAM DAQUI (05/09/2026).
+#
+# Eles ficaram sem template por uma razao que parecia certa: cada dia tem
+# texto proprio, e achatar tudo num template so traria de volta bugs
+# antigos. O efeito pratico foi outro: sem template, o nudge so alcanca
+# quem falou com o bot nas ultimas 24h — ou seja, justamente quem NAO
+# precisa dele. Quem esfriou, que e o publico inteiro da regua, nao recebia
+# nenhuma das doze mensagens. A jornada existia e nao chegava.
+#
+# O `resolveai_novidade` resolve porque o corpo dele carrega uma mensagem
+# educativa QUALQUER: `{{2}}` e o nome da capacidade e `{{3}}` o que ela
+# faz. Nao e achatar doze textos num so — e cada etapa preenchendo as duas
+# variaveis com a capacidade que ela ensina, personalizada pelo interesse
+# que a pessoa marcou no cadastro.
+#
+# E honesto chamar de novidade: pra quem esta no teste, a capacidade e nova
+# DE FATO, e a ultima linha do corpo ("e de graca e ja faz parte do seu
+# plano") e verdade durante o trial.
 
 
 def _nicho_do_usuario(user_id) -> str:
@@ -610,7 +633,29 @@ def para_disparo(d: dict) -> tuple[Optional[str], list]:
         return None, []
 
     primeiro = _primeiro_nome(d)
-    if nome == "resolveai_cobranca_link":
+    if nome == "resolveai_novidade":
+        # A ETAPA DIZ O QUE ENSINA. O corpo do template e uma casca: o que
+        # muda a cada dia sao as duas variaveis, e elas vem do disparo.
+        #
+        # FAIL-CLOSED: sem as duas, nao sai. Um `novidade` com variavel
+        # vazia viraria "novidade no Resolve AI: **." pra pessoa — e a Meta
+        # recusa variavel vazia, o que queima a etapa sem ela nunca ter
+        # saido.
+        _cap = (d.get("nome_da_novidade") or "").strip()
+        _faz = (d.get("o_que_ela_faz") or "").strip()
+        if not _cap or not _faz:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[template] disparo %r sem capacidade/explicacao — nao sai",
+                d.get("kind"))
+            return None, []
+        # Sem normalizar aqui: o `return` desta funcao ja faz
+        # `" ".join(str(v).split())[:200]` em TODAS as variaveis, de todos os
+        # templates. Repetir a limpeza so nesta branch seria codigo morto —
+        # e foi o teste reverso que mostrou isso, ao desfazer a duplicata e
+        # ver a suite continuar verde.
+        variaveis = [primeiro, _cap, _faz]
+    elif nome == "resolveai_cobranca_link":
         # "ha *{{2}}* dia(s)" — o numero vem do disparo, que o leu do banco.
         # Sem ele a frase viraria "ha 0 dias", que contradiz a propria
         # mensagem ("ainda nao vi o pagamento entrar").

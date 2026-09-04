@@ -2531,6 +2531,72 @@ def validacao(trial_days: int = 14, excluir_telefones: Optional[list] = None,
     }
 
 
+def cobertura_da_jornada() -> dict:
+    """Quem esta no trial recebeu quantas etapas da jornada de 14 dias.
+
+    A pergunta que o painel nao respondia e que o dono fez direto: "todos
+    tem a jornada?". Sem isto a resposta era fe — a jornada existe no
+    codigo, entao presume-se que roda.
+
+    Ela nao roda pra todo mundo, e o motivo e estrutural: os doze nudges
+    nao tem template da Meta, entao so saem pra quem falou com o bot nas
+    ultimas 24h. Quem esfriou — que e justamente quem os nudges existem
+    pra resgatar — nao recebe nenhum.
+
+    Este numero e o que separa "a jornada existe" de "a jornada chegou".
+    """
+    hoje = tempo.hoje()
+    try:
+        with get_conn() as conn:
+            # SO OS NUDGES DA REGUA. `LIKE 'trial%'` pegava tambem
+            # `trial-ending` e `trial-estendido`, que nao sao licoes — a
+            # contagem inflava e o painel dizia que a jornada chegou quando
+            # o que chegou foi o aviso de fim de teste.
+            # `trial_d%` sem escape casaria `trial-ending` tambem: no LIKE
+            # do SQL o `_` e curinga de um caractere qualquer. Sem o ESCAPE
+            # o filtro nao filtra nada, e a string precisa ser crua senao o
+            # Python come a barra antes de o SQLite ver.
+            envios = conn.execute(
+                r"SELECT user_id, kind, COUNT(*) n FROM dispatches "
+                r"WHERE kind LIKE 'trial\_d%' ESCAPE '\' "
+                r"GROUP BY user_id, kind").fetchall()
+    except Exception:
+        return {"pessoas": [], "etapas_possiveis": 0, "sem_nenhuma": 0}
+
+    por_pessoa: dict = {}
+    for r in envios:
+        uid = r["user_id"]
+        if uid is None:
+            continue
+        por_pessoa.setdefault(int(uid), set()).add(r["kind"])
+
+    linhas = []
+    for u in list_users():
+        if (u.get("status") or "trial") not in ("trial", "ativo"):
+            continue
+        try:
+            nasceu = date.fromisoformat(str(u.get("data_criacao"))[:10])
+            dias = (hoje - nasceu).days
+        except Exception:
+            dias = 0
+        etapas = por_pessoa.get(u["id"], set())
+        linhas.append({
+            "user_id": u["id"], "nome": u.get("nome") or "?",
+            "dias_de_casa": dias,
+            "etapas_recebidas": len(etapas),
+            "quais": sorted(etapas),
+        })
+    linhas.sort(key=lambda x: (x["etapas_recebidas"], -x["dias_de_casa"]))
+    return {
+        "pessoas": linhas,
+        # SEIS LICOES MAIS O FECHAMENTO. Era 12, do desenho antigo de
+        # nudges diarios — quem recebesse a jornada INTEIRA aparecia como
+        # "7/12" e parecia falha onde nao havia.
+        "etapas_possiveis": 7,
+        "sem_nenhuma": sum(1 for x in linhas if not x["etapas_recebidas"]),
+    }
+
+
 def custo_por_usuario(dias: int = 30) -> list:
     """O que CADA pessoa custou nos ultimos N dias, linha por linha.
 
