@@ -69,11 +69,19 @@ _TAREFA = {
         "4. O NÚMERO a olhar na semana que vem, e o valor que significa que "
         "funcionou."),
     "preco": (
-        "Responda em no máximo 350 palavras, em português do Brasil, "
+        "Responda em no máximo 400 palavras, em português do Brasil, "
         "direto, sem introdução.\n\n"
-        "1. O PREÇO ATUAL está certo, alto ou baixo? Justifique com o custo "
-        "real por cliente e com o que o produto substitui.\n"
-        "2. QUANTO COBRAR, com um número. Se for para manter, diga manter.\n"
+        "ANTES DE COMEÇAR, faça esta conta e escreva o resultado: para "
+        "cada preço que você considerar, a SOBRA por cliente é o preço "
+        "menos o CUSTO CHEIO (não o variável). Depois divida a meta de "
+        "lucro mais próxima por essa sobra: é o número de clientes que "
+        "aquele preço exige. Baixar o preço aumenta esse número.\n\n"
+        "1. O PREÇO ATUAL está certo, alto ou baixo? Justifique com o "
+        "CUSTO CHEIO e com o que o produto substitui na vida da pessoa. "
+        "Não use o número de pagantes como argumento: ninguém foi "
+        "convidado a pagar ainda.\n"
+        "2. QUANTO COBRAR, com um número, e quantos clientes esse preço "
+        "exige para a meta mais próxima. Se for para manter, diga manter.\n"
         "3. O RISCO da sua recomendação — o que pode dar errado se ele "
         "seguir.\n"
         "4. COMO DESCOBRIR se está certo, com um teste que caiba em uma "
@@ -142,15 +150,26 @@ _REGRAS = (
     "e siga sem ele.\n"
     "- Nada de jargão de startup e nada de lista de boas práticas genéricas. "
     "Fale deste negócio, com estes números.\n"
-    "- Antes de sugerir qualquer coisa, LEIA a lista de capacidades que já "
-    "estão no ar. Sugerir o que já existe é o pior conselho possível para "
-    "quem constrói demais.\n"
-    "- Se a sua ideia já está na lista, o conselho vira COMO FAZER "
-    "DESCOBRIREM, e não como construir.\n"
+    "- Antes de escrever CADA sugestão, procure-a na lista de capacidades "
+    "que já estão no ar. Se ela estiver lá, você está mandando construir o "
+    "que já está construído — o pior conselho possível para quem constrói "
+    "demais. Isso já aconteceu: um conselheiro mandou 'fazer um mini "
+    "podcast' com o podcast pronto e listado.\n"
+    "- Se a sua ideia já está na lista, ela vira COMO FAZER DESCOBRIREM, e "
+    "não como construir. Diga a frase 'já existe' quando for o caso.\n"
     "- Toda ideia sua tem que caber numa pessoa só trabalhando. Não existe "
     "time, não existe verba de mídia e não existe caixa.\n"
     "- Amarre cada sugestão a uma das metas de lucro do retrato: diga o que "
     "ela move em direção a elas. Ideia que não aproxima da meta não entra.\n"
+    "- TESTE DE SANIDADE, obrigatório: se você calcular quantos clientes "
+    "uma ideia traz e o resultado for menos de 5% da meta mais próxima, "
+    "ela NÃO é uma ideia para chegar na meta. Descarte e proponha outra, "
+    "ou diga que não encontrou nenhuma dessa magnitude. Uma ideia que "
+    "rende 1 ou 2 clientes contra uma meta de 100 não é ideia, é ruído.\n"
+    "- NINGUÉM FOI CONVIDADO A PAGAR ainda. Então zero pagantes não é "
+    "evidência de que o preço está errado, nem de que o produto é ruim: é "
+    "ausência de pedido. Não use o número de pagantes para concluir nada "
+    "sobre preço ou sobre valor percebido.\n"
     "- Não use o nome de nenhum cliente."
 )
 
@@ -203,10 +222,27 @@ def retrato(dados: dict) -> str:
     t += _linha("assinantes pagantes", fin.get("assinantes"))
     t += "\n"
 
-    t += "CUSTO REAL POR PESSOA (últimos 30 dias, medido):\n"
-    t += _linha("médio", cus.get("medio"))
-    t += _linha("mediana", cus.get("mediana"))
-    t += _linha("o mais caro da base", cus.get("maior"))
+    # O CUSTO CHEIO VEM PRIMEIRO, E EXPLICADO.
+    #
+    # Na primeira versao o retrato so trazia o custo VARIAVEL. O
+    # conselheiro de preco leu "R$ 0,07 por cliente", concluiu que o
+    # produto e quase de graca e recomendou baixar o preco pela metade —
+    # o que na verdade afastava da meta. Ele nao errou: ele nunca recebeu
+    # o outro numero. Numero solto no briefing vira conselho errado.
+    t += "CUSTO POR PESSOA (últimos 30 dias, medido). LEIA OS DOIS:\n"
+    t += _linha("CUSTO CHEIO médio (variável + fatia do fixo) — use ESTE "
+                "para decidir preço", cus.get("cheio_medio"))
+    t += _linha("SOBRA por cliente hoje (preço − custo cheio)",
+                cus.get("sobra_por_cliente"))
+    t += _linha("custo fixo do mês", cus.get("fixo_mes"))
+    t += _linha("fatia do fixo por pessoa (fixo ÷ %s pessoas)"
+                % cus.get("pessoas"), cus.get("fixo_rateado"))
+    t += _linha("custo VARIÁVEL médio (só o uso: LLM, áudio, foto, podcast)",
+                cus.get("medio"))
+    t += _linha("variável do mais caro da base", cus.get("maior"))
+    t += ("- O variável é centavos e o cheio é reais: quem decidir preço "
+          "pelo variável conclui que o produto é de graça e erra. A fatia "
+          "do fixo cai sozinha conforme entra gente.\n")
     if not cus.get("conferido"):
         t += ("- ATENÇÃO: os preços unitários são estimativa de tabela "
               "pública, não de fatura. Trate como ordem de grandeza.\n")
