@@ -1,31 +1,47 @@
 # -*- coding: utf-8 -*-
 """
-trial_guiado.py — Régua de engajamento do trial de 7 dias (CRM / funil).
+trial_guiado.py — a jornada do trial de 14 dias.
 =========================================================================
-Objetivo: garantir que no D7 a pessoa QUEIRA ficar. Cada dia do trial tem
-um objetivo de funil diferente — não é "mandar mensagem", é mover a pessoa
-de "testei uma vez" até "não quero mais perder isso".
+Cada toque ENSINA UMA CAPACIDADE do produto. Não é "mandar mensagem": é
+fazer a pessoa descobrir o que o bot faz, no ritmo dela, para que no dia 13
+ela decida com conhecimento de causa.
 
-FILOSOFIA (chapéu de sênior de CRM):
-- Nudge é para quem ESFRIOU. Se a pessoa usou nas últimas 24h, não empurra —
-  quem já está engajado não precisa de lembrete, precisa de espaço.
-- Personalizado pelos INTERESSES do onboarding. Falar de carro pra quem
-  escolheu "contas" é ruído. Relevância > frequência.
-- 1 toque por dia no MÁXIMO, e só se fizer sentido. Silêncio proposital em
-  dias que a pessoa está ativa.
-- Cada nudge tem UMA ação clara (CTA), curto, com prova de valor imediata.
-- Dedup total via db.mark_nudge_sent: ninguém recebe o mesmo nudge 2x.
+RÉGUA — dia sim, dia não. Seis lições e o fechamento:
+  D1   escrever do seu jeito        (personalizado pelo interesse do cadastro)
+  D3   foto de boleto
+  D5   áudio
+  D7   aviso antes de vencer
+  D9   vários assuntos ao mesmo tempo  (personalizado)
+  D11  quanto você gastou
+  D13  fechamento, com o pedido de assinatura
 
-RÉGUA (objetivo de funil por dia):
-  D1  ATIVAÇÃO   — quem não registrou nada: puxa o 1º uso (o "aha" mais cedo)
-  D2  HÁBITO     — sugere 2º caso de uso, dentro do interesse escolhido
-  D3  AMPLIAÇÃO  — mostra um interesse que ela escolheu mas ainda não usou
-  D4  AHA PROATIVO— evidencia o valor único: "eu te avisei sem você pedir"
-  D5  PROVA      — resume o que já tirou da cabeça dela (valor acumulado)
-  D6  CONVERSÃO  — fim do trial amanhã + link de pagamento (fecha o funil)
+Eram nove toques com D1 a D5 em dias seguidos. Cinco mensagens em cinco
+dias pra quem está calado é o padrão que a Meta pune e que a pessoa
+bloqueia — sete toques em quatorze dias é regularidade.
+
+COMO A LIÇÃO SAI FORA DA JANELA DE 24h (05/09/2026):
+Até esta data nenhum `trial_d*` tinha template aprovado, e fora da janela
+o WhatsApp só aceita template. A jornada inteira era gerada e descartada na
+poda, sem erro e sem log — ela só alcançava quem tinha falado com o bot no
+último dia, que é justamente quem não precisa dela.
+
+As seis lições usam o `resolveai_novidade`, cujo corpo carrega o nome da
+capacidade e a explicação como variáveis; o fechamento usa o
+`resolveai_fim_de_trial_aviso`. Nenhum template novo foi preciso.
+
+O QUE NÃO MUDOU, e é decisão do dono:
+- Nudge é para quem ESFRIOU. Quem usou nas últimas horas não recebe.
+- Personalizado pelos INTERESSES do cadastro. Falar de carro pra quem
+  escolheu "contas" é ruído.
+- UM toque por dia de toque, e silêncio nos outros dias.
+- Dia -> lição. Quem entra no meio segue de onde está, como cliente real:
+  as lições dos dias que já passaram não voltam.
+- SEM corte por silêncio. Quem nunca responde recebe a jornada inteira —
+  "se ignorarem, é porque o produto é ruim". O trial é o experimento.
 
 Cada função devolve dispatches no formato do scheduler:
-  {"user_id","user_nome","telefone","item_id":None,"kind","message"}
+  {"user_id","user_nome","telefone","item_id":None,"kind","message",
+   "nudge","nome_da_novidade","o_que_ela_faz"}
 """
 from __future__ import annotations
 
