@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v31.1-cobertura-so-conta-as-etapas-de-hoje-2026-09-05"
+BUILD = "v31.2-toda-a-base-recebe-a-jornada-2026-09-05"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -9768,6 +9768,33 @@ document.addEventListener('visibilitychange',()=>{
         _c.guardar(db, tipo, texto, quando)
         db.registrar_acao_admin("conselho", por="painel", detalhe=tipo)
         return JSONResponse({"ok": True, "texto": texto, "quando": quando})
+
+    @app.post("/painel/jornada/reabrir")
+    async def painel_reabrir_jornada(request: Request):
+        """Destrava as licoes que ainda vao acontecer. Seco por padrao.
+
+        Escreve em registro de cliente, entao a primeira chamada mostra o
+        plano e nao muda nada. `confirmo` liga a escrita.
+        """
+        from fastapi.responses import JSONResponse
+        import json as _j
+        if not _painel_autorizado(request):
+            return _negado(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        seco = not body.get("confirmo")
+        try:
+            r = db.reabrir_jornada_futura(TRIAL_DAYS, seco=seco)
+        except Exception as e:
+            log.warning("[jornada] falha ao reabrir", exc_info=True)
+            return JSONResponse({"ok": False, "erro": str(e)[:120]})
+        if not seco:
+            db.registrar_acao_admin(
+                "reabrir_jornada", por="painel",
+                detalhe=_j.dumps({"quantas": r["quantas"]}))
+        return JSONResponse({"ok": True, **r})
 
     @app.post("/painel/custos")
     async def painel_custos(request: Request):

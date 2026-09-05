@@ -2531,6 +2531,52 @@ def validacao(trial_days: int = 14, excluir_telefones: Optional[list] = None,
     }
 
 
+def reabrir_jornada_futura(trial_days: int = 14, seco: bool = True) -> dict:
+    """Destrava as licoes que AINDA VAO ACONTECER, e so elas.
+
+    O caso, em 05/09: cinco pessoas tinham as sete etapas marcadas do trial
+    ORIGINAL, semanas atras, quando ainda conversavam com o bot. Com a
+    regua oficial sendo dia -> licao, elas nunca mais receberiam nada — e a
+    decisao do dono foi que TODA a base receba a jornada.
+
+    So limpa marca de licao cujo dia ainda esta a frente. As passadas ficam
+    marcadas de proposito: destravar tudo faria a pessoa receber hoje uma
+    licao de um dia que ja passou, que e repeticao imediata — exatamente o
+    que ela nao quis.
+
+    `seco=True` por padrao. Isto escreve em registro de cliente; a primeira
+    chamada mostra o plano e nao muda nada.
+    """
+    try:
+        import trial_guiado as _tg
+        toques = [e["dia"] for e in _tg._ETAPAS]
+    except Exception:
+        toques = [1, 3, 5, 7, 9, 11]
+
+    plano = []
+    for u in active_trial_users(trial_days):
+        dia = trial_day_number(u)
+        marcados = {x for x in (u.get("trial_nudges_sent") or "").split(",")
+                    if x}
+        # DE HOJE PRA FRENTE, e nao "depois de hoje".
+        #
+        # Quem esta no dia 7 com o d7 marcado do trial antigo tem que
+        # receber o d7 HOJE — e a licao do dia em que ela esta, nao uma
+        # licao de dia que passou. Com `> dia` ela pulava justamente a de
+        # hoje e so voltaria a receber no dia 9.
+        futuras = {"d%d" % t for t in toques if t >= dia}
+        limpar = marcados & futuras
+        if not limpar:
+            continue
+        plano.append({"user_id": u["id"], "nome": u.get("nome") or "?",
+                      "dia": dia, "limpou": sorted(limpar),
+                      "mantidos": sorted(marcados - limpar)})
+        if not seco:
+            update_user_fields(u["id"],
+                               trial_nudges_sent=",".join(sorted(marcados - limpar)))
+    return {"seco": seco, "pessoas": plano, "quantas": len(plano)}
+
+
 def cobertura_da_jornada() -> dict:
     """Quem esta no trial recebeu quantas etapas da jornada de 14 dias.
 
