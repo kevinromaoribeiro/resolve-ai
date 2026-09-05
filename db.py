@@ -2565,6 +2565,20 @@ def reabrir_jornada_futura(trial_days: int = 14, seco: bool = True) -> dict:
         # licao de dia que passou. Com `> dia` ela pulava justamente a de
         # hoje e so voltaria a receber no dia 9.
         futuras = {"d%d" % t for t in toques if t >= dia}
+        # O FECHAMENTO TAMBEM, e ele e o que mais importa.
+        #
+        # `d6_fim` e a unica mensagem do trial que pede assinatura, e nas
+        # pessoas do trial original ela ja estava marcada — elas chegariam
+        # ao dia 13 sem receber justamente a mensagem que leva ao momento
+        # da decisao. A chave dele nao segue o padrao `d<numero>`, entao
+        # nao caia na conta acima; foi o modo seco que mostrou isso.
+        try:
+            import trial_guiado as _tg2
+            if _tg2.DIA_FECHAMENTO >= dia:
+                futuras.add("d6_fim")
+        except Exception:
+            if dia <= 13:
+                futuras.add("d6_fim")
         limpar = marcados & futuras
         if not limpar:
             continue

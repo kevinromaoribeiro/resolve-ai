@@ -98,3 +98,24 @@ def test_a_rota_exige_token(usuario, monkeypatch):
     r = TestClient(wa_bot.app).post("/painel/jornada/reabrir?k=errado",
                                     json={"confirmo": True})
     assert r.status_code != 200 or not r.json().get("ok")
+
+
+def test_o_fechamento_tambem_e_destravado(usuario):
+    """`d6_fim` e a UNICA mensagem do trial que pede assinatura.
+
+    Nas pessoas do trial original ela ja estava marcada: elas chegariam ao
+    dia 13 sem receber justamente a mensagem que leva a decisao. A chave
+    nao segue o padrao `d<numero>`, entao nao caia na conta das licoes —
+    foi o modo seco, no plano de producao, que mostrou isso.
+    """
+    _no_dia(usuario["id"], 6, "d1,d3,d5,d6_fim,d7")
+    db.reabrir_jornada_futura(seco=False)
+    assert "d6_fim" not in _marcas(usuario["id"])
+    assert {"d1", "d3", "d5"} <= _marcas(usuario["id"])
+
+
+def test_quem_ja_passou_do_fechamento_nao_reabre(usuario):
+    """Depois do dia 13 destravar o fechamento seria mandar de novo."""
+    _no_dia(usuario["id"], trial_guiado.DIA_FECHAMENTO + 2, "d6_fim")
+    db.reabrir_jornada_futura(seco=False)
+    assert "d6_fim" in _marcas(usuario["id"])
