@@ -82,6 +82,124 @@ _MIDIA_MAP = {
 }
 
 
+# A NOTA QUE A META DA PRO NUMERO, lida direto da fonte.
+#
+# O painel tinha um medidor PROPRIO de risco (proativas por resposta), que
+# e heuristica nossa: fomos nos que escolhemos 3.0x como vermelho. A Meta
+# nao olha essa razao — ela olha bloqueio e denuncia, e o resultado disso e
+# o `quality_rating` do numero. Mostrar o nosso indicador e esconder o
+# dela e decidir com o termometro errado.
+#
+# Vem junto o `messaging_limit_tier`: quantas conversas novas por dia o
+# numero pode iniciar. Se ele CAIR, e sinal de que a Meta ja puniu — e o
+# aviso mais antecedente que existe, antes do bloqueio.
+_QUALIDADE_CACHE: dict = {"quando": None, "dados": None}
+QUALIDADE_TTL_S = int(os.environ.get("QUALIDADE_TTL_S", "900"))
+# A FALHA TAMBEM E CACHEADA, com prazo curto.
+#
+# So o sucesso era guardado. Com a Meta fora ou o token vencido, CADA
+# refresh do painel — a cada 20 segundos, sem trégua — refazia a chamada
+# inteira e esperava ate 12 segundos, prendendo uma thread do pool. Nao era
+# so a primeira depois de expirar: eram todas, ate a Meta voltar.
+#
+# Sessenta segundos e o meio-termo: nao martela a Graph API, e quando o
+# token for renovado o painel volta a mostrar a nota em ate um minuto.
+QUALIDADE_ERRO_TTL_S = int(os.environ.get("QUALIDADE_ERRO_TTL_S", "60"))
+
+# O que cada nota significa, em portugues e sem eufemismo.
+_LEITURA = {
+    "GREEN": ("🟢 alta", "As pessoas nao estao bloqueando nem denunciando."),
+    "YELLOW": ("🟡 media", "Comecaram a bloquear ou denunciar. Reduza o "
+                           "volume e melhore a relevancia AGORA."),
+    "RED": ("🔴 baixa", "A Meta ja considera as suas mensagens ruins. O "
+                        "proximo passo dela e limitar ou bloquear o numero."),
+    "UNKNOWN": ("⚪ sem nota", "A Meta ainda nao tem volume pra avaliar."),
+}
+
+
+_NOME_STATUS = {
+    "APPROVED": "aprovado",
+    "PENDING_REVIEW": "em análise",
+    "DECLINED": "recusado",
+    "EXPIRED": "expirado",
+    "AVAILABLE_WITHOUT_REVIEW": "liberado sem análise",
+    "NONE": "sem nome",
+}
+
+
+def qualidade_do_numero(forcar: bool = False) -> dict:
+    """A nota de qualidade e o limite de envio, direto da Meta.
+
+    Cacheada: a nota muda em horas, nao em segundos, e o painel se redesenha
+    a cada 20s — sem cache seriam ~180 chamadas por hora a Graph API pra ler
+    o mesmo valor.
+
+    Nunca levanta. O painel inteiro nao pode cair porque a Meta demorou.
+    """
+    import time
+    agora = time.time()
+    guardado = _QUALIDADE_CACHE["dados"]
+    if not forcar and guardado is not None:
+        # Falha vale por pouco tempo; sucesso, por muito.
+        prazo = (QUALIDADE_TTL_S if guardado.get("ok")
+                 else QUALIDADE_ERRO_TTL_S)
+        if agora - (_QUALIDADE_CACHE["quando"] or 0) < prazo:
+            return guardado
+
+    def _falhou(motivo: str) -> dict:
+        d = {"ok": False, "erro": motivo}
+        _QUALIDADE_CACHE.update({"quando": agora, "dados": d})
+        return d
+
+    if not configurado():
+        return _falhou("Meta nao configurada")
+    try:
+        import httpx
+        r = httpx.get(
+            f"{GRAPH}/{PHONE_NUMBER_ID}",
+            params={"fields": "quality_rating,messaging_limit_tier,"
+                              "name_status,verified_name,display_phone_number"},
+            headers={"Authorization": f"Bearer {META_TOKEN}"},
+            timeout=12.0)
+        if r.status_code != 200:
+            # O corpo do erro da Meta pode trazer o token. Nunca o log.
+            log.warning("[qualidade] Graph respondeu %s", r.status_code)
+            if r.status_code in (401, 403):
+                return _falhou("token da Meta recusado (%s)" % r.status_code)
+            return _falhou("Meta respondeu %s" % r.status_code)
+        j = r.json() or {}
+    except Exception:
+        log.warning("[qualidade] falha ao consultar a Meta", exc_info=True)
+        return _falhou("nao consegui falar com a Meta")
+
+    # CAMPO AUSENTE NAO E "SEM VOLUME".
+    #
+    # `j.get(...) or "UNKNOWN"` tratava as duas coisas igual, e o card dizia
+    # "a Meta ainda nao tem volume pra avaliar" — uma frase tranquilizadora
+    # e possivelmente FALSA. Se o campo sumir por mudanca de contrato da
+    # Meta, o dono precisa saber que a leitura falhou, e nao ser acalmado.
+    if "quality_rating" not in j:
+        return _falhou("a Meta nao devolveu a nota — o campo mudou de nome?")
+    bruto = (j.get("quality_rating") or "UNKNOWN").upper()
+    luz, leitura = _LEITURA.get(bruto, _LEITURA["UNKNOWN"])
+    dados = {
+        "ok": True,
+        "nota": bruto,
+        "luz": luz,
+        "leitura": leitura,
+        # `TIER_1K` -> "1K". Quantas conversas novas por dia o numero pode
+        # iniciar; cair de tier e a Meta punindo antes de bloquear.
+        "limite": (j.get("messaging_limit_tier") or "").replace("TIER_", ""),
+        "nome_aprovado": j.get("verified_name") or "",
+        "status_do_nome": _NOME_STATUS.get(
+            (j.get("name_status") or "").upper(),
+            j.get("name_status") or ""),
+        "numero": j.get("display_phone_number") or "",
+    }
+    _QUALIDADE_CACHE.update({"quando": agora, "dados": dados})
+    return dados
+
+
 def _so_digitos(v) -> str:
     return re.sub(r"\D", "", str(v or ""))
 

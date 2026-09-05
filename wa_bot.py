@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v31.3-o-fechamento-tambem-destrava-2026-09-05"
+BUILD = "v31.4-a-nota-da-meta-no-painel-2026-09-05"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -6930,6 +6930,21 @@ def _plano_das_metas() -> dict:
     return saida
 
 
+def _qualidade_segura() -> dict:
+    """A nota da Meta nunca pode derrubar o painel.
+
+    Ela vem de uma chamada de rede a Graph API. Se a Meta estiver lenta ou
+    fora, o painel continua pintando — so esse card diz que nao conseguiu
+    ler.
+    """
+    try:
+        import meta_cloud as _mc
+        return _mc.qualidade_do_numero()
+    except Exception:
+        log.warning("[qualidade] indisponivel", exc_info=True)
+        return {"ok": False, "erro": "indisponível"}
+
+
 def _fixos_editaveis() -> list:
     """Todos os fixos possiveis, inclusive os zerados.
 
@@ -8768,7 +8783,8 @@ const ABA_DO_CARD={
  'Está no ar? (detalhe)':'sistema',
  'Testar o motor agora':'sistema',
  'Últimas mensagens':'sistema',
- 'O número está em risco?':'sistema'
+ 'O número está em risco?':'sistema',
+ 'Nota da Meta para o número':'sistema'
 };
 const ABAS={};
 // A aba escolhida sobrevive ao redesenho de 20s e a proxima visita.
@@ -8809,7 +8825,13 @@ async function salvarCustos(){
  document.querySelectorAll('[id^="fx_"]').forEach(e=>{
    // virgula e como se digita dinheiro em portugues; sem trocar, o
    // `parseFloat` para no primeiro separador e 1.234,56 vira 1.234.
-   const v=(e.value||'').trim().replace(/\./g,'').replace(',','.');
+   //
+   // `split/join` no lugar de uma regex de ponto escapado, de proposito:
+   // este JS mora dentro de uma string Python, e barra invertida ali e
+   // escape invalido — funciona por acidente e o Python avisa. Sem barra
+   // nenhuma, nao ha acidente pra acontecer. (E este comentario descreve
+   // o escape com palavras pelo mesmo motivo.)
+   const v=(e.value||'').trim().split('.').join('').replace(',','.');
    corpo[e.id.slice(3)] = v===''?0:(parseFloat(v)||0);
  });
  try{
@@ -9052,6 +9074,35 @@ async function carrega(){
    </div>
    <div class="muted" style="font-size:11px;margin-top:9px">
      freio: ${d.freio.ciclo}/ciclo · ${d.freio.intervalo} entre envios · ${d.freio.por_usuario_dia}/pessoa/dia</div>`);
+
+ // A NOTA DA META, e nao so a nossa heuristica.
+ //
+ // O card vizinho ("O numero esta em risco?") mede proativas por resposta,
+ // e esse corte de 3.0x fomos NOS que escolhemos. A Meta nao olha essa
+ // razao: ela olha bloqueio e denuncia, e o resultado e esta nota. Ter so
+ // a nossa e decidir com o termometro errado — e o medo aqui e concreto,
+ // porque o numero ja foi restringido duas vezes.
+ const Q=d.qualidade||{};
+ card('Nota da Meta para o número', Q.ok
+   ? `<div class="st" style="font-size:17px;font-weight:700">${Q.luz}</div>
+      <div class="sub" style="margin:6px 0 10px">${Q.leitura}</div>
+      <div style="font-size:11px;color:#8296b3;margin-bottom:12px;
+        border-left:2px solid #2e7d5b;padding-left:8px">
+        Esta é a nota <b>oficial da Meta</b>. Se ela discordar do card acima,
+        confie nesta — o de cima é heurística nossa (proativas por resposta),
+        e a Meta decide pelo que ela mede: bloqueio e denúncia.</div>
+      <div class="grid">
+        <div class="kpi"><div class="l">Limite de conversas/dia</div>
+          <div class="v">${Q.limite||'—'}</div>
+          <div class="u">cair de faixa = Meta punindo</div></div>
+        <div class="kpi"><div class="l">Nome aprovado</div>
+          <div class="v" style="font-size:15px">${Q.status_do_nome||'—'}</div>
+          <div class="u">${Q.nome_aprovado||''}</div></div>
+      </div>`
+   : `<div class="muted" style="font-size:12px">Não consegui ler a nota
+        agora (${Q.erro||'sem detalhe'}). O painel continua funcionando —
+        só este card depende da API da Meta.</div>`);
+
  // 4. dinheiro — com o aviso do que e estimativa
  const f2=d.financeiro;
  let dec=(f2.decidem_ate_3_dias||[]).map(x=>
@@ -10056,6 +10107,8 @@ document.addEventListener('visibilitychange',()=>{
             # publicado e desligado — sem responder justamente a pergunta
             # que originou a rodada ("a jornada chegou pra eles?").
             "jornada": _seguro_dict(db.cobertura_da_jornada),
+            # A NOTA DA META, e nao so a nossa heuristica. Ver `_qualidade`.
+            "qualidade": _qualidade_segura(),
             "usuarios": db.admin_list_users(),
             "freio": {"ciclo": DISPATCH_MAX_PER_CYCLE,
                       "intervalo": f"{ENVIO_INTERVALO_MIN:.0f}-"
