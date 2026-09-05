@@ -232,7 +232,14 @@ def test_nao_sobrou_licao_escrita_e_nao_usada():
 # `dispatch_proactive`, que era exatamente onde ela morria — sem erro e sem
 # log. Faltando este teste, a suite ficava verde com a jornada muda.
 
-def test_a_licao_sai_de_verdade_com_a_janela_FECHADA(usuario, monkeypatch):
+def test_a_licao_sai_de_verdade_com_a_janela_FECHADA(usuario, horario_util,
+                                                     monkeypatch):
+    """`horario_util` porque o motor silencia das 21h as 8h.
+
+    Sem congelar a hora este teste passa de tarde e falha de manha — e a
+    gente vai procurar defeito onde nao tem. Ja custou sete testes
+    vermelhos de uma vez em 28/08.
+    """
     import datetime as _dt
 
     import db
@@ -243,8 +250,11 @@ def test_a_licao_sai_de_verdade_com_a_janela_FECHADA(usuario, monkeypatch):
     # resolver, e o unico em que o defeito aparecia.
     base = tempo.agora() - _dt.timedelta(days=3)
     with db.get_conn() as c:
-        c.execute("UPDATE users SET trial_base=?, ultima_interacao=? "
-                  "WHERE id=?",
+        # `trial_nudges_sent` NAO e limpo pela fixture, e ele sobrevive
+        # entre execucoes: sem zerar aqui, a segunda rodada do teste nao
+        # tem licao pra mandar e falha por estado, nao por defeito.
+        c.execute("UPDATE users SET trial_base=?, ultima_interacao=?, "
+                  "trial_nudges_sent='' WHERE id=?",
                   (base.strftime("%Y-%m-%d %H:%M:%S"),
                    (tempo.agora() - _dt.timedelta(hours=40)
                     ).strftime("%Y-%m-%d %H:%M:%S"), usuario["id"]))
@@ -290,3 +300,37 @@ def test_todo_card_do_painel_esta_mapeado_numa_aba():
     # 'Erro' e o card de token invalido: ele nao passa por aba nenhuma.
     fora = {c for c in chamadas if c not in mapa} - {"Erro"}
     assert not fora, "cards sem aba declarada: %s" % sorted(fora)
+
+
+def test_etapa_do_desenho_antigo_nao_conta():
+    """A tabela guarda o historico inteiro.
+
+    O desenho velho tinha doze nudges diarios. Somando tudo, quem esta aqui
+    desde antes aparecia como "10/7" — mais etapas do que existem. E o
+    numero que decide se a base experimentou o produto.
+    """
+    import db
+    uid = db.create_user(nome="Antigo", telefone="5511977008877")
+    quando = "2026-09-05T08:00:00"
+    with db.get_conn() as c:
+        for k in ("trial_d1", "trial_d2", "trial_d3", "trial_d4",
+                  "trial_d12"):
+            c.execute("INSERT INTO dispatches (user_id,item_id,kind,sent_at) "
+                      "VALUES (?,?,?,?)", (uid, None, k, quando))
+    try:
+        r = db.cobertura_da_jornada()
+        p = [x for x in r["pessoas"] if x["user_id"] == uid][0]
+        assert p["quais"] == ["trial_d1", "trial_d3"], p["quais"]
+        assert p["etapas_recebidas"] <= r["etapas_possiveis"]
+    finally:
+        with db.get_conn() as c:
+            c.execute("DELETE FROM dispatches WHERE sent_at=?", (quando,))
+            c.execute("DELETE FROM users WHERE id=?", (uid,))
+
+
+def test_ninguem_passa_do_total_de_etapas():
+    """Contagem acima do possivel e painel mentindo."""
+    import db
+    r = db.cobertura_da_jornada()
+    for p in r["pessoas"]:
+        assert p["etapas_recebidas"] <= r["etapas_possiveis"], p

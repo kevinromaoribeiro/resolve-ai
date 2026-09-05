@@ -13,3 +13,8 @@ __pycache__/
 painel_tmp.html
 pulso_tmp.json
 _*.py
+
+# restos de varredura de auditoria
+_allfiles.txt
+_batch.txt
+_serve_dash_local.py

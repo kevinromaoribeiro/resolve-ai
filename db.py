@@ -2563,10 +2563,25 @@ def cobertura_da_jornada() -> dict:
     except Exception:
         return {"pessoas": [], "etapas_possiveis": 0, "sem_nenhuma": 0}
 
+    # SO AS ETAPAS DO DESENHO ATUAL.
+    #
+    # A tabela guarda o historico inteiro, e o desenho antigo tinha doze
+    # nudges diarios (d1 a d12). Somando tudo, quem esta aqui desde antes
+    # aparecia como "10/7" — mais etapas do que existem. Numero que passa
+    # do total nao e so feio: e o painel dizendo que a jornada chegou mais
+    # do que ela pode chegar, justo no numero que decide se a base
+    # experimentou o produto.
+    try:
+        import trial_guiado as _tg
+        atuais = {"trial_d%d" % e["dia"] for e in _tg._ETAPAS} | {"trial_d6"}
+    except Exception:
+        atuais = {"trial_d1", "trial_d3", "trial_d5", "trial_d6",
+                  "trial_d7", "trial_d9", "trial_d11"}
+
     por_pessoa: dict = {}
     for r in envios:
         uid = r["user_id"]
-        if uid is None:
+        if uid is None or r["kind"] not in atuais:
             continue
         por_pessoa.setdefault(int(uid), set()).add(r["kind"])
 
