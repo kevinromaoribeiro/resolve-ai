@@ -66,10 +66,21 @@ def limpo(monkeypatch):
                  # bloqueado por 900s: dali pra frente os vizinhos recebem
                  # 429 onde esperam 401, enquanto o arquivo que limpa o
                  # freio na mao segue verde — escondendo a causa.
-                 "_RECUSAS", "_BLOQUEADOS"):
+                 "_RECUSAS", "_BLOQUEADOS",
+                 # O ENDERECO APRENDIDO. O bot descobre o proprio dominio
+                 # pelo trafego, e no teste o TestClient chega como
+                 # "testserver" — que vazava pro teste seguinte e fazia o
+                 # link do painel apontar pra la.
+                 "_ORIGEM_APRENDIDA"):
         alvo = getattr(wa_bot, nome, None)
         if isinstance(alvo, dict):
             alvo.clear()
+    # O endereco aprendido tambem mora no BANCO, pra sobreviver a deploy.
+    # Limpar so a memoria deixaria o teste seguinte lendo o do anterior.
+    try:
+        db.set_setting("endereco_publico", "")
+    except Exception:
+        pass
     for nome in ("FALHA_JA_LOGADA",):
         alvo = getattr(wa_bot, nome, None)
         if isinstance(alvo, set):

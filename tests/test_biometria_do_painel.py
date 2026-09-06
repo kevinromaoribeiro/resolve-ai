@@ -407,7 +407,11 @@ def test_o_selo_nao_pode_ser_lido_por_javascript(cli):
     cli.get(f"/dash?k={MESTRE}")
     _, r = _registrar(cli)
     assert "httponly" in r.headers.get("set-cookie", "").lower()
-    assert "strict" in r.headers.get("set-cookie", "").lower()
+    # `lax` pelo mesmo motivo do cookie do token: Strict nao viaja quando
+    # a navegacao comeca em outro app, e o link do painel chega pelo
+    # WhatsApp. O CSRF que importa continua fechado — nenhuma rota de
+    # escrita e GET, e a unica que era (o /watchdog) ignora cookie.
+    assert "lax" in r.headers.get("set-cookie", "").lower()
 
 
 def test_selo_forjado_nao_vale(cli):
@@ -734,3 +738,144 @@ def test_o_painel_antigo_tambem_pede_a_digital(cli):
     outro = TestClient(wa_bot.app)
     outro.get(f"/painel?k={MESTRE}")
     assert "Confirme que e voce" in outro.get("/painel").text
+
+
+# --- o link do painel nao pode morrer de novo -------------------------
+
+@pytest.fixture
+def endereco_limpo():
+    db.set_setting("endereco_publico", "")
+    wa_bot._ORIGEM_APRENDIDA["url"] = ""
+    yield
+    db.set_setting("endereco_publico", "")
+    wa_bot._ORIGEM_APRENDIDA["url"] = ""
+
+
+def test_o_bot_aprende_o_proprio_endereco(endereco_limpo, monkeypatch):
+    """O QUE QUEBROU DE VERDADE em producao.
+
+    O link do relatorio saia de `DASH_URL_BASE`, posta a mao. Quando a
+    porta 8000 foi fechada, a variavel continuou apontando pra
+    `http://IP:8000` e o dono recebeu no WhatsApp um link pra um endereco
+    que nao existia mais — tela branca, sem explicacao.
+
+    O defeito de fundo nao foi a porta: foi o endereco depender de
+    alguem lembrar de atualizar uma variavel.
+    """
+    monkeypatch.setattr(wa_bot, "DASH_URL_BASE", "http://177.153.58.163:8000")
+    assert wa_bot.base_do_painel() == "http://177.153.58.163:8000"
+    TestClient(wa_bot.app, base_url="https://bot.example.com").get(
+        f"/health?k={MESTRE}")
+    assert wa_bot.base_do_painel() == "https://bot.example.com"
+
+
+def test_o_endereco_sobrevive_ao_deploy(endereco_limpo, monkeypatch):
+    """Processo reinicia a cada deploy. Se o aprendizado morresse junto,
+    o primeiro relatorio da manha sairia com o endereco velho."""
+    monkeypatch.setattr(wa_bot, "DASH_URL_BASE", "http://177.153.58.163:8000")
+    TestClient(wa_bot.app, base_url="https://bot.example.com").get(
+        f"/health?k={MESTRE}")
+    wa_bot._ORIGEM_APRENDIDA["url"] = ""          # simula o restart
+    assert wa_bot.base_do_painel() == "https://bot.example.com"
+
+
+def test_nao_aprende_de_http_nem_de_IP(endereco_limpo, monkeypatch):
+    """IP e http sao exatamente de onde estamos saindo: sem certificado,
+    e com o cookie do token viajando em texto puro."""
+    monkeypatch.setattr(wa_bot, "DASH_URL_BASE", "http://177.153.58.163:8000")
+    TestClient(wa_bot.app, base_url="http://qualquer.com").get(
+        f"/health?k={MESTRE}")
+    assert wa_bot.base_do_painel() == "http://177.153.58.163:8000"
+    TestClient(wa_bot.app, base_url="https://177.153.58.163").get(
+        f"/health?k={MESTRE}")
+    assert wa_bot.base_do_painel() == "http://177.153.58.163:8000"
+
+
+def test_https_configurado_a_mao_continua_mandando(endereco_limpo,
+                                                   monkeypatch):
+    """Quem configurou https de proposito nao pode ser sobrescrito."""
+    monkeypatch.setattr(wa_bot, "DASH_URL_BASE", "https://escolhido.com")
+    TestClient(wa_bot.app, base_url="https://outro.com").get(
+        f"/health?k={MESTRE}")
+    assert wa_bot.base_do_painel() == "https://escolhido.com"
+
+
+def test_o_relatorio_usa_o_endereco_aprendido(endereco_limpo, monkeypatch):
+    """A prova na ponta: a mensagem que chega no WhatsApp."""
+    monkeypatch.setattr(wa_bot, "DASH_URL_BASE", "http://177.153.58.163:8000")
+    TestClient(wa_bot.app, base_url="https://bot.example.com").get(
+        f"/health?k={MESTRE}")
+    enviados = []
+    monkeypatch.setattr(wa_bot, "ADMIN_PHONE", "5511999999999")
+    manha = wa_bot.tempo.agora().replace(hour=9, minute=0)
+    monkeypatch.setattr(wa_bot.tempo, "agora", lambda *a, **k: manha)
+    monkeypatch.setattr(wa_bot.db, "dispatched_today", lambda *a, **k: False)
+    monkeypatch.setattr(wa_bot.db, "log_dispatch", lambda *a, **k: None)
+    monkeypatch.setattr(
+        wa_bot, "_enviar_com_botao",
+        lambda tel, txt, *a, **k: (enviados.append(txt), True)[1])
+    wa_bot.relatorio_matinal()
+    assert enviados
+    assert "https://bot.example.com/dash?k=" in enviados[0], enviados[0]
+    assert "177.153.58.163:8000" not in enviados[0]
+
+
+# --- envenenar o endereco: o BLOQUEADOR da auditoria ------------------
+
+HOSTIS = [
+    "evil.com",                        # o basico
+    "dono@evil.com",                   # o navegador ignora o que vem antes
+    "evil.com/painel.resolveai.ia.br",  # o dono LE o dominio dele e clica
+    "evil.com?", "evil.com#",          # lixo de URL
+    "evil.com x",                      # espaco
+    "xn--vil-9ma.com",                 # punycode parecido
+    "-evil.com", "evil.com.", "..",    # host malformado
+]
+
+
+@pytest.mark.parametrize("host", HOSTIS)
+def test_estranho_nao_envenena_o_endereco_do_painel(endereco_limpo,
+                                                    monkeypatch, host):
+    """O pior desfecho possivel desta feature.
+
+    O endereco aprendido vira LINK COM TOKEN, mandado pelo WhatsApp do
+    proprio bot. Se um estranho pudesse escolher o `Host`, o dono
+    receberia — do canal em que ele confia — um link pro site do
+    atacante. Seria pior que o problema que isto veio resolver.
+
+    Confiar so na porta 8000 estar fechada nao servia: o rollback dela
+    esta documentado como procedimento de emergencia, entao a protecao
+    sumiria justamente no dia ruim.
+    """
+    monkeypatch.setattr(wa_bot, "DASH_URL_BASE", "")
+    try:
+        TestClient(wa_bot.app, base_url="https://x").get(
+            "/health", headers={"host": host})
+    except Exception:
+        pass                       # host que nem trafega ja esta barrado
+    assert wa_bot.base_do_painel() == "", f"{host!r} envenenou o endereco"
+
+
+def test_nem_com_o_token_um_host_torto_passa(endereco_limpo, monkeypatch):
+    """Cinto e suspensorio: se a sessao do dono for usada de um lugar
+    estranho, o formato ainda barra."""
+    monkeypatch.setattr(wa_bot, "DASH_URL_BASE", "")
+    for host in ("evil.com/x", "a@b.com", "com espaco"):
+        wa_bot._ORIGEM_APRENDIDA.clear()
+        db.set_setting("endereco_publico", "")
+        try:
+            TestClient(wa_bot.app, base_url="https://x").get(
+                f"/health?k={MESTRE}", headers={"host": host})
+        except Exception:
+            pass
+        assert wa_bot.base_do_painel() == "", host
+
+
+def test_quem_tem_o_token_ensina_o_endereco_certo(endereco_limpo,
+                                                  monkeypatch):
+    """A trava nao pode ter matado o que a feature existe pra fazer: o
+    dono abre o painel pelo dominio e o endereco se ensina sozinho."""
+    monkeypatch.setattr(wa_bot, "DASH_URL_BASE", "http://177.153.58.163:8000")
+    TestClient(wa_bot.app, base_url="https://x").get(
+        f"/health?k={MESTRE}", headers={"host": "painel.resolveai.ia.br"})
+    assert wa_bot.base_do_painel() == "https://painel.resolveai.ia.br"

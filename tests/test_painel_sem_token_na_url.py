@@ -142,15 +142,36 @@ def test_o_cookie_nao_pode_ser_lido_por_javascript(cli):
     assert "httponly" in _cookie_cru(r).lower()
 
 
-def test_o_cookie_nao_viaja_em_requisicao_de_fora(cli):
-    """Trocar header por cookie abre CSRF. SameSite=Strict e o que fecha.
+def test_o_cookie_nao_viaja_em_POST_vindo_de_fora(cli):
+    """Trocar header por cookie abre CSRF. SameSite e o que fecha.
 
     Sem isto, um site qualquer que o dono abrisse poderia postar em
     /painel/lote e disparar mensagem pra base inteira usando o cookie
     dele — sem nunca ver o token.
+
+    E `lax`, nao `strict`, e a diferenca custou um painel em branco:
+    Strict nao manda o cookie quando a navegacao comeca em OUTRO app, e o
+    link do relatorio chega pelo WhatsApp. O cookie era gravado no
+    primeiro passo e nao voltava no redirecionamento — o dono clicava e
+    via tela vazia.
+
+    Lax fecha o que importa: nao viaja em POST vindo de fora, e toda rota
+    de escrita do painel e POST.
     """
-    assert "strict" in _cookie_cru(
+    assert "lax" in _cookie_cru(
         cli.get(f"/dash?k={MESTRE}", follow_redirects=False)).lower()
+
+
+def test_a_unica_rota_GET_que_escreve_ignora_o_cookie(cli):
+    """O /watchdog reinicia a sessao do WhatsApp.
+
+    Com o cookie em Lax, um site qualquer poderia levar o dono pra ca por
+    navegacao e disparar o reinicio usando o cookie dele. Exigir o token
+    explicito fecha: Lax manda cookie, nao manda parametro.
+    """
+    cli.get(f"/dash?k={MESTRE}")           # fica com o cookie valido
+    assert cli.get("/watchdog").status_code == 401
+    assert cli.get(f"/watchdog?k={MESTRE}").status_code == 200
 
 
 def test_em_https_o_cookie_so_anda_em_https(cli):

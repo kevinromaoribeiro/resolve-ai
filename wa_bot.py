@@ -55,7 +55,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v33.0-biometria-e-blindagem-2026-09-06"
+BUILD = "v33.1-link-do-painel-vivo-2026-09-06"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -456,10 +456,18 @@ def _cookie_do_painel(resposta, tok: str, https: bool) -> bool:
     """Poe o token no cookie e tira ele da URL.
 
     `httponly` porque nenhum JS precisa ler isso — e se um XSS entrar, nao
-    leva o token junto. `samesite=strict` porque trocar header por cookie
-    abriria CSRF: um site qualquer poderia postar em /painel/lote usando o
-    cookie do navegador. Strict impede o cookie de viajar em requisicao
-    vinda de fora.
+    leva o token junto.
+
+    `samesite=lax`, e NAO strict, e a diferenca custou um painel em
+    branco. Com Strict o navegador NAO manda o cookie quando a navegacao
+    comeca em outro app — e o link do relatorio chega pelo WhatsApp. O
+    cookie era gravado no primeiro passo e nao voltava no redirecionamento
+    seguinte: o dono clicava e via tela vazia, sem nada explicando.
+
+    Lax continua fechando o CSRF que importa: ele nao viaja em POST vindo
+    de fora, e TODA rota de escrita do painel e POST com corpo JSON. A
+    unica GET que escrevia era o /watchdog, que agora exige o token
+    explicito e ignora cookie.
     """
     # O header `Set-Cookie` e serializado em latin-1. Um token com € ou
     # emoji levanta UnicodeEncodeError DEPOIS da autenticacao ter passado —
@@ -472,7 +480,7 @@ def _cookie_do_painel(resposta, tok: str, https: bool) -> bool:
         return False
     resposta.set_cookie(
         COOKIE_PAINEL, tok, max_age=_vida_do_cookie(tok), httponly=True,
-        samesite="strict", secure=https, path="/")
+        samesite="lax", secure=https, path="/")
     return True
 
 
@@ -706,6 +714,96 @@ if (!window.PublicKeyCredential) {
 </script></body></html>"""
 
 
+# O ENDERECO PUBLICO, APRENDIDO DO TRAFEGO REAL.
+#
+# O link do relatorio diario saia de `DASH_URL_BASE`, uma variavel posta
+# a mao. Quando a gente fechou a porta 8000, ela continuou apontando pra
+# `http://IP:8000` — e o dono recebeu no WhatsApp um link pra um endereco
+# que nao existia mais. Tela branca, sem explicacao nenhuma.
+#
+# O defeito de fundo nao foi a porta: foi o endereco do painel depender
+# de alguem lembrar de atualizar uma variavel. Aqui o bot descobre
+# sozinho por onde as pessoas chegam nele.
+_ORIGEM_APRENDIDA = {"url": ""}
+
+
+#: Nome de dominio de verdade, e nada alem disso.
+#:
+#: Sem esta regua o `Host` entrava quase cru no link. Passavam:
+#: `dono@evil.com` (o navegador ignora o que vem antes do @),
+#: `evil.com/painel.resolveai.ia.br` — o pior, porque o dono LE o dominio
+#: dele e esta clicando dentro do site do atacante —, `evil.com?`,
+#: `evil.com#` e host com espaco. Seis jeitos de virar link de phishing.
+_HOST_DE_VERDADE = re.compile(
+    r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+
+
+def _aprender_endereco(request) -> None:
+    """Guarda o dominio por onde a requisicao chegou, se for confiavel.
+
+    DUAS TRAVAS, e a primeira e a que importa.
+
+    1. SO APRENDE DE QUEM TEM O TOKEN. O `Host` e escolhido pelo cliente,
+       e este endereco vira link COM TOKEN dentro, mandado pelo WhatsApp
+       do proprio bot. Sem esta linha, um estranho envenenava o endereco e
+       o dono recebia, do canal em que ele confia, um link pro site do
+       atacante — pior que o problema que isto veio resolver.
+
+       Confiar na porta fechada nao servia: o rollback dela esta
+       documentado como procedimento de emergencia, entao a protecao
+       sumiria justamente no dia ruim.
+
+    2. So HTTPS e so nome de dominio de verdade. IP, porta e lixo de URL
+       ficam de fora — e exatamente deles que a gente esta saindo.
+    """
+    try:
+        if not _primeiro_fator_ok(request):
+            return
+        if not _e_https(request):
+            return
+        host = (request.headers.get("host") or "").split(",")[0].strip()
+        if not host or ":" in host or len(host) > 100:
+            return
+        if not _HOST_DE_VERDADE.fullmatch(host.lower()):
+            return  # `@`, `/`, `?`, `#`, espaco: nada disso e dominio
+        if re.fullmatch(r"[\d.]+", host):
+            # IP PASSA na regra de dominio (digito e ponto sao validos), e
+            # meu proprio teste pegou isso. Mas IP nao tem certificado nem
+            # serve de ancora pra passkey — e e dele que estamos saindo.
+            return
+        nova = f"https://{host.lower()}"
+        if nova == _ORIGEM_APRENDIDA.get("url"):
+            return
+        _ORIGEM_APRENDIDA["url"] = nova
+        # Persiste: sem isso, o primeiro relatorio depois de um deploy
+        # sairia com o endereco velho, porque o processo acabou de subir.
+        db.set_setting("endereco_publico", nova)
+    except Exception:
+        log.warning("[endereco] nao consegui aprender", exc_info=True)
+
+
+def base_do_painel() -> str:
+    """O endereco que o dono vai CLICAR. Prefere o aprendido por https.
+
+    Ordem: o que o trafego real mostrou > o que esta na variavel. O
+    aprendido ganha do `DASH_URL_BASE` quando este e http, porque link de
+    painel em http faz o cookie com o token viajar em texto puro.
+    """
+    # `.get`, e nao `["url"]`: a limpeza entre testes zera o dicionario
+    # inteiro, e ler chave que nao existe derrubaria o relatorio.
+    if not _ORIGEM_APRENDIDA.get("url"):
+        try:
+            _ORIGEM_APRENDIDA["url"] = db.get_setting(
+                "endereco_publico") or ""
+        except Exception:
+            pass
+    aprendida = _ORIGEM_APRENDIDA.get("url") or ""
+    configurada = (DASH_URL_BASE or "").rstrip("/")
+    if aprendida and (not configurada or configurada.startswith("http://")):
+        return aprendida
+    return configurada
+
+
 def _tela_dos_aparelhos(aparelhos: list) -> str:
     """Lista os aparelhos autorizados e deixa cadastrar outro.
 
@@ -835,7 +933,7 @@ def _selar_aparelho(resposta, cred_id: str, https: bool) -> None:
     """
     resposta.set_cookie(
         COOKIE_PASSKEY, _selo_do_aparelho(cred_id),
-        max_age=PASSKEY_DIAS * 86400, httponly=True, samesite="strict",
+        max_age=PASSKEY_DIAS * 86400, httponly=True, samesite="lax",
         secure=https, path="/")
 
 
@@ -7067,7 +7165,7 @@ def link_do_painel() -> str:
     descartado. A variavel serve pra dizer o endereco, nao a senha.
     """
     import urllib.parse as _up
-    base = (DASH_URL_BASE or "").rstrip("/")
+    base = base_do_painel().rstrip("/")
     if not base:
         crua = (PAINEL_URL_DICA or "").strip()
         partes = _up.urlsplit(crua)
@@ -8140,12 +8238,13 @@ def relatorio_matinal() -> bool:
             linha_dinheiro += (f" · empata com "
                                f"{fin['breakeven_assinantes']}")
         linhas.append(linha_dinheiro)
-    if DASH_URL_BASE and PAINEL_TOKEN:
+    _base = base_do_painel()
+    if _base and PAINEL_TOKEN:
         # LINK QUE MORRE SOZINHO. O relatorio sai todo dia no WhatsApp e o
         # dono tira print dele; mandar a senha eterna nesse link e entregar
         # o painel a quem vir a imagem. Este vence em poucos dias e nao
         # revela o token mestre.
-        linhas.append(f"📊 {DASH_URL_BASE}/dash?k={token_temporario()}")
+        linhas.append(f"📊 {_base}/dash?k={token_temporario()}")
 
     if _enviar_com_botao(re.sub(r"\D", "", ADMIN_PHONE), "\n".join(linhas)):
         db.log_dispatch(admin_id, "dash-manha")
@@ -8747,6 +8846,7 @@ try:
         - `HSTS` obriga https nas proximas visitas — so faz sentido, e so e
           mandado, quando a conexao ja veio por https.
         """
+        _aprender_endereco(request)
         r = await chamar(request)
         r.headers.setdefault("X-Frame-Options", "DENY")
         r.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -9413,8 +9513,22 @@ try:
         """Vigia de auto-recuperação. Chame a cada 1-2 min no cron-job.org
         usando .../watchdog?k=SEU_PAINEL_TOKEN.
         Se a sessão do WhatsApp travar, reinicia sozinho e avisa o admin.
-        Exige token: ele pode reiniciar a sessão do WhatsApp."""
-        if not _painel_autorizado(request):
+        Exige token: ele pode reiniciar a sessão do WhatsApp.
+
+        AQUI O COOKIE NAO VALE, so o token explicito.
+
+        Esta e a unica rota GET que ESCREVE — ela reinicia a sessao do
+        WhatsApp. Com o cookie do painel em `SameSite=Lax` (necessario pra
+        o link do relatorio abrir vindo do WhatsApp), um site qualquer
+        poderia levar o dono pra ca por navegacao e disparar o reinicio
+        usando o cookie dele. Exigindo o token na URL ou no header, isso
+        fecha: `Lax` manda cookie, nao manda parametro.
+
+        Quem chama isto e o cron-job.org, que ja usa `?k=`.
+        """
+        if not _credencial_vale(str(request.query_params.get("k") or "")) \
+                and not _credencial_vale(
+                    str(request.headers.get("x-painel-token") or "")):
             return _negado(request)
         return watchdog_check()
 
