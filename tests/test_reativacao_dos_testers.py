@@ -24,6 +24,17 @@ import wa_bot
 from conftest import TELEFONE, responder
 
 
+def _health(cliente):
+    """O /health COM credencial.
+
+    O corpo detalhado deixou de ser publico: tamanho da base, ritmo de
+    envio, nomes de template e o que esta ligado sao reconhecimento de
+    graça pra quem estiver olhando. Sem token sobra o que o monitor
+    externo precisa, e o monitor le o codigo HTTP, nao o corpo.
+    """
+    return cliente.get(f"/health?k={wa_bot.PAINEL_TOKEN}").json()
+
+
 @pytest.fixture
 def ligada(monkeypatch):
     monkeypatch.setattr(scheduler, "REATIVAR_TESTERS", True)
@@ -531,11 +542,11 @@ def test_o_health_diz_se_o_template_esta_liberado(usuario, monkeypatch):
     c = TestClient(wa_bot.app)
 
     monkeypatch.setenv("TEMPLATES_APROVADOS", "outro_qualquer")
-    assert "reativacao" in c.get("/health").json()["templates"]["faltando"]
+    assert "reativacao" in _health(c)["templates"]["faltando"]
 
     monkeypatch.setenv("TEMPLATES_APROVADOS",
                        "outro_qualquer, reativar_boas_vindas")
-    assert "reativacao" in c.get("/health").json()["templates"]["liberados"]
+    assert "reativacao" in _health(c)["templates"]["liberados"]
 
 
 def test_o_ciclo_proativo_aparece_no_health(usuario, ligada, monkeypatch):
@@ -545,12 +556,12 @@ def test_o_ciclo_proativo_aparece_no_health(usuario, ligada, monkeypatch):
     from fastapi.testclient import TestClient
     wa_bot.ULTIMO_CICLO.clear()
     c = TestClient(wa_bot.app)
-    assert c.get("/health").json()["ciclo"] == "AINDA NAO RODOU"
+    assert _health(c)["ciclo"] == "AINDA NAO RODOU"
 
     monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MIN", 0.0)
     monkeypatch.setattr(wa_bot, "ENVIO_INTERVALO_MAX", 0.0)
     wa_bot.dispatch_proactive()
-    ciclo = c.get("/health").json()["ciclo"]
+    ciclo = _health(c)["ciclo"]
     assert "quando" in ciclo and "candidatos" in ciclo, ciclo
     assert isinstance(ciclo.get("enviados"), int), ciclo
 

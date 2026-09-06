@@ -58,7 +58,15 @@ def limpo(monkeypatch):
                  # arquivo e nao o vizinho — e vazamento de slot foi o que
                  # escondeu dois defeitos nesta fase.
                  "PODCAST_PERGUNTA", "PODCAST_FREQ_PERGUNTA",
-                 "PODCAST_AMOSTRA_PERGUNTA"):
+                 "PODCAST_AMOSTRA_PERGUNTA",
+                 # O FREIO DO PAINEL. Ele conta recusa por origem, e no
+                 # teste TODO cliente e "testclient" — uma origem so pra
+                 # suite inteira. Os testes negativos espalhados por varios
+                 # arquivos somam, e ao cruzar as 20 o `testclient` fica
+                 # bloqueado por 900s: dali pra frente os vizinhos recebem
+                 # 429 onde esperam 401, enquanto o arquivo que limpa o
+                 # freio na mao segue verde — escondendo a causa.
+                 "_RECUSAS", "_BLOQUEADOS"):
         alvo = getattr(wa_bot, nome, None)
         if isinstance(alvo, dict):
             alvo.clear()

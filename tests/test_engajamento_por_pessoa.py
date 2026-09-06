@@ -183,7 +183,10 @@ def test_disparo_sem_user_id_nao_quebra(usuario, sem_espera, monkeypatch):
 def test_o_health_conta_quem_sumiu_sem_dado_pessoal(usuario, monkeypatch):
     from fastapi.testclient import TestClient
     _calou(usuario, 9)
-    v = TestClient(wa_bot.app).get("/health").json()["sem_responder"]
+    # O /health so mostra isto COM credencial: contagem de base e
+    # reconhecimento pra quem estiver olhando de fora.
+    v = TestClient(wa_bot.app).get(
+        f"/health?k={wa_bot.PAINEL_TOKEN}").json()["sem_responder"]
     assert isinstance(v, int) and v >= 1
 
 

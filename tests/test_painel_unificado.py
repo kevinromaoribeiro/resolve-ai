@@ -22,21 +22,36 @@ def _cli(monkeypatch):
 def test_painel_antigo_leva_pro_novo(monkeypatch):
     r = _cli(monkeypatch).get("/painel?k=tok", follow_redirects=False)
     assert r.status_code == 302
-    assert r.headers["location"] == "/dash?k=tok"
+    assert r.headers["location"] == "/dash"
+    # O token nao viaja mais na URL de destino: vai no cookie. Este teste
+    # exigia o contrario (`/dash?k=tok`) porque reescrever o token no
+    # destino era a unica forma de o dono seguir autenticado.
+    assert "k=" not in r.headers["location"]
 
 
-def test_o_token_viaja_no_redirecionamento(monkeypatch):
-    """Sem levar o token junto, o dono cai num painel que pede token.
+def test_o_dono_continua_entrando_depois_do_redirecionamento(monkeypatch):
+    """A preocupacao antiga, valendo pro desenho novo.
 
-    A barra e escapada de proposito: sem isso ela viraria outro caminho na
-    URL de destino e o token chegaria cortado.
+    Antes: sem levar o token na URL de destino, o dono cairia num painel
+    que pede token. Agora ele viaja no cookie — e o que importa verificar
+    continua sendo o mesmo: ele ENTRA.
     """
-    monkeypatch.setattr(wa_bot, "PAINEL_TOKEN", "abc/def_123")
+    assert _cli(monkeypatch).get("/painel?k=tok").status_code == 200
+
+
+def test_token_com_caractere_esquisito_sobrevive(monkeypatch):
+    """A barra era escapada de proposito na URL; no cookie o risco muda.
+
+    Valor de cookie tem regra propria de caracteres. Se o token do dono
+    tiver barra, ponto-e-virgula, aspas ou espaco e a serializacao cortar,
+    ele perde o painel — e o sintoma seria "parou de abrir", sem pista.
+    """
     from fastapi.testclient import TestClient
-    r = TestClient(wa_bot.app).get("/painel?k=abc/def_123",
-                                   follow_redirects=False)
-    assert r.status_code == 302
-    assert "abc%2Fdef_123" in r.headers["location"]
+    for feio in ("abc/def_123", "a b;c", 'as"pas', "acento-cao", "a,b"):
+        monkeypatch.setattr(wa_bot, "PAINEL_TOKEN", feio)
+        c = TestClient(wa_bot.app)
+        assert c.get("/painel?k=" + feio).status_code == 200, feio
+        assert c.get("/dash").status_code == 200, f"cookie perdeu: {feio}"
 
 
 def test_a_saida_de_emergencia_abre_a_tela_velha(monkeypatch):

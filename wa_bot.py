@@ -54,7 +54,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v31.4-a-nota-da-meta-no-painel-2026-09-05"
+BUILD = "v32.0-arsenal-de-seguranca-2026-09-05"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -291,16 +291,426 @@ ADMIN_PHONE = re.sub(r"\D", "", os.environ.get("ADMIN_PHONE", ""))
 PAINEL_TOKEN = os.environ.get("PAINEL_TOKEN", "").strip()
 
 
-def _painel_autorizado(request) -> bool:
-    """Token via ?k=... (para abrir no navegador) ou header X-Painel-Token
-    (para o JS da própria página). Comparação em tempo constante."""
+# NOME DO COOKIE que substitui o token na URL depois do primeiro acesso.
+COOKIE_PAINEL = "resolveai_painel"
+
+
+def _dias_do_ambiente(nome: str, padrao: int) -> int:
+    """Le um numero de dias do ambiente sem derrubar o bot se vier torto.
+
+    `int(os.environ[...])` direto no import faz um valor com espaco ou
+    virgula matar a subida do processo inteiro — o bot fica mudo pra 15
+    pessoas por causa de uma variavel de painel. E `0` aqui nao e um valor
+    razoavel: zeraria a validade do link, que nasceria vencido.
+    """
+    try:
+        v = int(str(os.environ.get(nome, "")).strip())
+        return v if v > 0 else padrao
+    except (TypeError, ValueError):
+        return padrao
+
+
+# Quanto tempo o navegador continua entrando sem o token na URL.
+COOKIE_DIAS = _dias_do_ambiente("PAINEL_COOKIE_DIAS", 30)
+# Validade do link que vai no relatorio diario. Oito dias pra sobreviver ate
+# o relatorio seguinte, e nao mais que isso.
+LINK_DIAS = _dias_do_ambiente("PAINEL_LINK_DIAS", 8)
+# Tamanho fixo da assinatura, em bytes. Fixo pra poder cortar por posicao.
+TAM_ASSINATURA = 16
+
+# O QUE O /health MOSTRA SEM CREDENCIAL. Deliberadamente curto: o monitor
+# externo decide pelo codigo HTTP, nao pelo corpo, e `build` fica porque
+# responder "o deploy subiu?" sem abrir nada ja evitou tempo perdido aqui.
+# Todo o resto — tamanho da base, ritmo de envio, nomes de template, o que
+# esta ligado — e reconhecimento de graça pra quem estiver olhando.
+ABERTO_NO_HEALTH = ("status", "whatsapp", "build")
+
+
+def token_temporario(dias: int = 0) -> str:
+    """Um token que MORRE SOZINHO, pra links que saem de casa.
+
+    O token do painel e senha unica e eterna, e ele viajava na URL do
+    relatorio diario — ou seja, no historico do navegador e em todo print
+    que o dono tira da tela. Nao precisa de invasor: precisa de um print no
+    lugar errado.
+
+    Este aqui carrega a data de validade e uma assinatura feita com o token
+    mestre. Quem interceptar consegue usar ate vencer, e nao consegue
+    derivar o mestre a partir dele.
+    """
+    import base64
+    import hashlib
+    import hmac
+    if not PAINEL_TOKEN:
+        return ""
+    venc = int(tempo.agora().timestamp()) + (dias or LINK_DIAS) * 86400
+    corpo = str(venc).encode()
+    assinatura = hmac.new(PAINEL_TOKEN.encode(), corpo,
+                          hashlib.sha256).digest()[:TAM_ASSINATURA]
+    # SEM SEPARADOR entre as duas partes. A assinatura sao bytes crus e
+    # pode conter o byte de qualquer separador que eu escolhesse — foi o
+    # que aconteceu: com um `.` no meio, ~6% dos tokens nasciam invalidos
+    # e o link do relatorio simplesmente nao abria, um dia sim outro nao.
+    # Como a assinatura tem tamanho fixo, corta por posicao.
+    return base64.urlsafe_b64encode(corpo + assinatura).decode()
+
+
+def _token_temporario_valido(enviado: str) -> bool:
+    """Confere assinatura E validade. Qualquer falha = nao autorizado."""
+    import base64
+    import hashlib
+    import hmac
     import secrets
+    if not PAINEL_TOKEN or not enviado:
+        return False
+    try:
+        bruto = base64.urlsafe_b64decode(enviado.encode())
+        corpo, assinatura = bruto[:-TAM_ASSINATURA], bruto[-TAM_ASSINATURA:]
+        esperada = hmac.new(PAINEL_TOKEN.encode(), corpo,
+                            hashlib.sha256).digest()[:TAM_ASSINATURA]
+        if not secrets.compare_digest(assinatura, esperada):
+            return False
+        return int(corpo) > int(tempo.agora().timestamp())
+    except Exception:
+        # Token malformado e token invalido. Sem log do valor.
+        return False
+
+
+def _credencial_vale(enviado: str) -> bool:
+    """UNICO lugar que decide se uma credencial abre o painel.
+
+    Serve pro `?k=`, pro header e pro cookie — os tres passam por aqui, pra
+    nao existir um caminho conferido de um jeito e outro de outro.
+
+    A comparacao e feita em BYTES: `compare_digest` com duas `str` levanta
+    TypeError se qualquer uma tiver caractere nao-ASCII, e o `/health` e
+    publico — bastava mandar `?k=é` pra virar 500 e simular "bot caido".
+    Um token com acento no ambiente derrubaria o painel pra sempre.
+    """
+    import secrets
+    if not PAINEL_TOKEN or not enviado:
+        return False
+    if secrets.compare_digest(str(enviado).encode("utf-8", "replace"),
+                              PAINEL_TOKEN.encode("utf-8", "replace")):
+        return True
+    return _token_temporario_valido(str(enviado))
+
+
+def _vida_do_cookie(tok: str) -> int:
+    """Cookie NAO pode durar mais que o token que ele guarda.
+
+    Se durar, o navegador segue mandando um token ja vencido e o painel
+    responde 401 sem explicar — vira "o painel parou de abrir". Melhor o
+    cookie morrer junto e o dono simplesmente clicar no link do dia.
+    """
+    import base64
+    teto = COOKIE_DIAS * 86400
+    try:
+        corpo = base64.urlsafe_b64decode(tok.encode())[:-TAM_ASSINATURA]
+        resta = int(corpo) - int(tempo.agora().timestamp())
+        return max(0, min(teto, resta))
+    except Exception:
+        return teto  # token mestre: nao vence
+
+
+def _e_https(request) -> bool:
+    """Se a conexao do NAVEGADOR ate aqui foi https.
+
+    `request.url.scheme` sozinho nao serve em producao: o app roda atras de
+    um proxy em outro container, e o uvicorn so confia no `X-Forwarded-Proto`
+    de IPs listados em `forwarded_allow_ips` (que cai em 127.0.0.1). O
+    resultado seria o cookie com o token saindo SEM `Secure` mesmo com o
+    dono acessando por https.
+    """
+    if str(request.url.scheme).startswith("https"):
+        return True
+    try:
+        veio = request.headers.get("x-forwarded-proto") or ""
+    except Exception:
+        return False
+    # Pode vir uma cadeia ("https, http"); o primeiro e o do navegador.
+    return veio.split(",")[0].strip().lower() == "https"
+
+
+def _cookie_do_painel(resposta, tok: str, https: bool) -> bool:
+    """Poe o token no cookie e tira ele da URL.
+
+    `httponly` porque nenhum JS precisa ler isso — e se um XSS entrar, nao
+    leva o token junto. `samesite=strict` porque trocar header por cookie
+    abriria CSRF: um site qualquer poderia postar em /painel/lote usando o
+    cookie do navegador. Strict impede o cookie de viajar em requisicao
+    vinda de fora.
+    """
+    # O header `Set-Cookie` e serializado em latin-1. Um token com € ou
+    # emoji levanta UnicodeEncodeError DEPOIS da autenticacao ter passado —
+    # 500 na cara do dono, no exato momento em que ele acertou a senha.
+    # `_credencial_vale` ja foi blindado contra nao-ASCII; este era o passo
+    # seguinte, que ficou de fora.
+    try:
+        tok.encode("latin-1")
+    except (UnicodeEncodeError, AttributeError):
+        return False
+    resposta.set_cookie(
+        COOKIE_PAINEL, tok, max_age=_vida_do_cookie(tok), httponly=True,
+        samesite="strict", secure=https, path="/")
+    return True
+
+
+def _limpa_a_url(request, destino: str):
+    """Se veio token VALIDO na URL, guarda no cookie e recarrega sem ele.
+
+    O "valido" e a parte que importa, e ela custou um bloqueio na auditoria.
+    A primeira versao gravava no cookie qualquer `?k=` que chegasse, sem
+    conferir — e a entrada ja podia ter sido autorizada PELO COOKIE. Entao
+    o dono rolava o WhatsApp, tocava no link do relatorio de nove dias
+    atras, e esse token vencido sobrescrevia a sessao boa: cookie com
+    Max-Age=0, cookie apagado, painel em 401 sem explicacao nenhuma. Um
+    `?k=` qualquer fazia pior — cookie de 30 dias guardando lixo.
+
+    Agora um `?k=` que nao vale por si nao encosta no cookie: a URL e
+    limpa do mesmo jeito e quem estava dentro continua dentro.
+    """
+    tok = request.query_params.get("k")
+    if not tok:
+        return None
+    from fastapi.responses import RedirectResponse
+    r = RedirectResponse(destino, status_code=302)
+    if _credencial_vale(str(tok)):
+        # NAO REBAIXA UMA SESSAO MELHOR.
+        #
+        # A primeira correcao so barrou token INVALIDO. Mas um temporario
+        # ainda valido e quase vencido tambem estraga: o dono toca no link
+        # do relatorio no ultimo dia do prazo e a sessao de 30 dias vira
+        # uma de 30 segundos. Mesmo sintoma de antes — "o painel parou de
+        # abrir" —, so que mais dificil de reproduzir.
+        try:
+            atual = request.cookies.get(COOKIE_PAINEL) or ""
+        except Exception:
+            atual = ""
+        if (atual and _credencial_vale(atual)
+                and _vida_do_cookie(atual) > _vida_do_cookie(str(tok))):
+            return r
+        if not _cookie_do_painel(r, str(tok), _e_https(request)):
+            # Nao coube no cookie (token com € ou emoji: `Set-Cookie` e
+            # latin-1). Redirecionar assim mesmo tiraria a credencial da
+            # URL sem por nada no lugar — o dono acertaria a senha e
+            # cairia num 401. Melhor manter o token na URL: e pior pra
+            # privacidade, mas o painel abre.
+            return None
+    return r
+
+
+def _painel_autorizado(request) -> bool:
+    """Quem pode abrir o painel.
+
+    Tres formas, todas conferidas pelo mesmo `_credencial_vale`:
+      - `?k=` na URL — o token mestre ou um temporario ainda valido;
+      - header `X-Painel-Token` — o JS da propria pagina;
+      - cookie — posto no primeiro acesso, pra o token SAIR da URL.
+
+    As tres sao tentadas INDEPENDENTEMENTE. Encadear com `or` fazia um
+    `?k=` vazio ou errado esconder um header valido — armadilha pronta pra
+    proxima mudanca no JS.
+
+    O cookie existe porque o token na URL vaza sem invasor nenhum: fica no
+    historico, no print e no link encaminhado.
+    """
     if not PAINEL_TOKEN:
         return False
-    enviado = (request.query_params.get("k")
-               or request.headers.get("x-painel-token")
-               or "")
-    return secrets.compare_digest(str(enviado), PAINEL_TOKEN)
+    try:
+        do_cookie = request.cookies.get(COOKIE_PAINEL) or ""
+    except Exception:
+        do_cookie = ""
+    # A CREDENCIAL E CONFERIDA ANTES DO BLOQUEIO, de proposito.
+    #
+    # O freio conta por origem, e atras do proxy pode nao existir origem
+    # separada: se o `X-Forwarded-For` faltar, o mundo inteiro vira um IP
+    # so e o primeiro atacante trancaria o DONO junto com ele — perder o
+    # painel por causa da protecao do painel. Conferindo o token primeiro,
+    # quem tem a chave entra sempre.
+    #
+    # Isso nao devolve forca bruta pra mesa: quem erra cai no bloqueio logo
+    # abaixo e passa a levar 429 sem chegar a ser conferido.
+    if any(_credencial_vale(str(c or "")) for c in (
+            request.query_params.get("k"),
+            request.headers.get("x-painel-token"),
+            do_cookie)):
+        # NAO ZERA O CONTADOR AO ACERTAR.
+        #
+        # A versao anterior zerava, com a ideia de nao punir o dono que
+        # errasse algumas vezes antes de entrar. So que atras do proxy a
+        # origem e a MESMA pra todo mundo: o dono entrando destrancava o
+        # atacante junto, e o freio virava "20 tentativas por login do
+        # dono". E zerar nunca foi necessario — o dono nao depende disto,
+        # porque a credencial e conferida antes do bloqueio, logo acima.
+        return True
+    return False
+
+
+# TENTATIVAS RECUSADAS, por origem. Cada entrada e uma lista de horarios.
+# Memoria de processo: um restart zera, e tudo bem — isto e alarme e freio
+# de forca bruta, nao auditoria.
+_RECUSAS: dict[str, list] = {}
+# Quantas recusas da mesma origem, dentro da janela, ja sao ataque e nao
+# dedo errado. Cinco cobre folgado quem digitou o token torto.
+RECUSAS_ATE_ALERTAR = 5
+RECUSAS_JANELA_S = 600
+# A partir daqui a origem para de ser respondida. Sem isto, forca bruta e
+# de graca: o token e a UNICA barreira do painel, e o painel dispara
+# mensagem pra base inteira.
+RECUSAS_ATE_BLOQUEAR = 20
+BLOQUEIO_S = 900
+_BLOQUEADOS: dict[str, float] = {}
+# Teto de origens lembradas. A chave vem de header que o cliente escolhe,
+# entao sem teto ela e um jeito de encher a memoria do processo.
+MAX_ORIGENS_LEMBRADAS = 500
+
+
+def _origem(request) -> str:
+    """A chave do freio: o PAR TCP de verdade, nunca um header.
+
+    A primeira versao usava `X-Forwarded-For`, com a justificativa de que
+    forjar so picotaria o proprio atacante em varias origens. A auditoria
+    mostrou que a premissa estava invertida: PICOTAR E A EVASAO. Girando o
+    header a cada tentativa, toda origem fica com uma recusa so — nunca
+    chega nas 5 que avisam o dono nem nas 20 que bloqueiam. O freio e o
+    alarme caiam juntos, e nada disso aparecia.
+
+    Chave que o cliente escolhe nao e chave. Aqui vale so `client.host`.
+
+    Atras do proxy isso faz o freio virar global, porque toda requisicao
+    chega do mesmo IP interno — e tudo bem: o painel tem UM usuario
+    legitimo, e ele nao depende disto pra entrar. `_painel_autorizado`
+    confere a credencial ANTES do bloqueio justamente pra isso. Quem tem a
+    chave passa mesmo com a origem trancada.
+    """
+    try:
+        return (getattr(request.client, "host", "") or "?")[:45]
+    except Exception:
+        return "?"
+
+
+def _de_onde_diz_que_veio(request) -> str:
+    """O que o cliente ALEGA, so pro texto do alerta — e higienizado.
+
+    Serve pro dono ter por onde comecar a olhar. Nao entra em decisao
+    nenhuma. Mas ia CRU pro WhatsApp dele, dentro de uma mensagem assinada
+    "Resolve AI" e com o link do painel logo abaixo: um `X-Forwarded-For`
+    com "pague em bit.ly/xx URGENTE" era entregue como se fosse nosso. Um
+    canal confiavel carregando texto de terceiro deixa de ser confiavel.
+
+    Aqui so sobrevive o que pode existir num IP.
+    """
+    import re as _re
+    try:
+        ff = (request.headers.get("x-forwarded-for") or "").strip()
+        limpo = _re.sub(r"[^0-9a-fA-F:., ]", "", ff)[:45].strip()
+        return limpo or "sem x-forwarded-for"
+    except Exception:
+        return "?"
+
+
+def _esta_bloqueado(request) -> bool:
+    """Origem que insistiu demais fica de fora por um tempo."""
+    import time
+    quem = _origem(request)
+    ate = _BLOQUEADOS.get(quem, 0)
+    if ate and ate > time.time():
+        return True
+    if ate:
+        _BLOQUEADOS.pop(quem, None)
+    return False
+
+
+def _anotar_recusa(request) -> None:
+    """Conta a recusa, avisa o dono e, se insistir, fecha a porta.
+
+    Ninguem era avisado de nada: as tentativas viravam uma linha de log
+    dentro do container do EasyPanel, que e canvas e ninguem le. Descobrir
+    que estao batendo na porta depois de terem entrado nao serve.
+    """
+    import time
+    agora = time.time()
+    quem = _origem(request)
+    tentativas = [t for t in _RECUSAS.get(quem, [])
+                  if agora - t < RECUSAS_JANELA_S]
+    tentativas.append(agora)
+    _RECUSAS[quem] = tentativas
+    # TETO RIGIDO, e nao so expiracao.
+    #
+    # Num burst nenhuma origem venceu ainda, entao limpar so o que expirou
+    # nao segura nada: o dicionario cresce ate o processo morrer. Com a
+    # chave sendo o IP de verdade isso exige muitas origens (um botnet), e
+    # nao mais um header girado — bem mais caro, mas a protecao nao pode
+    # ela mesma virar a forma de derrubar o bot.
+    if len(_RECUSAS) > MAX_ORIGENS_LEMBRADAS:
+        for k in [k for k, v in _RECUSAS.items()
+                  if not v or agora - v[-1] > RECUSAS_JANELA_S]:
+            _RECUSAS.pop(k, None)
+    if len(_RECUSAS) > MAX_ORIGENS_LEMBRADAS:
+        # Ainda cheio: fica com as mais recentes e esquece o resto. Esquecer
+        # uma origem so zera a contagem dela — o alarme e o bloqueio das
+        # que estao ativas continuam de pe.
+        for k in sorted(_RECUSAS, key=lambda k: _RECUSAS[k][-1]
+                        )[:len(_RECUSAS) - MAX_ORIGENS_LEMBRADAS]:
+            _RECUSAS.pop(k, None)
+    if len(tentativas) >= RECUSAS_ATE_BLOQUEAR:
+        _BLOQUEADOS[quem] = agora + BLOQUEIO_S
+        # Mesma historia do `_RECUSAS`, so que mais cara de explorar: sem
+        # teto, esta lista tambem e memoria que o cliente escolhe encher.
+        for k in [k for k, v in _BLOQUEADOS.items() if v <= agora]:
+            _BLOQUEADOS.pop(k, None)
+        if len(_BLOQUEADOS) > MAX_ORIGENS_LEMBRADAS:
+            for k in sorted(_BLOQUEADOS, key=_BLOQUEADOS.get)[
+                    :len(_BLOQUEADOS) - MAX_ORIGENS_LEMBRADAS]:
+                _BLOQUEADOS.pop(k, None)
+    if len(tentativas) == RECUSAS_ATE_ALERTAR:
+        # O alerta passa pelo `_alertar_dono` de proposito: ele ja segura
+        # repeticao da mesma falha por 30 min e tem teto por hora. Alarme
+        # que toca demais e alarme que a pessoa silencia — e ai volta a
+        # nao existir.
+        try:
+            # O MOTIVO E FIXO. `_alertar_dono` deriva a chave de repeticao
+            # do `motivo`, e ele so guarda 80 caracteres: com o
+            # `X-Forwarded-For` ali dentro, o atacante escolhia parte da
+            # chave e furava a trava de 30 min variando o header. Em 10
+            # variacoes ele consumia o teto de 8 alertas/hora — e a partir
+            # dali FALHA DE VERDADE do motor era engolida em silencio. O
+            # alarme novo viraria a forma de calar o alarme antigo.
+            #
+            # A origem alegada vai no terceiro campo, que nao entra na
+            # assinatura, entao o dono ainda ve por onde comecar a olhar.
+            _alertar_dono(
+                f"tentativas de entrar no painel ({RECUSAS_JANELA_S // 60}"
+                f" min)",
+                None, f"{len(tentativas)}x de {quem}, "
+                      f"diz vir de {_de_onde_diz_que_veio(request)}")
+        except Exception:
+            import logging
+            logging.getLogger("resolveai").warning(
+                "[painel] nao consegui avisar o dono", exc_info=True)
+
+
+def _sem_telefone_inteiro(dado):
+    """Troca todo `telefone` por `…4 ultimos` antes de sair do servidor.
+
+    O `/api/pulso` mandava a lista de telefones COMPLETA da base a cada 20
+    segundos, e a tela nunca usou: o JS faz `slice(-4)` e mostra so o final.
+    Era o dado mais sensivel que a gente tem — a lista de clientes de um
+    produto de WhatsApp — trafegando de graca, sem nada em troca.
+
+    Mascarar na origem e diferente de mascarar na tela: o numero deixa de
+    existir no navegador, no cache dele e em qualquer print da aba de rede.
+    Quem precisa do numero inteiro pra mandar mensagem e o SERVIDOR, e ele
+    ja tem — as acoes do painel andam por `user_id`.
+    """
+    if isinstance(dado, dict):
+        return {c: (f"…{str(v)[-4:]}" if c == "telefone" and v
+                    else _sem_telefone_inteiro(v))
+                for c, v in dado.items()}
+    if isinstance(dado, (list, tuple)):
+        return [_sem_telefone_inteiro(v) for v in dado]
+    return dado
 
 
 def _negado(request):
@@ -308,9 +718,19 @@ def _negado(request):
     nem devolve dado nenhum."""
     from fastapi.responses import JSONResponse
     import logging
+    # O bloqueio e descoberto aqui, e nao passado pelas rotas, pra nao ter
+    # que mudar os 14 lugares que chamam isto — um esquecido seria uma rota
+    # sem freio, e ninguem perceberia.
+    bloqueado = _esta_bloqueado(request)
+    if not bloqueado:
+        _anotar_recusa(request)
     logging.getLogger("resolveai").warning(
-        "[painel] acesso negado (%s)",
-        "PAINEL_TOKEN nao configurado" if not PAINEL_TOKEN else "token invalido")
+        "[painel] acesso negado (%s) origem=%s",
+        "PAINEL_TOKEN nao configurado" if not PAINEL_TOKEN else "token invalido",
+        _origem(request))
+    if bloqueado:
+        return JSONResponse(status_code=429,
+                            content={"erro": "muitas tentativas"})
     return JSONResponse(status_code=401, content={"erro": "nao autorizado"})
 
 
@@ -6216,7 +6636,7 @@ def _alertar_dono(motivo: str, telefone: Optional[str], texto: str) -> None:
                  f"Usuário: {quem}\n"
                  f"Mensagem: _{(texto or '')[:80]}_\n\n"
                  f"Motivo: {motivo[:220]}\n\n"
-                 f"_Painel:_ {PAINEL_URL_DICA}")
+                 f"_Painel:_ {link_do_painel()}")
         wasender.send_text(ADMIN_PHONE, corpo)
         logging.getLogger("resolveai").warning("[alerta] enviado ao dono: %s",
                                                motivo[:80])
@@ -6225,6 +6645,31 @@ def _alertar_dono(motivo: str, telefone: Optional[str], texto: str) -> None:
 
 
 PAINEL_URL_DICA = os.environ.get("PAINEL_URL", "veja /painel?k=SEU_TOKEN")
+
+
+def link_do_painel() -> str:
+    """O link do painel pra mandar por WhatsApp, sempre com token que vence.
+
+    Tirar o token eterno do relatorio diario resolveu metade do problema: o
+    alerta de falha do motor tambem manda um link, e ele vinha da variavel
+    `PAINEL_URL` — que, se alguem tiver posto `?k=<token mestre>` nela,
+    continua entregando a senha eterna por WhatsApp.
+
+    Entao o link e montado aqui, e QUALQUER `k=` que venha do ambiente e
+    descartado. A variavel serve pra dizer o endereco, nao a senha.
+    """
+    import urllib.parse as _up
+    base = (DASH_URL_BASE or "").rstrip("/")
+    if not base:
+        crua = (PAINEL_URL_DICA or "").strip()
+        partes = _up.urlsplit(crua)
+        # `startswith("http")` sozinho aceitava a string "http" e montava
+        # ":///dash?k=…". Exigir esquema E host resolve.
+        if partes.scheme not in ("http", "https") or not partes.netloc:
+            return crua  # a dica generica, sem token nenhum
+        base = f"{partes.scheme}://{partes.netloc}"
+    tok = token_temporario()
+    return f"{base}/dash?k={tok}" if tok else f"{base}/dash"
 
 
 def send_whatsapp(number: str, text: str) -> bool:
@@ -7288,7 +7733,11 @@ def relatorio_matinal() -> bool:
                                f"{fin['breakeven_assinantes']}")
         linhas.append(linha_dinheiro)
     if DASH_URL_BASE and PAINEL_TOKEN:
-        linhas.append(f"📊 {DASH_URL_BASE}/dash?k={PAINEL_TOKEN}")
+        # LINK QUE MORRE SOZINHO. O relatorio sai todo dia no WhatsApp e o
+        # dono tira print dele; mandar a senha eterna nesse link e entregar
+        # o painel a quem vir a imagem. Este vence em poucos dias e nao
+        # revela o token mestre.
+        linhas.append(f"📊 {DASH_URL_BASE}/dash?k={token_temporario()}")
 
     if _enviar_com_botao(re.sub(r"\D", "", ADMIN_PHONE), "\n".join(linhas)):
         db.log_dispatch(admin_id, "dash-manha")
@@ -7896,10 +8345,17 @@ try:
                                 status_code=503)
 
     @app.get("/health")
-    async def health(request: Request):
+    def health(request: Request):
         """Vigia: 500 só quando a sessão está claramente CAÍDA. Estados
         ambíguos (open/connected/connecting) contam como ok pra não gerar
         falso alarme no monitor."""
+        # `def`, NAO `async def` (de proposito).
+        #
+        # Esta rota e publica e faz I/O que bloqueia: `_instance_state()`
+        # e um `httpx.get(timeout=8)` SINCRONO, mais consultas ao banco.
+        # Dentro de uma corotina isso trava o event loop inteiro por ate 8
+        # segundos, e qualquer anonimo podia provocar isso em rajada. Como
+        # `def`, o FastAPI roda no threadpool e o bot continua atendendo.
         wa = _instance_state()
         conectado = wa in ("open", "connected", "online", "connecting", "unknown")
         body = {"status": "ok" if conectado else "degraded",
@@ -7965,7 +8421,18 @@ try:
                 "alerta_dono": "armado" if ADMIN_PHONE else "SEM ADMIN_PHONE"}
         # o diagnóstico do v8 carrega trecho de mensagem de usuário —
         # só sai com token, senão /health vira vazamento de conversa.
-        if _painel_autorizado(request):
+        # O BLOQUEIO VALE AQUI TAMBEM.
+        #
+        # A primeira correcao fez o /health CONTAR a recusa — e ele
+        # continuava respondendo. Ou seja: alimentava o bloqueio e nao
+        # obedecia a ele. Dava pra chutar o token daqui em velocidade
+        # total, pra sempre, com o oraculo intacto (3 campos pra errado,
+        # 21 pro certo).
+        #
+        # Origem bloqueada leva o corpo publico seja qual for a credencial.
+        # O monitor externo nao e afetado: ele bate sem token, nunca conta
+        # recusa, e nunca e bloqueado.
+        if not _esta_bloqueado(request) and _painel_autorizado(request):
             body["v8_ultima_falha"] = getattr(motor_v8, "ULTIMA_FALHA", "")
             # QUAL KIND ESTA MUDO FORA DA JANELA DE 24H.
             #
@@ -7984,7 +8451,11 @@ try:
                 _faltando = sorted(
                     {k: t for k, t in _tpls.KIND_TEMPLATE.items()
                      if t not in _apr}.items())
-                body["templates"] = {
+                # CHAVE PROPRIA, nao `templates`. Sobrescrever a chave
+                # publica fazia o MESMO campo ter dois formatos conforme
+                # quem perguntava — quem lesse `templates["faltando"]` sem
+                # credencial acertava, e com credencial levava KeyError.
+                body["templates_detalhe"] = {
                     "aprovados": sorted(_apr),
                     "kind_sem_template_liberado": [
                         f"{k} -> {t}" for k, t in _faltando],
@@ -8017,6 +8488,36 @@ try:
                 logging.getLogger("resolveai").warning(
                     "[health] nao consegui ler o estado da voz", exc_info=True)
                 body["podcast"] = "nao consegui ler"
+        else:
+            # NADA PUBLICO POR PADRAO.
+            #
+            # Este bloco todo era aberto, e a justificativa era honesta:
+            # dava pra diagnosticar sem usar o token do painel, que e
+            # segredo. Mas o preco era entregar a quem passasse um mapa da
+            # operacao — build em uso, tamanho e ritmo da base, nomes dos
+            # templates, quais recursos estao ligados, se existe alerta
+            # armado. Nada disso e credencial, e tudo isso e reconhecimento.
+            #
+            # A troca ficou barata agora que o painel poe cookie: o
+            # navegador do dono ja manda credencial, entao pra ELE o
+            # /health continua completo sem fazer nada. De fora sobra o que
+            # o monitor precisa — e o monitor so le o codigo HTTP.
+            body = {c: body[c] for c in ABERTO_NO_HEALTH if c in body}
+            # ESTA ROTA TAMBEM CONTA RECUSA.
+            #
+            # O `/health` confere credencial mas nunca chamava `_negado` —
+            # entao era a UNICA rota que decidia fora do caminho do freio.
+            # Resultado: dava pra adivinhar o token do painel batendo aqui
+            # sem contar tentativa, sem disparar alarme e sem deixar uma
+            # linha de log. E o oraculo era perfeito: token errado devolve
+            # 3 campos, token certo devolve 21.
+            #
+            # So conta quando ALGUEM APRESENTOU credencial e ela nao valeu.
+            # Sem isso, o monitor externo — que bate aqui sem token o tempo
+            # todo, de proposito — dispararia o alarme sozinho.
+            if request.query_params.get("k") or request.headers.get(
+                    "x-painel-token"):
+                _anotar_recusa(request)
         if wa in ("close", "closed", "disconnected", "removed"):
             from fastapi.responses import JSONResponse
             return JSONResponse(status_code=500, content=body)
@@ -8052,6 +8553,18 @@ try:
             if not meta_cloud.assinatura_valida(
                     corpo_bruto, request.headers.get("x-hub-signature-256", "")):
                 import logging
+                # IMPORT LOCAL, e nao por zelo: `JSONResponse` nao existe no
+                # namespace do modulo — as 16 importacoes de
+                # `fastapi.responses` neste arquivo sao todas locais. Sem
+                # esta linha, o ramo que RECUSA a assinatura levantava
+                # NameError e devolvia 500 no lugar de 403.
+                #
+                # A consequencia nao e o status errado: a Meta trata 5xx
+                # como falha de entrega, repete, e com falha sustentada
+                # DESATIVA a assinatura do webhook. O bot ficaria mudo pros
+                # 11 sem nada explicando — e qualquer anonimo dispara isso
+                # de fora, so mandando um POST com header forjado.
+                from fastapi.responses import JSONResponse
                 logging.getLogger("resolveai").warning(
                     "[webhook] assinatura INVALIDA — payload descartado")
                 return JSONResponse(status_code=403,
@@ -8466,12 +8979,17 @@ try:
         if not _painel_autorizado(request):
             return _negado(request)
         from fastapi.responses import HTMLResponse
+        # Guarda o token e manda pro /dash com a URL ja limpa. Antes isso
+        # reescrevia o token na URL de destino, que e exatamente o que a
+        # gente esta tirando de circulacao.
+        _limpo = _limpa_a_url(
+            request, "/dash" if not request.query_params.get("antigo")
+            else "/painel?antigo=1")
+        if _limpo is not None:
+            return _limpo
         if not request.query_params.get("antigo"):
             from fastapi.responses import RedirectResponse
-            _k = request.query_params.get("k") or ""
-            import urllib.parse as _up
-            return RedirectResponse(
-                "/dash?k=" + _up.quote(_k, safe=""), status_code=302)
+            return RedirectResponse("/dash", status_code=302)
         m = db.painel_metricas()
         wa = _instance_state()
         wa_cor = "#22c55e" if wa == "open" else "#ef4444"
@@ -8642,7 +9160,13 @@ async function testarMotor() {{
         from fastapi.responses import HTMLResponse
         if not _painel_autorizado(request):
             return _negado(request)
-        tok = (request.query_params.get("k") or "")
+
+        # O TOKEN SAI DA URL NO PRIMEIRO ACESSO. Enquanto ele vive na
+        # barra de endereco, vaza sem invasor nenhum: fica no historico,
+        # no print da tela e no link encaminhado.
+        _limpo = _limpa_a_url(request, "/dash")
+        if _limpo is not None:
+            return _limpo
         html = """<!doctype html><html lang="pt-BR"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -10081,7 +10605,7 @@ document.addEventListener('visibilitychange',()=>{
                     ultimo)).total_seconds() // 60)
             except Exception:
                 cron_min = None
-        return JSONResponse({
+        return JSONResponse(_sem_telefone_inteiro({
             "build": BUILD,
             "hora": tempo.agora().strftime("%d/%m %H:%M"),
             "whatsapp": wa,
@@ -10114,7 +10638,7 @@ document.addEventListener('visibilitychange',()=>{
                       "intervalo": f"{ENVIO_INTERVALO_MIN:.0f}-"
                                    f"{ENVIO_INTERVALO_MAX:.0f}s",
                       "por_usuario_dia": MAX_PROATIVAS_POR_USUARIO_DIA},
-        })
+        }))
 
     @app.post("/painel/resgatar")
     async def painel_resgatar(request: Request):
