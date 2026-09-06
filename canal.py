@@ -234,3 +234,32 @@ def diagnostico() -> dict:
     if OFICIAL:
         d.update(meta_cloud.qualidade_numero())
     return d
+
+
+def enviar_documento(telefone: str, dados: bytes, nome: str,
+                     mime: str = "application/octet-stream",
+                     legenda: str = "", *, user_id=None) -> bool:
+    """Manda ARQUIVO respeitando a janela de 24h. Mesma porta, mesma regra.
+
+    POR QUE PASSA POR AQUI e nao chama `meta_cloud.send_document` direto:
+    a janela de 24h e a regra que protege o numero, e ela vale pra QUALQUER
+    coisa que sai. Caminho novo que chama o envio por fora e exatamente
+    como a gente reabre um buraco ja fechado.
+
+    E NAO EXISTE TEMPLATE COM ANEXO. Fora da janela isto nao sai, e esta
+    certo: quem chama trata a recusa tentando de novo depois.
+    """
+    import db
+    if not dados or not nome:
+        return False
+    enviar = getattr(_mod, "send_document", None)
+    if not enviar:
+        return False          # canal de reserva nao manda arquivo
+    if not db.dentro_da_janela(user_id, telefone):
+        log.info("[canal] documento fora da janela de 24h; nao saiu")
+        return False
+    try:
+        return bool(enviar(telefone, dados, nome, mime, legenda))
+    except Exception as e:
+        log.warning("[canal] documento estourou: %r", e)
+        return False

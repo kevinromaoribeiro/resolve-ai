@@ -55,7 +55,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v33.1-link-do-painel-vivo-2026-09-06"
+BUILD = "v34.0-backup-automatico-2026-09-06"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -8131,6 +8131,65 @@ def _tendencia(agora_v: float, antes_v: float, sufixo: str = "") -> str:
     return f"{seta} {abs(delta):.2f} vs. semana passada{sufixo}"
 
 
+# De quantos em quantos dias o banco sai da VPS.
+BACKUP_CADA_DIAS = _dias_do_ambiente("BACKUP_CADA_DIAS", 7)
+
+
+def backup_para_o_dono() -> bool:
+    """Manda o banco pro WhatsApp do dono, sozinho, toda semana.
+
+    O BANCO E A UNICA PECA INSUBSTITUIVEL. Codigo se clona do GitHub,
+    segredo se gera de novo — cliente, conversa e historico, nao. Ate aqui
+    a copia dependia do dono LEMBRAR de abrir o painel e baixar, e backup
+    que depende de memoria nao e backup, e intencao.
+
+    Pelo WhatsApp nao precisa de credencial nova no servidor: o caminho de
+    upload ja existe (e o mesmo do podcast) e o arquivo sai da VPS na hora.
+    Se a maquina morrer, a copia esta no celular do dono.
+
+    DUAS COISAS PODEM FALHAR, e as duas so ADIAM:
+
+    - A JANELA DE 24H. Anexo e texto livre, e nao existe template com
+      arquivo. Se o dono nao falou com o bot nas ultimas 24h, a Meta
+      recusa. Nao insiste: tenta no proximo ciclo, e como ele conversa com
+      o bot direto, uma hora entra.
+    - O ARQUIVO CRESCER demais. Avisa no log em vez de morrer calado —
+      backup que falha em silencio e pior que nenhum, porque a pessoa
+      acredita que tem.
+    """
+    if not ADMIN_PHONE:
+        return False
+    if db.dispatched_within("backup-banco", 0, BACKUP_CADA_DIAS):
+        return False
+    try:
+        copia = db.copia_para_backup()
+    except Exception:
+        log.warning("[backup] nao consegui copiar o banco", exc_info=True)
+        return False
+
+    nome = f"resolveai-{tempo.agora().strftime('%Y-%m-%d')}.db"
+    legenda = ("🗄️ Backup do banco — "
+               f"{tempo.agora().strftime('%d/%m')}\n\n"
+               "Guarde no Drive. É a única coisa que não dá pra "
+               "reconstruir se a VPS morrer.")
+    try:
+        ok = wasender.enviar_documento(
+            re.sub(r"\D", "", ADMIN_PHONE), copia, nome,
+            "application/octet-stream", legenda)
+    except Exception:
+        log.warning("[backup] envio estourou", exc_info=True)
+        ok = False
+
+    if ok:
+        db.log_dispatch(0, "backup-banco")
+        log.info("[backup] enviado ao dono (%d bytes)", len(copia))
+        return True
+    # NAO registra o disparo: marcar a semana como feita depois de uma
+    # recusa por janela fechada sumiria com o backup por sete dias.
+    log.warning("[backup] nao saiu agora; tenta no proximo ciclo")
+    return False
+
+
 def relatorio_matinal() -> bool:
     """O dash resumido no WhatsApp, todo dia às 8h. 1x por dia.
 
@@ -9451,6 +9510,10 @@ try:
         sent = dispatch_proactive()
         maybe_admin_report()
         relatorio_matinal()
+        # O banco sai da VPS sozinho. Depois do relatorio de proposito:
+        # se o dono acabou de receber mensagem, a janela de 24h esta
+        # aberta e o anexo passa.
+        backup_para_o_dono()
         return {"sent": sent}
 
     # -----------------------------------------------------------------------
@@ -9481,6 +9544,7 @@ try:
                     log.info("[cron-interno] %d disparo(s)", enviados)
                 await asyncio.to_thread(maybe_admin_report)
                 await asyncio.to_thread(relatorio_matinal)
+                await asyncio.to_thread(backup_para_o_dono)
             except Exception as e:
                 # A EXCECAO PRECISA SER VISIVEL DE FORA (M6.5).
                 #

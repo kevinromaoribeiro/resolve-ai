@@ -823,3 +823,58 @@ def send_audio(number: str, dados: bytes, mime: str = "audio/ogg") -> bool:
     except Exception as e:
         log.warning("[audio] envio estourou: %r", e)
         return False
+
+
+# ---------------------------------------------------------------------
+# BACKUP PELO WHATSAPP
+#
+# O banco e a unica peca insubstituivel do negocio: codigo se clona do
+# GitHub, segredo se gera de novo, cliente e conversa nao. Ate aqui a
+# copia dependia do dono LEMBRAR de abrir o painel e baixar — e backup que
+# depende de memoria nao e backup, e intencao.
+#
+# Mandar pelo WhatsApp resolve sem credencial nova nenhuma no servidor: o
+# caminho de upload ja existe (e o mesmo do podcast), e o arquivo sai da
+# VPS na hora. Se a maquina morrer, a copia esta no celular do dono e nos
+# servidores da Meta.
+# ---------------------------------------------------------------------
+
+MAX_DOC_BYTES = 95 * 1024 * 1024        # teto da Meta pra documento
+
+
+def send_document(number: str, dados: bytes, nome: str,
+                  mime: str = "application/octet-stream",
+                  legenda: str = "") -> bool:
+    """Manda um arquivo. True so com message id confirmado.
+
+    VALE SO DENTRO DA JANELA DE 24H, como qualquer texto livre — nao existe
+    template com anexo. Fora da janela a Meta recusa, e quem chama aqui
+    trata isso tentando de novo depois, nao insistindo na hora.
+    """
+    import httpx
+
+    to = _so_digitos(number)
+    if not to or not dados:
+        return False
+    if len(dados) > MAX_DOC_BYTES:
+        log.warning("[backup] arquivo de %d bytes acima do teto", len(dados))
+        return False
+    media_id = upload_media(dados, mime=mime, nome=nome)
+    if not media_id:
+        return False
+    corpo = {"messaging_product": "whatsapp", "recipient_type": "individual",
+             "to": to, "type": "document",
+             "document": {"id": media_id, "filename": nome}}
+    if legenda:
+        corpo["document"]["caption"] = legenda[:1000]
+    try:
+        r = httpx.post(f"{GRAPH}/{PHONE_NUMBER_ID}/messages",
+                       headers=_HEADERS, json=corpo, timeout=60)
+        if r.status_code == 200:
+            return bool((r.json() or {}).get("messages"))
+        log.warning("[backup] envio recusado (%s): %s",
+                    r.status_code, r.text[:200])
+        return False
+    except Exception as e:
+        log.warning("[backup] envio estourou: %r", e)
+        return False
