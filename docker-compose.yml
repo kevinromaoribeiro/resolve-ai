@@ -15,8 +15,24 @@ services:
   bot:
     build: .
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    # `expose`, NAO `ports` — e a diferenca importa.
+    #
+    # Com `ports: 8000:8000` o bot ficava alcancavel direto em
+    # http://IP:8000, por fora do proxy e SEM HTTPS. Conferido em 05/09:
+    # respondia 200 da internet aberta. Isso quer dizer que o painel podia
+    # ser aberto por um endereco onde o cookie com o token viaja em texto
+    # puro, e que tudo o que o proxy acrescenta era contornavel por quem
+    # soubesse o IP.
+    #
+    # `expose` mantem a porta visivel DENTRO da rede do Docker — que e por
+    # onde o Traefik do EasyPanel alcanca o servico (ele procura pelo nome
+    # que ele mesmo gera, ver o comentario no topo do arquivo) — e fecha
+    # ela pra internet.
+    #
+    # SE O DOMINIO HTTPS CAIR depois de um deploy com isto, e aqui que se
+    # olha primeiro: voltar pra `ports` restaura o acesso na hora.
+    expose:
+      - "8000"
     environment:
       # --- Canal: meta | wasender | auto (auto usa a Meta se houver token) ---
       - CANAL=${CANAL:-auto}

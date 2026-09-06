@@ -45,6 +45,7 @@ import podcast  # M4.2: mini-podcast semanal, um nicho por pessoa
 import scheduler
 import canal as wasender  # camada de canal: Meta oficial OU WasenderAPI (ver canal.py)
 import meta_cloud  # handshake e assinatura do webhook da Meta
+import passkey  # biometria do painel (WebAuthn), sem dependencia nova
 import botoes  # botao de resposta rapida (decidido em Python, nao no LLM)
 import jornada  # jornada: demo de 90s, lista de sugestoes, copy de cobranca
 import motor_v8  # mordomo híbrido: entende linguagem natural fora do script
@@ -54,7 +55,7 @@ db.init_db()
 # Marcador de build. Trocar a cada deploy — é o que permite confirmar em 1
 # request (/health) se o código novo subiu, em vez de deduzir pelo
 # comportamento do bot.
-BUILD = "v32.0-arsenal-de-seguranca-2026-09-05"
+BUILD = "v33.0-biometria-e-blindagem-2026-09-06"
 
 # LOGGER NO MODULO, nao so dentro de cada funcao.
 #
@@ -376,6 +377,19 @@ def _token_temporario_valido(enviado: str) -> bool:
         return False
 
 
+# TOKEN ANTERIOR, pra poder TROCAR a senha sem se trancar do lado de fora.
+#
+# Sem isto, rotacionar o `PAINEL_TOKEN` derruba o acesso no mesmo segundo:
+# todo cookie e todo link de relatorio em circulacao morrem de uma vez, e o
+# dono descobre isso quando precisa do painel. Senha que nao da pra trocar
+# na pratica nao e trocada nunca — e uma senha eterna que ninguem gira e
+# pior do que uma que gira.
+#
+# Como usar: ponha o token velho em PAINEL_TOKEN_ANTERIOR, o novo em
+# PAINEL_TOKEN, e apague o anterior alguns dias depois.
+PAINEL_TOKEN_ANTERIOR = os.environ.get("PAINEL_TOKEN_ANTERIOR", "").strip()
+
+
 def _credencial_vale(enviado: str) -> bool:
     """UNICO lugar que decide se uma credencial abre o painel.
 
@@ -390,8 +404,14 @@ def _credencial_vale(enviado: str) -> bool:
     import secrets
     if not PAINEL_TOKEN or not enviado:
         return False
-    if secrets.compare_digest(str(enviado).encode("utf-8", "replace"),
-                              PAINEL_TOKEN.encode("utf-8", "replace")):
+    dado = str(enviado).encode("utf-8", "replace")
+    if secrets.compare_digest(dado, PAINEL_TOKEN.encode("utf-8", "replace")):
+        return True
+    # O anterior abre o painel, mas NAO assina nada novo: `token_temporario`
+    # e `_selo_do_aparelho` usam so o atual. Ou seja, ele serve pra terminar
+    # a troca sem interrupcao, e vai perdendo alcance sozinho.
+    if PAINEL_TOKEN_ANTERIOR and secrets.compare_digest(
+            dado, PAINEL_TOKEN_ANTERIOR.encode("utf-8", "replace")):
         return True
     return _token_temporario_valido(str(enviado))
 
@@ -500,8 +520,371 @@ def _limpa_a_url(request, destino: str):
     return r
 
 
-def _painel_autorizado(request) -> bool:
-    """Quem pode abrir o painel.
+# O SEGUNDO FATOR. Cookie separado do primeiro, de proposito: um diz "sei
+# o token", o outro diz "este aparelho provou que e o dono". Roubar um nao
+# entrega o outro.
+COOKIE_PASSKEY = "resolveai_aparelho"
+# Quanto tempo o aparelho fica confirmado antes de pedir a digital de novo.
+PASSKEY_DIAS = _dias_do_ambiente("PASSKEY_DIAS", 14)
+
+
+def _selo_do_aparelho(cred_id: str) -> str:
+    """Prova assinada de que ESTE aparelho passou pela biometria.
+
+    Nao guarda sessao em memoria porque o processo reinicia a cada deploy
+    — e ter que refazer a biometria toda vez que eu subo codigo faria o
+    dono desligar a trava. Aqui a prova viaja no cookie, assinada com o
+    token mestre, e carrega qual credencial passou: revogar o aparelho
+    invalida o selo dele junto.
+    """
+    import hashlib
+    import hmac as _hmac
+    if not PAINEL_TOKEN:
+        return ""
+    venc = int(tempo.agora().timestamp()) + PASSKEY_DIAS * 86400
+    corpo = f"{venc}.{cred_id}".encode()
+    assinatura = _hmac.new(PAINEL_TOKEN.encode(), corpo,
+                           hashlib.sha256).digest()[:TAM_ASSINATURA]
+    return base64.urlsafe_b64encode(corpo + assinatura).decode()
+
+
+def _selo_vale(selo: str) -> bool:
+    """Confere assinatura, prazo E se o aparelho ainda esta autorizado."""
+    import hashlib
+    import hmac as _hmac
+    import secrets as _s
+    if not PAINEL_TOKEN or not selo:
+        return False
+    try:
+        bruto = base64.urlsafe_b64decode(str(selo).encode())
+        corpo = bruto[:-TAM_ASSINATURA]
+        esperada = _hmac.new(PAINEL_TOKEN.encode(), corpo,
+                             hashlib.sha256).digest()[:TAM_ASSINATURA]
+        if not _s.compare_digest(bruto[-TAM_ASSINATURA:], esperada):
+            return False
+        venc, cred_id = corpo.decode().split(".", 1)
+        if int(venc) <= int(tempo.agora().timestamp()):
+            return False
+        # REVOGAR TEM QUE VALER NA HORA. Sem esta consulta, o selo de um
+        # aparelho perdido continuaria abrindo o painel ate vencer.
+        return bool(db.passkey_por_id(cred_id))
+    except Exception:
+        return False
+
+
+def _tela_da_biometria() -> str:
+    """A tela que pede a digital. Sem f-string, de proposito.
+
+    O painel ja foi ao ar em branco DUAS vezes por causa de JS montado
+    dentro de string Python — uma `\\n` escrita no fonte virando quebra de
+    linha de verdade, e uma chave de f-string comendo `{}` de objeto JS.
+    Aqui nao ha interpolacao nenhuma: o que estiver escrito e o que chega
+    no navegador.
+    """
+    return """<!doctype html><html lang="pt-BR"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resolve AI - confirme que e voce</title>
+<style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;
+ justify-content:center;background:#0b1220;color:#e6edf7;
+ font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+ padding:20px}
+.caixa{background:#131d31;border:1px solid #1f2c47;border-radius:16px;
+ padding:28px;max-width:420px;width:100%;text-align:center}
+h1{font-size:20px;margin:0 0 6px}
+p{color:#8296b3;font-size:14px;margin:0 0 20px}
+button{width:100%;padding:14px;border-radius:12px;border:0;cursor:pointer;
+ font-size:15px;font-weight:600;background:#22c55e;color:#04210f;
+ margin-bottom:10px}
+button.segundo{background:#1f2c47;color:#e6edf7}
+#erro{color:#fca5a5;font-size:13px;min-height:20px;margin-top:8px}
+#apelido{width:100%;padding:12px;border-radius:10px;border:1px solid #1f2c47;
+ background:#0b1220;color:#e6edf7;margin-bottom:10px;font-size:14px}
+</style></head><body>
+<div class="caixa">
+  <div style="font-size:40px">&#128272;</div>
+  <h1>Confirme que e voce</h1>
+  <p id="texto">Use a digital, o rosto ou o PIN deste aparelho.</p>
+  <input id="apelido" placeholder="nome deste aparelho" hidden>
+  <button id="entrar">Confirmar</button>
+  <button id="registrar" class="segundo" hidden>Registrar este aparelho</button>
+  <div id="erro"></div>
+  <p style="color:#64748b;font-size:12px;margin:14px 0 0">Perdeu o aparelho?
+  Ponha <code>PASSKEY_OBRIGATORIA=0</code> no EasyPanel, reinicie, e
+  cadastre outro em <b>/painel/aparelhos</b>.</p>
+</div>
+<script>
+const bin = function (s) {
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) { s += '='; }
+  const cru = atob(s);
+  const saida = new Uint8Array(cru.length);
+  for (let i = 0; i < cru.length; i++) { saida[i] = cru.charCodeAt(i); }
+  return saida;
+};
+const txt = function (buffer) {
+  let s = '';
+  const b = new Uint8Array(buffer);
+  for (let i = 0; i < b.length; i++) { s += String.fromCharCode(b[i]); }
+  return btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+};
+const dizer = function (m) { document.getElementById('erro').textContent = m; };
+
+let estado = null;
+
+async function comecar() {
+  const r = await fetch('/painel/passkey/desafio', {method: 'POST'});
+  if (!r.ok) { dizer('Sessao expirou. Abra o link do painel de novo.'); return; }
+  estado = await r.json();
+  const temAparelho = estado.ja_tem;
+  document.getElementById('entrar').hidden = !temAparelho;
+  document.getElementById('registrar').hidden = temAparelho;
+  document.getElementById('apelido').hidden = temAparelho;
+  if (!temAparelho) {
+    document.getElementById('texto').textContent =
+      'Nenhum aparelho registrado ainda. Registre este para ligar a trava.';
+  }
+}
+
+async function registrar() {
+  dizer('');
+  try {
+    const cred = await navigator.credentials.create({publicKey: {
+      challenge: bin(estado.desafio),
+      rp: {name: 'Resolve AI', id: estado.site},
+      user: {id: bin(txt(new TextEncoder().encode('dono'))),
+             name: 'dono', displayName: 'Dono do Resolve AI'},
+      pubKeyCredParams: [{type: 'public-key', alg: -7}],
+      authenticatorSelection: {userVerification: 'required',
+                               residentKey: 'preferred'},
+      timeout: 120000, attestation: 'none'
+    }});
+    const r = await fetch('/painel/passkey/registrar', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        clientDataJSON: txt(cred.response.clientDataJSON),
+        attestationObject: txt(cred.response.attestationObject),
+        apelido: document.getElementById('apelido').value || 'aparelho'
+      })});
+    const j = await r.json();
+    if (j.ok) { location.reload(); } else { dizer(j.erro || 'nao deu'); }
+  } catch (e) { dizer('Nao consegui: ' + e.message); }
+}
+
+async function entrar() {
+  dizer('');
+  try {
+    const cred = await navigator.credentials.get({publicKey: {
+      challenge: bin(estado.desafio),
+      rpId: estado.site,
+      allowCredentials: estado.conhecidos.map(function (c) {
+        return {type: 'public-key', id: bin(c)};
+      }),
+      userVerification: 'required', timeout: 120000
+    }});
+    const r = await fetch('/painel/passkey/entrar', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        id: txt(cred.rawId),
+        clientDataJSON: txt(cred.response.clientDataJSON),
+        authenticatorData: txt(cred.response.authenticatorData),
+        signature: txt(cred.response.signature)
+      })});
+    const j = await r.json();
+    if (j.ok) { location.reload(); } else { dizer(j.erro || 'nao deu'); }
+  } catch (e) { dizer('Nao consegui: ' + e.message); }
+}
+
+document.getElementById('entrar').onclick = entrar;
+document.getElementById('registrar').onclick = registrar;
+if (!window.PublicKeyCredential) {
+  dizer('Este navegador nao tem suporte a biometria.');
+} else {
+  comecar();
+}
+</script></body></html>"""
+
+
+def _tela_dos_aparelhos(aparelhos: list) -> str:
+    """Lista os aparelhos autorizados e deixa cadastrar outro.
+
+    Sem f-string no bloco de JS, pela mesma razao da tela da biometria: o
+    painel ja foi ao ar em branco duas vezes por causa de interpolacao
+    comendo chave de objeto. A lista e montada em HTML antes, e o script
+    e texto literal.
+    """
+    linhas = "".join(
+        "<div class='item'><div><b>" + str(a.get("apelido") or "aparelho")
+        .replace("<", "&lt;")[:30] + "</b><div class='quando'>desde "
+        + str(a.get("criada_em") or "")[:10]
+        + (" · usado em " + str(a.get("usada_em"))[:10]
+           if a.get("usada_em") else " · nunca usado") + "</div></div>"
+        "<button class='tirar' data-id='"
+        + str(a.get("cred_id", "")).replace("'", "") + "'>remover</button>"
+        "</div>"
+        for a in aparelhos)
+    if not linhas:
+        linhas = "<p class='vazio'>Nenhum aparelho ainda.</p>"
+    return """<!doctype html><html lang="pt-BR"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resolve AI - aparelhos</title>
+<style>
+body{margin:0;background:#0b1220;color:#e6edf7;padding:20px;
+ font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+.folha{max-width:520px;margin:0 auto}
+h1{font-size:19px;margin:0 0 4px}
+.sub{color:#8296b3;font-size:13px;margin-bottom:18px}
+.item{background:#131d31;border:1px solid #1f2c47;border-radius:12px;
+ padding:14px;margin-bottom:10px;display:flex;align-items:center;
+ justify-content:space-between;gap:10px}
+.quando{color:#8296b3;font-size:12px;font-weight:400}
+button{padding:10px 14px;border-radius:10px;border:0;cursor:pointer;
+ font-size:14px;font-weight:600}
+.tirar{background:#3a1d22;color:#fca5a5}
+#novo{width:100%;background:#22c55e;color:#04210f;padding:14px;
+ margin-top:6px}
+#apelido{width:100%;padding:12px;border-radius:10px;border:1px solid #1f2c47;
+ background:#131d31;color:#e6edf7;margin-bottom:8px;font-size:14px}
+#erro{color:#fca5a5;font-size:13px;min-height:20px;margin-top:10px}
+.aviso{background:#1b2436;border-left:3px solid #f59e0b;padding:12px;
+ border-radius:8px;color:#cbd5e1;font-size:13px;margin:18px 0}
+a{color:#8296b3;font-size:13px}
+.vazio{color:#8296b3}
+</style></head><body><div class="folha">
+<h1>Aparelhos autorizados</h1>
+<div class="sub">Quem pode abrir o painel com a sua digital.</div>
+""" + linhas + """
+<div class="aviso"><b>Cadastre dois.</b> Com um aparelho so, perder ele
+significa ficar sem o painel — a volta seria mexer em variavel de
+ambiente no servidor.</div>
+<input id="apelido" placeholder="nome do aparelho (ex: celular)">
+<button id="novo">Registrar este aparelho</button>
+<div id="erro"></div>
+<p><a href="/dash">voltar pro painel</a></p>
+</div>
+<script>
+const bin = function (s) {
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) { s += '='; }
+  const cru = atob(s);
+  const saida = new Uint8Array(cru.length);
+  for (let i = 0; i < cru.length; i++) { saida[i] = cru.charCodeAt(i); }
+  return saida;
+};
+const txt = function (buffer) {
+  let s = '';
+  const b = new Uint8Array(buffer);
+  for (let i = 0; i < b.length; i++) { s += String.fromCharCode(b[i]); }
+  return btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+};
+const dizer = function (m) { document.getElementById('erro').textContent = m; };
+
+document.getElementById('novo').onclick = async function () {
+  dizer('');
+  try {
+    const d = await (await fetch('/painel/passkey/desafio',
+                                 {method: 'POST'})).json();
+    const cred = await navigator.credentials.create({publicKey: {
+      challenge: bin(d.desafio),
+      rp: {name: 'Resolve AI', id: d.site},
+      user: {id: bin(txt(new TextEncoder().encode('dono'))),
+             name: 'dono', displayName: 'Dono do Resolve AI'},
+      pubKeyCredParams: [{type: 'public-key', alg: -7}],
+      excludeCredentials: d.conhecidos.map(function (c) {
+        return {type: 'public-key', id: bin(c)};
+      }),
+      authenticatorSelection: {userVerification: 'required',
+                               residentKey: 'preferred'},
+      timeout: 120000, attestation: 'none'
+    }});
+    const r = await fetch('/painel/passkey/registrar', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        clientDataJSON: txt(cred.response.clientDataJSON),
+        attestationObject: txt(cred.response.attestationObject),
+        apelido: document.getElementById('apelido').value || 'aparelho'
+      })});
+    const j = await r.json();
+    if (j.ok) { location.reload(); } else { dizer(j.erro || 'nao deu'); }
+  } catch (e) { dizer('Nao consegui: ' + e.message); }
+};
+
+document.querySelectorAll('.tirar').forEach(function (b) {
+  b.onclick = async function () {
+    if (!confirm('Remover este aparelho? Ele perde o acesso na hora.')) {
+      return;
+    }
+    const r = await fetch('/painel/passkey/remover', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cred_id: b.dataset.id})});
+    const j = await r.json();
+    if (j.ok) { location.reload(); } else { dizer(j.erro || 'nao deu'); }
+  };
+});
+</script></body></html>"""
+
+
+def _selar_aparelho(resposta, cred_id: str, https: bool) -> None:
+    """Marca ESTE navegador como aparelho ja confirmado.
+
+    Mesmas travas do cookie do token, e pelo mesmo motivo: `httponly` pra
+    um XSS nao levar o selo, `samesite=strict` pra ele nao viajar em
+    requisicao vinda de outro site.
+    """
+    resposta.set_cookie(
+        COOKIE_PASSKEY, _selo_do_aparelho(cred_id),
+        max_age=PASSKEY_DIAS * 86400, httponly=True, samesite="strict",
+        secure=https, path="/")
+
+
+def _anotar_no_diario(acao: str, alvo: str = "", detalhe: str = "") -> None:
+    """O DIARIO DO PAINEL: quem mexeu em quê, e quando.
+
+    Ate aqui, quem entrasse com o token certo agia sem deixar rastro
+    nenhum. Isso vale pro invasor e vale pro dono: "o trial de todo mundo
+    voltou" nao tinha resposta pra "quando foi isso, e o que mais foi
+    feito na mesma sessao?".
+
+    Nunca derruba a acao que estava sendo registrada — diario que quebra a
+    operacao vira diario desligado.
+    """
+    try:
+        db.registrar_acao_admin(acao, alvo, "painel", detalhe)
+    except Exception:
+        log.warning("[diario] nao consegui registrar %s", acao, exc_info=True)
+
+
+def _segundo_fator_ok(request) -> bool:
+    """Se a biometria ja foi confirmada neste navegador.
+
+    Enquanto NAO existir nenhum aparelho registrado, isto devolve True: e
+    o unico jeito de o dono conseguir entrar pra registrar o primeiro.
+    Exigir a trava antes de existir chave e trancar a porta com a chave
+    dentro.
+    """
+    try:
+        if not passkey.obrigatoria():
+            return True
+        if not db.tem_passkey():
+            return True
+        return _selo_vale(request.cookies.get(COOKIE_PASSKEY) or "")
+    except Exception:
+        # Banco fora do ar nao pode virar painel inacessivel: o primeiro
+        # fator ja barrou quem nao tem o token.
+        logging.getLogger("resolveai").warning(
+            "[passkey] nao consegui conferir o segundo fator", exc_info=True)
+        return True
+
+
+def _primeiro_fator_ok(request) -> bool:
+    """So o TOKEN: sabe a senha do painel.
+
+    Separado do segundo fator porque as rotas de passkey precisam ser
+    alcancaveis com o primeiro fator sozinho — senao registrar o primeiro
+    aparelho seria impossivel, e o dono ficaria trancado do lado de fora
+    pela propria trava que acabou de ligar.
 
     Tres formas, todas conferidas pelo mesmo `_credencial_vale`:
       - `?k=` na URL — o token mestre ou um temporario ainda valido;
@@ -531,6 +914,9 @@ def _painel_autorizado(request) -> bool:
     #
     # Isso nao devolve forca bruta pra mesa: quem erra cai no bloqueio logo
     # abaixo e passa a levar 429 sem chegar a ser conferido.
+    # DOIS FATORES. Saber o token e uma coisa; provar que este aparelho e
+    # o do dono e outra. Quem copiar o token da tela de variaveis do
+    # EasyPanel tem o primeiro e nao tem o segundo.
     if any(_credencial_vale(str(c or "")) for c in (
             request.query_params.get("k"),
             request.headers.get("x-painel-token"),
@@ -711,6 +1097,28 @@ def _sem_telefone_inteiro(dado):
     if isinstance(dado, (list, tuple)):
         return [_sem_telefone_inteiro(v) for v in dado]
     return dado
+
+
+def _painel_autorizado(request) -> bool:
+    """A porta do painel: PRECISA DOS DOIS FATORES.
+
+    Saber o token e uma coisa; provar que este aparelho e o do dono e
+    outra. Quem copiar o token da tela de variaveis do EasyPanel tem o
+    primeiro e nao tem o segundo — e era exatamente esse o buraco que
+    sobrava depois de tudo o que a gente fechou: uma senha unica, eterna,
+    em texto, com poder total.
+    """
+    return _primeiro_fator_ok(request) and _segundo_fator_ok(request)
+
+
+def _falta_so_a_biometria(request) -> bool:
+    """Token certo, digital faltando.
+
+    Este caso NAO pode virar 401 seco: o dono acertou a senha e precisa de
+    uma tela pra confirmar a biometria. 401 aqui seria porta trancada sem
+    maçaneta.
+    """
+    return _primeiro_fator_ok(request) and not _segundo_fator_ok(request)
 
 
 def _negado(request):
@@ -8319,6 +8727,54 @@ try:
     app = FastAPI(title="Resolve AI · WhatsApp Gateway",
                   docs_url=None, redoc_url=None, openapi_url=None)
 
+    @app.middleware("http")
+    async def _cabecalhos_de_seguranca(request, chamar):
+        """As travas que o NAVEGADOR aplica, e que a gente nunca pediu.
+
+        Sao baratas e cobrem classes inteiras de ataque que nao dependem de
+        bug nenhum no nosso codigo:
+
+        - `X-Frame-Options` mata clickjacking. Sem ele, um site qualquer
+          poe o painel num iframe invisivel e induz o dono a clicar em
+          "disparar pra base" achando que clicou noutra coisa.
+        - `Content-Security-Policy` limita de onde a pagina pode carregar e
+          executar. Se um XSS entrar um dia, ele nao consegue chamar
+          servidor de fora pra mandar os dados.
+        - `X-Content-Type-Options` impede o navegador de "adivinhar" tipo e
+          executar como script algo que a gente serviu como texto.
+        - `Referrer-Policy` impede que a URL do painel vaze no cabecalho
+          Referer ao clicar num link.
+        - `HSTS` obriga https nas proximas visitas — so faz sentido, e so e
+          mandado, quando a conexao ja veio por https.
+        """
+        r = await chamar(request)
+        r.headers.setdefault("X-Frame-Options", "DENY")
+        r.headers.setdefault("X-Content-Type-Options", "nosniff")
+        r.headers.setdefault("Referrer-Policy", "no-referrer")
+        r.headers.setdefault(
+            "Permissions-Policy",
+            "geolocation=(), microphone=(), camera=(), payment=()")
+        # `unsafe-inline` e necessario: o painel inteiro e HTML e JS inline
+        # dentro do Python. `connect-src 'self'` e a linha que impede um
+        # XSS de exfiltrar — mesmo executando, ele nao alcanca servidor de
+        # fora. `frame-ancestors 'none'` repete o X-Frame-Options pros
+        # navegadores que so olham a CSP.
+        r.headers.setdefault("Content-Security-Policy", (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "form-action 'self'; "
+            "base-uri 'none'; "
+            "object-src 'none'; "
+            "frame-ancestors 'none'"))
+        if _e_https(request):
+            r.headers.setdefault(
+                "Strict-Transport-Security",
+                "max-age=31536000; includeSubDomains")
+        return r
+
     # A LANDING E SERVIDA PELO PROPRIO APP (M5.8).
     #
     # Ela ja viajava na imagem (`COPY . .` no Dockerfile) e nunca teve rota:
@@ -8976,9 +9432,16 @@ try:
         se faltar alguma coisa no novo, o dono nao fica sem painel enquanto
         eu conserto.
         """
+        from fastapi.responses import HTMLResponse
+        # Mesma regra do /dash: token certo e digital faltando pede a tela
+        # da biometria, nao 401. Sem isto, quem entrasse por aqui ficaria
+        # sem caminho pra confirmar o aparelho.
+        if _falta_so_a_biometria(request):
+            _limpo = _limpa_a_url(request, "/dash")
+            return _limpo if _limpo is not None else HTMLResponse(
+                _tela_da_biometria())
         if not _painel_autorizado(request):
             return _negado(request)
-        from fastapi.responses import HTMLResponse
         # Guarda o token e manda pro /dash com a URL ja limpa. Antes isso
         # reescrevia o token na URL de destino, que e exatamente o que a
         # gente esta tirando de circulacao.
@@ -9158,6 +9621,13 @@ async function testarMotor() {{
         está conectado? · as pessoas estão usando? · o número está em risco?
         """
         from fastapi.responses import HTMLResponse
+        # TOKEN CERTO E DIGITAL FALTANDO NAO E "NEGADO" — e "falta um
+        # passo". Devolver 401 aqui seria porta trancada sem maçaneta: o
+        # dono acertou a senha e nao teria por onde confirmar a biometria.
+        if _falta_so_a_biometria(request):
+            _limpo = _limpa_a_url(request, "/dash")
+            return _limpo if _limpo is not None else HTMLResponse(
+                _tela_da_biometria())
         if not _painel_autorizado(request):
             return _negado(request)
 
@@ -10710,6 +11180,202 @@ document.addEventListener('visibilitychange',()=>{
                                                    exc_info=True)
             return JSONResponse({"ok": False, "erro": str(e)},
                                 status_code=400)
+
+    @app.get("/painel/aparelhos")
+    async def painel_aparelhos(request: Request):
+        """A tela que faltava: gerenciar os aparelhos autorizados.
+
+        Sem ela, a trava tinha um caminho so de ida. A tela de biometria
+        esconde o botao de registrar quando ja existe algum aparelho — o
+        que esta certo pra quem chega sem credencial, mas deixava o DONO
+        sem como cadastrar o segundo. Perder o unico aparelho registrado
+        virava ficar trancado do proprio painel, com saida apenas mexendo
+        em variavel de ambiente no EasyPanel.
+
+        A recomendacao (dois aparelhos: celular e notebook) so vira
+        possivel a partir daqui.
+        """
+        from fastapi.responses import HTMLResponse
+        if _falta_so_a_biometria(request):
+            return HTMLResponse(_tela_da_biometria())
+        if not _painel_autorizado(request):
+            return _negado(request)
+        return HTMLResponse(_tela_dos_aparelhos(db.passkeys_do_painel()))
+
+    @app.get("/painel/backup")
+    async def painel_backup(request: Request):
+        """Baixa uma copia do banco, pra guardar FORA da VPS.
+
+        Este e o unico item da lista de seguranca que nao protege contra
+        invasao — protege contra o dia em que der tudo errado. Servidor
+        sequestrado, disco morto, container apagado por engano: sem copia
+        do banco, o negocio recomeça do zero, e nao ha protecao nenhuma
+        que conserte isso depois.
+
+        Exige os DOIS fatores de proposito: e o arquivo mais sensivel que
+        existe aqui — a base inteira de clientes numa unica requisicao.
+        """
+        from fastapi.responses import Response
+        if not _painel_autorizado(request):
+            return _negado(request)
+        try:
+            copia = db.copia_para_backup()
+        except Exception:
+            log.warning("[backup] nao consegui copiar o banco", exc_info=True)
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=500,
+                                content={"erro": "nao consegui copiar"})
+        _anotar_no_diario("backup-baixado", "", f"{len(copia)} bytes")
+        nome = f"resolveai-{tempo.agora().strftime('%Y-%m-%d-%H%M')}.db"
+        return Response(
+            content=copia, media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{nome}"'})
+
+    # ----------------------------------------------------------------
+    # BIOMETRIA DO PAINEL (WebAuthn)
+    #
+    # Estas rotas exigem so o PRIMEIRO fator, de proposito: e por elas que
+    # o segundo nasce. Pedir o segundo aqui seria exigir a chave pra poder
+    # criar a chave.
+    # ----------------------------------------------------------------
+
+    @app.post("/painel/passkey/desafio")
+    async def passkey_desafio(request: Request):
+        """Numero de uso unico pro aparelho assinar."""
+        from fastapi.responses import JSONResponse
+        if not _primeiro_fator_ok(request):
+            return _negado(request)
+        return JSONResponse({
+            "desafio": passkey.novo_desafio(),
+            "site": passkey.rp_id_de(request.url.hostname or "localhost"),
+            "conhecidos": [p["cred_id"] for p in db.passkeys_do_painel()],
+            "ja_tem": db.tem_passkey(),
+        })
+
+    @app.post("/painel/passkey/registrar")
+    async def passkey_registrar(request: Request):
+        """Guarda um aparelho novo depois que ele provou a biometria.
+
+        A TRAVA MAIS IMPORTANTE DESTE ARQUIVO esta nas quatro linhas
+        abaixo, e ela faltava.
+
+        A primeira versao exigia so o token pra registrar. Como os flags
+        de "biometria confirmada" sao bytes que o CLIENTE monta, e o
+        formato `none` de atestacao nao prova posse de nada, quem
+        copiasse o token do EasyPanel cadastrava um aparelho proprio,
+        recebia o selo e abria o painel inteiro — inclusive o backup com
+        a base dos 11. O segundo fator existia so no papel.
+
+        A assimetria denunciava sozinha: REMOVER aparelho ja exigia os
+        dois fatores, ADICIONAR exigia um. Dava pra plantar e nao dava
+        pra tirar, exatamente ao contrario do necessario.
+
+        Agora: se JA existe aparelho, registrar outro exige os DOIS
+        fatores. So o primeiro cadastro — quando nao ha nenhum — passa
+        com o token sozinho, porque nesse instante nao existe segundo
+        fator pra exigir.
+        """
+        from fastapi.responses import JSONResponse
+        primeiro_de_todos = not db.tem_passkey()
+        if primeiro_de_todos:
+            if not _primeiro_fator_ok(request):
+                return _negado(request)
+        elif not _painel_autorizado(request):
+            return _negado(request)
+        corpo = await request.json()
+        r = passkey.registrar(
+            corpo, passkey.rp_id_de(request.url.hostname or "localhost"))
+        if not r.get("ok"):
+            log.warning("[passkey] registro recusado: %s", r.get("erro"))
+            return JSONResponse(status_code=400, content=r)
+        # CADASTRO NAO SOBRESCREVE APARELHO EXISTENTE.
+        #
+        # `excludeCredentials` e dica pro navegador, nao regra: um cliente
+        # forjado ignora e manda o `cred_id` de um aparelho ja cadastrado
+        # com OUTRA chave publica. Como `passkey_guardar` faz INSERT OR
+        # REPLACE, isso trocava a chave por baixo — o aparelho de verdade
+        # do dono parava de entrar e o do atacante ficava no lugar.
+        #
+        # E contornava a trava do "nao da pra remover o ultimo aparelho":
+        # nao removia, substituia. Um acesso temporario (selo de ate 14
+        # dias num navegador emprestado) virava desativacao permanente do
+        # aparelho do dono.
+        #
+        # Aparelho novo de verdade traz `cred_id` novo, sempre. Colisao
+        # aqui e sinal, nao acidente.
+        if db.passkey_por_id(r["cred_id"]):
+            log.warning("[passkey] tentou sobrescrever aparelho existente")
+            return JSONResponse(status_code=409, content={
+                "ok": False,
+                "erro": "este aparelho ja esta cadastrado. Pra trocar, "
+                        "remova o antigo primeiro."})
+        db.passkey_guardar(r["cred_id"], r["x"], r["y"], r["contador"],
+                           str(corpo.get("apelido") or "aparelho"))
+        _anotar_no_diario("passkey-registrada", r["cred_id"][:12],
+                          str(corpo.get("apelido") or "")[:40])
+        # AVISA O DONO, SEMPRE. Sobra uma janela em que o token sozinho
+        # cadastra aparelho: a do primeiro cadastro, quando ainda nao ha
+        # segundo fator pra exigir. Se alguem chegar nela antes do dono,
+        # ele precisa saber no mesmo minuto — e nao quando for usar o
+        # painel e descobrir que ja tem um aparelho estranho dentro.
+        try:
+            _alertar_dono(
+                "aparelho novo cadastrado no painel", None,
+                f"{str(corpo.get('apelido') or 'sem nome')[:30]} · "
+                f"{'PRIMEIRO aparelho' if primeiro_de_todos else 'ja havia outros'}"
+                f" · se nao foi voce, troque o PAINEL_TOKEN agora")
+        except Exception:
+            log.warning("[passkey] nao consegui avisar o dono", exc_info=True)
+        # JA ENTRA COM O SELO. Sem isto o dono registra a digital e leva
+        # 401 na cara em seguida, sem entender por que.
+        resposta = JSONResponse({"ok": True})
+        _selar_aparelho(resposta, r["cred_id"], _e_https(request))
+        return resposta
+
+    @app.post("/painel/passkey/entrar")
+    async def passkey_entrar(request: Request):
+        """Confere a biometria de um aparelho ja registrado."""
+        from fastapi.responses import JSONResponse
+        if not _primeiro_fator_ok(request):
+            return _negado(request)
+        corpo = await request.json()
+        r = passkey.conferir(
+            corpo, passkey.rp_id_de(request.url.hostname or "localhost"),
+            db.passkey_por_id)
+        if not r.get("ok"):
+            # Biometria recusada CONTA COMO RECUSA: sem isso, o segundo
+            # fator seria a unica porta do painel sem freio nenhum.
+            _anotar_recusa(request)
+            log.warning("[passkey] entrada recusada: %s", r.get("erro"))
+            return JSONResponse(status_code=401, content=r)
+        db.passkey_marcar_uso(r["cred_id"], r["contador"])
+        resposta = JSONResponse({"ok": True})
+        _selar_aparelho(resposta, r["cred_id"], _e_https(request))
+        return resposta
+
+    @app.post("/painel/passkey/remover")
+    async def passkey_remover(request: Request):
+        """Revoga um aparelho. Exige os DOIS fatores.
+
+        Aqui e diferente das outras: remover aparelho e o caminho pra
+        DESLIGAR a segunda trava, entao quem so tem o token nao pode fazer
+        isso — senao o segundo fator seria removivel justamente por quem
+        ele existe pra barrar.
+        """
+        from fastapi.responses import JSONResponse
+        if not _painel_autorizado(request):
+            return _negado(request)
+        corpo = await request.json()
+        alvo = str(corpo.get("cred_id") or "")
+        if len(db.passkeys_do_painel()) <= 1 and db.passkey_por_id(alvo):
+            return JSONResponse(status_code=400, content={
+                "ok": False,
+                "erro": "e o unico aparelho. Registre outro antes de tirar "
+                        "este, senao voce fica so com o token."})
+        ok = db.passkey_apagar(alvo)
+        if ok:
+            _anotar_no_diario("passkey-revogada", alvo[:12], "")
+        return JSONResponse({"ok": ok})
 
     @app.post("/painel/acao")
     async def painel_acao(request: Request):

@@ -732,6 +732,14 @@ _ROTAS_PROTEGIDAS = [
     ("POST", "/watchdog"),
     ("GET", "/dash"),
     ("GET", "/painel"),
+    # As rotas da biometria. Exigem o PRIMEIRO fator (o token) — o segundo
+    # nao da pra exigir aqui, porque e por elas que ele nasce.
+    ("GET", "/painel/backup"),
+    ("GET", "/painel/aparelhos"),
+    ("POST", "/painel/passkey/desafio"),
+    ("POST", "/painel/passkey/registrar"),
+    ("POST", "/painel/passkey/entrar"),
+    ("POST", "/painel/passkey/remover"),
 ]
 
 
@@ -750,6 +758,24 @@ def test_rota_protegida_recusa_sem_credencial(cli, limpo_o_freio, metodo,
     chamar = cli.get if metodo == "GET" else cli.post
     assert chamar(rota).status_code == 401, f"{metodo} {rota} entrou sem token"
     assert chamar(f"{rota}?k=chute").status_code == 401
+
+
+def _rotas_do_app():
+    """Todo par (VERBO, caminho) declarado no app.
+
+    Le do proprio FastAPI em vez de casar string no fonte: decorador
+    empilhado, quebra de linha ou aspas simples fariam a varredura por
+    texto perder rota sem avisar — e varredura que perde rota em silencio
+    e pior que nenhuma, porque da a impressao de que alguem esta olhando.
+    """
+    achadas = set()
+    for rota in wa_bot.app.routes:
+        caminho = getattr(rota, "path", "")
+        for verbo in getattr(rota, "methods", set()) or set():
+            if verbo in ("HEAD", "OPTIONS"):
+                continue  # gerados pelo framework, nao declarados por nos
+            achadas.add((verbo, caminho))
+    return achadas
 
 
 #: As rotas que podem ser abertas sem credencial, e o porque de cada uma.
@@ -774,15 +800,15 @@ def test_toda_rota_ou_e_publica_declarada_ou_esta_na_lista_testada():
     de verdade e exige 401. E o `re` cobre todos os verbos, nao so
     get/post — `put`/`delete`/`patch`/`api_route` passariam despercebidos.
     """
-    import inspect
-    fonte = inspect.getsource(wa_bot)
-    rotas = set(re.findall(
-        r'@app\.(?:get|post|put|patch|delete|head|options|api_route|'
-        r'websocket)\(\s*"([^"]+)"', fonte))
+    rotas = _rotas_do_app()
     assert len(rotas) > 10, "nao achei as rotas; o padrao de decorador mudou"
 
-    testadas = {r for _, r in _ROTAS_PROTEGIDAS}
-    faltando = rotas - set(PUBLICAS) - testadas
+    # PAR verbo+caminho, e nao so o caminho. Comparar caminhos deixava um
+    # `@app.delete("/dash")` novo passar verde: o caminho ja estava na
+    # lista, e o metodo novo nunca era provado negando.
+    testadas = {(v.upper(), r) for v, r in _ROTAS_PROTEGIDAS}
+    publicas = {(v, r) for v, r in rotas if r in PUBLICAS}
+    faltando = rotas - publicas - testadas
     assert not faltando, (
         f"rotas sem prova de trava: {sorted(faltando)}. "
         f"Ou poe em _ROTAS_PROTEGIDAS, ou declara em PUBLICAS com o motivo.")
@@ -791,13 +817,11 @@ def test_toda_rota_ou_e_publica_declarada_ou_esta_na_lista_testada():
 def test_nenhuma_publica_virou_fantasma():
     """Rota removida do app tem que sair das listas, senao elas incham com
     excecoes que nao valem mais pra nada."""
-    import inspect
-    fonte = inspect.getsource(wa_bot)
-    rotas = set(re.findall(
-        r'@app\.(?:get|post|put|patch|delete|head|options|api_route|'
-        r'websocket)\(\s*"([^"]+)"', fonte))
+    caminhos = {r for _, r in _rotas_do_app()}
     for r in PUBLICAS:
-        assert r in rotas, f"{r} esta em PUBLICAS mas nao existe mais"
+        assert r in caminhos, f"{r} esta em PUBLICAS mas nao existe mais"
+    for _, r in _ROTAS_PROTEGIDAS:
+        assert r in caminhos, f"{r} esta em _ROTAS_PROTEGIDAS mas sumiu"
 
 
 # --- os tetos, testados na funcao (o HTTP so tem uma origem) ----------

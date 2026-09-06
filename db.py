@@ -3797,3 +3797,130 @@ def podcast_registrar_ouvidas(user_id: int, itens: list, quando=None) -> None:
             "VALUES (?,?,?)", linhas)
         conn.execute("DELETE FROM podcast_ouvido WHERE criado_em < ?",
                      (corte,))
+
+
+# ---------------------------------------------------------------------
+# PASSKEYS DO PAINEL
+#
+# A chave PUBLICA de cada aparelho autorizado. A privada nasce e morre
+# dentro do aparelho do dono (Windows Hello, Face ID, digital) e nunca
+# chega aqui — entao vazar esta tabela nao da acesso a ninguem.
+#
+# Uma linha por aparelho, de proposito: notebook e celular sao registros
+# separados, e perder um nao tranca o outro.
+# ---------------------------------------------------------------------
+_PASSKEY_DDL = """
+CREATE TABLE IF NOT EXISTS painel_passkeys (
+    cred_id   TEXT PRIMARY KEY,
+    x         TEXT NOT NULL,
+    y         TEXT NOT NULL,
+    contador  INTEGER NOT NULL DEFAULT 0,
+    apelido   TEXT,
+    criada_em TEXT NOT NULL,
+    usada_em  TEXT
+);
+"""
+
+
+def _garante_passkeys(conn) -> None:
+    conn.execute(_PASSKEY_DDL)
+
+
+def passkey_guardar(cred_id: str, x: int, y: int, contador: int,
+                    apelido: str = "") -> None:
+    """Registra um aparelho novo."""
+    with get_conn() as conn:
+        _garante_passkeys(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO painel_passkeys "
+            "(cred_id, x, y, contador, apelido, criada_em) "
+            "VALUES (?,?,?,?,?,?)",
+            (str(cred_id), str(x), str(y), int(contador or 0),
+             (apelido or "")[:40], tempo.agora().isoformat(timespec="seconds")))
+
+
+def passkey_por_id(cred_id: str):
+    """Acha a chave publica de um aparelho. `None` se nao existir."""
+    with get_conn() as conn:
+        _garante_passkeys(conn)
+        r = conn.execute(
+            "SELECT cred_id, x, y, contador, apelido FROM painel_passkeys "
+            "WHERE cred_id = ?", (str(cred_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def passkey_marcar_uso(cred_id: str, contador: int) -> None:
+    """Guarda o contador novo. E ele que denuncia passkey clonada."""
+    with get_conn() as conn:
+        _garante_passkeys(conn)
+        conn.execute(
+            "UPDATE painel_passkeys SET contador = ?, usada_em = ? "
+            "WHERE cred_id = ?",
+            (int(contador or 0), tempo.agora().isoformat(timespec="seconds"),
+             str(cred_id)))
+
+
+def passkeys_do_painel() -> list:
+    """Os aparelhos autorizados, pro dono ver e revogar."""
+    with get_conn() as conn:
+        _garante_passkeys(conn)
+        return [dict(r) for r in conn.execute(
+            "SELECT cred_id, apelido, criada_em, usada_em "
+            "FROM painel_passkeys ORDER BY criada_em")]
+
+
+def passkey_apagar(cred_id: str) -> bool:
+    """Revoga um aparelho. Aparelho perdido tem que sair na hora."""
+    with get_conn() as conn:
+        _garante_passkeys(conn)
+        return conn.execute("DELETE FROM painel_passkeys WHERE cred_id = ?",
+                            (str(cred_id),)).rowcount > 0
+
+
+def tem_passkey() -> bool:
+    """Se ja existe algum aparelho registrado.
+
+    E o que decide se a segunda trava esta ARMADA. Enquanto nao houver
+    nenhuma, exigir passkey trancaria o dono do lado de fora do proprio
+    painel — entao o primeiro acesso e so com token, pra ele conseguir
+    registrar o aparelho.
+    """
+    with get_conn() as conn:
+        _garante_passkeys(conn)
+        return bool(conn.execute(
+            "SELECT 1 FROM painel_passkeys LIMIT 1").fetchone())
+
+
+def copia_para_backup() -> bytes:
+    """Uma copia CONSISTENTE do banco, pronta pra guardar fora da VPS.
+
+    Nao e `open(arquivo).read()`. O SQLite escreve em WAL: copiar o arquivo
+    cru enquanto o bot atende pode capturar um estado no meio de uma
+    transacao — o backup existe justamente pra ser usado no pior dia, e
+    descobrir que ele esta corrompido nesse dia e nao ter backup nenhum.
+
+    `Connection.backup()` e a API oficial do SQLite pra isso: tira uma
+    copia coerente com o bot rodando.
+    """
+    import io
+    import os
+    import sqlite3
+    import tempfile
+
+    destino = os.path.join(tempfile.mkdtemp(prefix="resolveai_bkp"),
+                           "copia.db")
+    try:
+        with get_conn() as origem:
+            saida = sqlite3.connect(destino)
+            try:
+                origem.backup(saida)
+            finally:
+                saida.close()
+        with io.open(destino, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.remove(destino)
+            os.rmdir(os.path.dirname(destino))
+        except OSError:
+            pass
